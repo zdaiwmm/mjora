@@ -178,6 +178,7 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
               tile.isUserInteractionEnabled,
               let asset = tile.asset
         else { return }
+        if tile.retryIfNeeded(at: recognizer.location(in: tile)) { return }
         if let pick = row.actions.pick {
             pick(asset)
             return
@@ -318,6 +319,10 @@ final class TimelineTileView: UIView {
     private var loadedKey: String?
     private var loadTask: Task<Void, Never>?
     private var placeholderTask: Task<Void, Never>?
+    private var remoteTask: Task<Void, Never>?
+    private var deadlineTask: Task<Void, Never>?
+    private var thumbnailState = ThumbnailLoadState(hasLocal: false, hasRemote: false, targetPixels: 1)
+    private let retryButton = UIButton(type: .system)
     /// a picture of the same photo is on screen, so the sharp render lands in
     /// place: fading one rendition into another reads as a pulse.
     private var showsPicture = false
@@ -364,6 +369,15 @@ final class TimelineTileView: UIView {
         imageView.clipsToBounds = true
         imageView.backgroundColor = .secondarySystemFill
         content.addSubview(imageView)
+        retryButton.setImage(UIImage(systemName: "arrow.clockwise.circle.fill"), for: .normal)
+        retryButton.tintColor = .white
+        retryButton.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        retryButton.layer.cornerRadius = 18
+        retryButton.accessibilityLabel = String(localized: "Retry")
+        retryButton.accessibilityIdentifier = "thumbnail-retry"
+        retryButton.addTarget(self, action: #selector(retryThumbnail), for: .touchUpInside)
+        retryButton.isHidden = true
+        addSubview(retryButton)
         isAccessibilityElement = true
         accessibilityTraits = .button
         accessibilityIdentifier = "asset-tile"
@@ -382,9 +396,10 @@ final class TimelineTileView: UIView {
         targetPixelSize: CGFloat,
         registry: AssetTileRegistry
     ) {
+        let accountChanged = self.session !== session
         self.session = session
         self.motion = motion
-        let changed = self.asset != asset
+        let changed = accountChanged || self.asset != asset
             || self.showsBackupBadge != showsBackupBadge
             || self.targetPixelSize != targetPixelSize
         if self.asset?.id != asset.id {
@@ -462,8 +477,9 @@ final class TimelineTileView: UIView {
             // a device-only photo has nowhere else to come from; a paired one
             // falls back to the server thumbnail rather than downloading its
             // original from icloud.
-            let allowsNetwork = source.remoteIdentifier == nil
-            let key = "local|\(localIdentifier)#\(Int(targetPixelSize))|\(allowsNetwork)"
+            let allowsNetwork = false
+            let scope = AssetThumbnailSource.localCacheScope(accountKey: client?.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize)
+            let key = "local|\(scope)|\(localIdentifier)#\(Int(targetPixelSize))"
             guard needsLoad(key: key, generation: generation) else { return }
             let serverThumbnail = client.flatMap { client in
                 source.remoteIdentifier.flatMap { remoteIdentifier in
@@ -478,7 +494,10 @@ final class TimelineTileView: UIView {
                 key: key,
                 generation: generation,
                 allowsNetwork: allowsNetwork,
-                placeholder: serverThumbnail
+                placeholder: serverThumbnail,
+                cacheScope: scope,
+                remoteURL: source.remoteIdentifier.flatMap { client?.thumbnailURL(assetID: $0, cacheKey: asset.thumbhash) },
+                previewURL: source.remoteIdentifier.flatMap { client?.thumbnailURL(assetID: $0, size: "preview", cacheKey: asset.thumbhash) }
             )
         } else if let client, let remoteIdentifier = source.remoteIdentifier {
             let url = client.thumbnailURL(assetID: remoteIdentifier, cacheKey: asset.thumbhash)
@@ -486,11 +505,12 @@ final class TimelineTileView: UIView {
             guard needsLoad(key: key, generation: generation) else { return }
             loadRemote(
                 url,
+                previewURL: client.thumbnailURL(assetID: remoteIdentifier, size: "preview", cacheKey: asset.thumbhash),
                 key: key,
                 generation: generation,
                 thumbhash: asset.thumbhash,
                 placeholder: source.localIdentifier.flatMap {
-                    LocalImageLoader.shared.cachedPreview(localIdentifier: $0)
+                    LocalImageLoader.shared.cachedPreview(localIdentifier: $0, cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize))
                 }
             )
         } else {
@@ -513,6 +533,11 @@ final class TimelineTileView: UIView {
         loadTask = nil
         placeholderTask?.cancel()
         placeholderTask = nil
+        remoteTask?.cancel()
+        remoteTask = nil
+        deadlineTask?.cancel()
+        deadlineTask = nil
+        thumbnailState.cancel()
     }
 
     private func begin(key: String, generation: Int) {
@@ -522,11 +547,43 @@ final class TimelineTileView: UIView {
         }
         loadKey = key
         loadGeneration = generation
+        retryButton.isHidden = true
+    }
+
+    @objc private func retryThumbnail() {
+        loadKey = nil
+        loadedKey = nil
+        unavailableLocalIdentifier = nil
+        setNeedsUpdateProperties()
+    }
+
+    func retryIfNeeded(at point: CGPoint) -> Bool {
+        guard !retryButton.isHidden, retryButton.frame.contains(point) else { return false }
+        retryThumbnail()
+        return true
+    }
+
+    @objc private func accessibilityRetry() -> Bool {
+        retryThumbnail()
+        return true
+    }
+
+    private func updateThumbnailStatus() {
+        accessibilityCustomActions = thumbnailState.phase == .retry
+            ? [UIAccessibilityCustomAction(name: String(localized: "Retry"), target: self, selector: #selector(accessibilityRetry))]
+            : nil
+        retryButton.isHidden = thumbnailState.phase != .retry
+        accessibilityValue = thumbnailState.phase == .retry
+            ? String(localized: "Image unavailable. Retry")
+            : (thumbnailState.phase == .preview ? String(localized: "Loading") : nil)
     }
 
     private func show(_ image: UIImage, key: String, fading: Bool) {
         placeholderTask?.cancel()
         loadedKey = key
+        retryButton.isHidden = true
+        accessibilityValue = nil
+        accessibilityCustomActions = nil
         showsPicture = true
         guard fading else {
             imageView.image = image
@@ -549,44 +606,53 @@ final class TimelineTileView: UIView {
 
     private func loadRemote(
         _ url: URL,
+        previewURL: URL,
         key: String,
         generation: Int,
         thumbhash: String?,
         placeholder: UIImage?
     ) {
         begin(key: key, generation: generation)
-        let size = targetPixelSize
-        if let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: size) {
-            show(cached, key: key, fading: false)
-            return
-        }
+        thumbnailState = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
         imageView.image = placeholder
         showsPicture = placeholder != nil
-
-        loadTask = Task { [weak self] in
-            let start = ContinuousClock.now
-            let loaded = try? await ImageLoader.shared.image(for: url, targetPixelSize: size)
-            guard let tile = self, !Task.isCancelled, tile.loadKey == key, let loaded else { return }
-            tile.show(loaded, key: key, fading: tile.fades(since: start))
-        }
-
+        startRemote(url, previewURL: previewURL, key: key)
         guard motion?.isFast != true, let thumbhash, placeholder == nil else { return }
         placeholderTask = Task { [weak self] in
-            // disk hits normally finish before this delay, avoiding
-            // placeholder work for images that would never display it.
             try? await Task.sleep(for: .milliseconds(50))
-            guard !Task.isCancelled,
-                  let tile = self, tile.loadKey == key, tile.loadedKey != key,
-                  ImageLoader.shared.cachedImage(for: url, targetPixelSize: size) == nil
-            else { return }
-            let decoded = await Task.detached(priority: .utility) {
-                Thumbhash.image(fromBase64: thumbhash)
-            }.value
-            guard !Task.isCancelled,
-                  let tile = self, tile.loadKey == key, tile.loadedKey != key,
-                  let decoded
-            else { return }
-            tile.imageView.image = decoded
+            guard !Task.isCancelled, let self, self.loadKey == key, self.loadedKey != key else { return }
+            let decoded = await Task.detached(priority: .utility) { Thumbhash.image(fromBase64: thumbhash) }.value
+            guard !Task.isCancelled, self.loadKey == key, self.loadedKey != key, let decoded else { return }
+            self.imageView.image = decoded
+        }
+    }
+
+    /// Only the two derivative URLs are supplied. The grid has no original
+    /// or video URL to accidentally select when either derivative fails.
+    private func startRemote(_ url: URL, previewURL: URL, key: String) {
+        guard remoteTask == nil else { return }
+        let size = targetPixelSize
+        let ratio = asset?.ratio ?? 1
+        remoteTask = Task { [weak self] in
+            let start = ContinuousClock.now
+            do {
+                let loaded = try await ImageLoader.shared.gridThumbnail(
+                    thumbnailURL: url, previewURL: previewURL, targetPixelSize: size, aspectRatio: ratio
+                ) { [weak self] image in
+                    guard let self, self.loadKey == key, self.loadedKey != key else { return }
+                    self.imageView.image = image
+                    self.showsPicture = true
+                }
+                guard !Task.isCancelled, let self, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
+                _ = self.thumbnailState.remoteResult(pixels: Double(size), isPreview: true)
+                self.show(loaded, key: key, fading: self.fades(since: start))
+                self.deadlineTask?.cancel()
+                self.loadTask?.cancel()
+            } catch {
+                guard !Task.isCancelled, let self, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
+                _ = self.thumbnailState.remoteResult(pixels: nil, isPreview: true)
+                self.updateThumbnailStatus()
+            }
         }
     }
 
@@ -595,58 +661,67 @@ final class TimelineTileView: UIView {
         key: String,
         generation: Int,
         allowsNetwork: Bool,
-        placeholder: UIImage?
+        placeholder: UIImage?,
+        cacheScope: String,
+        remoteURL: URL?,
+        previewURL: URL?
     ) {
         begin(key: key, generation: generation)
+        thumbnailState = ThumbnailLoadState(hasLocal: true, hasRemote: remoteURL != nil, targetPixels: Double(targetPixelSize))
+        accessibilityValue = String(localized: "Loading")
         let size = targetPixelSize
         if let cached = LocalImageLoader.shared.cachedImage(
-            localIdentifier: localIdentifier,
-            targetPixelSize: size,
-            contentMode: DeviceTileRender.contentMode,
-            coversTarget: DeviceTileRender.coversTile
+            localIdentifier: localIdentifier, targetPixelSize: size,
+            contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
+            cacheScope: cacheScope
         ) {
             show(cached, key: key, fading: false)
             return
         }
-        // the server thumbnail a tile painted before the backup index paired
-        // it stays up while photokit answers, then the library's preview.
-        let shown = placeholder ?? LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier)
+        let shown = placeholder ?? LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier, cacheScope: cacheScope)
         imageView.image = shown
         showsPicture = shown != nil
-
+        deadlineTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self, self.loadKey == key else { return }
+            let action = self.thumbnailState.localDeadline()
+            self.updateThumbnailStatus()
+            if action == .thumbnail, let remoteURL, let previewURL {
+                self.startRemote(remoteURL, previewURL: previewURL, key: key)
+            }
+        }
         loadTask = Task { [weak self] in
             let start = ContinuousClock.now
-            var receivedFinal = false
-            var triesAlternateSource = false
             let deliveries = LocalImageLoader.shared.deliveries(
-                localIdentifier: localIdentifier,
-                targetPixelSize: size,
-                contentMode: DeviceTileRender.contentMode,
-                coversTarget: DeviceTileRender.coversTile,
-                allowsNetwork: allowsNetwork
+                localIdentifier: localIdentifier, targetPixelSize: size,
+                contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
+                allowsNetwork: allowsNetwork, cacheScope: cacheScope
             )
             for await delivery in deliveries {
-                guard !Task.isCancelled, let tile = self, tile.loadKey == key else { return }
+                guard !Task.isCancelled, let self, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
                 switch delivery {
                 case .terminal(let outcome):
-                    triesAlternateSource = outcome.shouldTryAlternateSource
-                case .preview(let preview):
-                    // the library's own thumbnail paints at once, no fade.
-                    if placeholder == nil, tile.loadedKey != key {
-                        tile.imageView.image = preview
-                        tile.showsPicture = true
+                    guard outcome.shouldTryAlternateSource else { continue }
+                    let action = self.thumbnailState.localUnavailable()
+                    if action == .thumbnail, let remoteURL, let previewURL {
+                        self.startRemote(remoteURL, previewURL: previewURL, key: key)
+                    }
+                case .preview(let image):
+                    self.thumbnailState.localPreview()
+                    if placeholder == nil, self.loadedKey != key {
+                        self.imageView.image = image
+                        self.showsPicture = true
                     }
                 case .final(let image):
-                    receivedFinal = true
-                    tile.show(image, key: key, fading: tile.fades(since: start))
+                    // LocalImageLoader validates dimensions against the
+                    // target and the original before emitting a final image.
+                    _ = self.thumbnailState.localFinal(pixels: Double(size), originalPixels: Double(size))
+                    self.show(image, key: key, fading: self.fades(since: start))
+                    self.remoteTask?.cancel()
+                    self.deadlineTask?.cancel()
                 }
+                self.updateThumbnailStatus()
             }
-            guard !Task.isCancelled, let tile = self, tile.loadKey == key,
-                  !receivedFinal, triesAlternateSource
-            else { return }
-            tile.unavailableLocalIdentifier = localIdentifier
-            tile.unavailableGeneration = generation
-            tile.setNeedsUpdateProperties()
         }
     }
 
@@ -791,6 +866,7 @@ final class TimelineTileView: UIView {
         content.frame = bounds
         imageView.frame = bounds
         uploadOverlay?.frame = bounds
+        retryButton.frame = CGRect(x: bounds.midX - 18, y: bounds.midY - 18, width: 36, height: 36)
         let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
 
         func place(_ view: UIView?, leading: Bool, top: Bool, inset: CGFloat) {

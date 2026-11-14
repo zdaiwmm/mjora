@@ -9,21 +9,10 @@ import Photos
 /// photokit's caching manager, but both take the same window.
 @MainActor
 final class ThumbnailPrefetcher {
-    /// tiles kept warm past the fold, about what a fast fling can reveal before
-    /// the network can answer.
-    private static let lookAhead = 36
-    /// of those, the ones a fling reaches first are decoded ahead of time. the
-    /// rest only land on disk: a fast fling usually races past them, and a
-    /// decode nobody sees is the costliest part of a prefetch.
-    private static let decodedAhead = 15
-    /// scrolling back up is common enough to keep a short tail warm too.
-    private static let lookBehind = 12
-
     /// where one warmed asset's tile comes from.
     private enum Source: Hashable {
         case remote(URL)
-        /// device-only: the library is its only source, so icloud may be
-        /// asked for it.
+        /// Device-only: warm only the locally available derivative.
         case local(String)
         /// device copy of a server asset: rendered from the library when it
         /// has it, never downloaded for a tile the server can serve. kept
@@ -52,6 +41,9 @@ final class ThumbnailPrefetcher {
     /// moving window diffs by index arithmetic: only the assets entering or
     /// leaving it are looked at, never a url per asset of the whole window.
     private var warmed: [Warmed] = []
+    private weak var windowClient: ImoraClient?
+    private var rowAssetCounts: [String: Int] = [:]
+    private var rowCountsVersion = -1
 
     init(
         targetPixelSize: CGFloat = 640,
@@ -89,14 +81,22 @@ final class ThumbnailPrefetcher {
         let assets = model.flatAssets
         let low = min(first, last)
         let high = max(first, last)
-        let goingUp = direction < 0
-        let lower = max(0, low - (goingUp ? Self.lookAhead : Self.lookBehind))
-        let upper = min(assets.count, high + 1 + (goingUp ? Self.lookBehind : Self.lookAhead))
-        guard lower < upper else { return cancel() }
-        let decodedLower = max(0, low - (goingUp ? Self.decodedAhead : Self.lookBehind))
-        let decodedUpper = min(assets.count, high + 1 + (goingUp ? Self.lookBehind : Self.decodedAhead))
-        let next = lower..<upper
-        let nextDecoded = decodedLower..<max(decodedLower, decodedUpper)
+        if windowClient !== client {
+            cancel()
+            windowClient = client
+        }
+        if rowCountsVersion != model.flatAssetsVersion {
+            rowAssetCounts = Dictionary(uniqueKeysWithValues: model.rows.compactMap { row in
+                guard case .tiles(let id, let runs) = row else { return nil }
+                return (id, runs.reduce(0) { $0 + $1.assets.count })
+            })
+            rowCountsVersion = model.flatAssetsVersion
+        }
+        let lastRowID = visibleRowIDs.reversed().first { model.firstAssetIDByRowID[$0] != nil }
+        let visibleEnd = min(assets.count, high + (lastRowID.flatMap { rowAssetCounts[$0] } ?? 1))
+        let next = ThumbnailLoadState.prefetchWindow(visible: low..<visibleEnd, count: assets.count)
+        guard !next.isEmpty else { return cancel() }
+        let nextDecoded = next
 
         let version = model.flatAssetsVersion
         guard next != window || version != windowVersion || nextDecoded != decodedRange else { return }
@@ -233,7 +233,7 @@ final class ThumbnailPrefetcher {
         if !data.start.isEmpty {
             ImageLoader.shared.startPrefetchingData(urls: data.start)
         }
-        syncLocal(start: local.start, stop: local.stop, allowsNetwork: true)
+        syncLocal(start: local.start, stop: local.stop, allowsNetwork: false)
         syncLocal(start: paired.start, stop: paired.stop, allowsNetwork: false)
     }
 

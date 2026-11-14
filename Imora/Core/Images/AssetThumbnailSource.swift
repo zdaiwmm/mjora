@@ -7,6 +7,10 @@ nonisolated struct AssetThumbnailSource {
     let remoteIdentifier: String?
     let preferredLocalIdentifier: String?
 
+    static func localCacheScope(accountKey: String?, version: String?, pixels: CGFloat) -> String {
+        "\(accountKey ?? "device")|\(version ?? "")|fit-cover|\(Int(pixels.rounded(.up)))"
+    }
+
     init(
         assetID: String,
         localIdentifier: String?,
