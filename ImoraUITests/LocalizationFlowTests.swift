@@ -32,12 +32,19 @@ final class LocalizationFlowTests: XCTestCase {
         field.typeText(value)
     }
     private func tapViewerClose(_ app: XCUIApplication) {
-        // Opening chrome and the viewer toolbar briefly expose the same
-        // close action. Tap a visible control; callers still require all
-        // viewer close controls to disappear before opening another asset.
-        let visible = app.buttons.matching(identifier: "viewer-close").allElementsBoundByIndex.first { $0.isHittable }
-        XCTAssertNotNil(visible)
-        visible?.tap()
+        // The temporary opening overlay is removed as the toolbar appears.
+        // Resolve the stable toolbar action after handoff, since an indexed
+        // overlay element can disappear between AX selection and touch delivery.
+        let toolbarClose = app.navigationBars.buttons.matching(identifier: "viewer-close")
+        let ready = NSPredicate { _, _ in
+            toolbarClose.count == 1 && toolbarClose.firstMatch.isHittable
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 8), .completed)
+        let controls = app.buttons.matching(identifier: "viewer-close").allElementsBoundByIndex
+            .map { "frame=\($0.frame) hittable=\($0.isHittable)" }.joined(separator: "\n")
+        let attachment = XCTAttachment(string: controls)
+        attachment.name = "viewer-close-before-tap"; attachment.lifetime = .keepAlways; add(attachment)
+        toolbarClose.firstMatch.tap()
     }
     private func checkFlow(language: String, chinese: Bool) throws {
         continueAfterFailure = false

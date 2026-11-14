@@ -31124,6 +31124,74 @@
           }
         }
       }
+    },
+    "This photo was deleted in the cloud. Back Up Again restores its cloud copy from trash when available, or uploads a new copy if it was permanently deleted. The original stays on this device.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This photo was deleted in the cloud. Back Up Again restores its cloud copy from trash when available, or uploads a new copy if it was permanently deleted. The original stays on this device."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此照片已在云端删除。“重新备份”会恢复回收站中可用的云端副本；若已永久删除，则重新上传。本机原片会保留。"
+          }
+        }
+      }
+    },
+    "The cloud copy was removed. Confirm Back Up Again to restore or recreate it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The cloud copy was removed. Confirm Back Up Again to restore or recreate it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端副本已删除。请确认“重新备份”以恢复或重新创建云端副本。"
+          }
+        }
+      }
+    },
+    "Last successful cloud sync: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last successful cloud sync: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上次成功同步云端：%@"
+          }
+        }
+      }
+    },
+    "Last successful cloud sync time is unknown.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last successful cloud sync time is unknown."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上次成功同步云端的时间未知。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
