@@ -168,7 +168,7 @@ final class LocalizationFlowTests: XCTestCase {
         for index in 0..<2 {
             check.tap()
             XCTAssertTrue(toast.waitForExistence(timeout: 15))
-            XCTAssertTrue(toast.label.contains("当前已是最新版本"), toast.label)
+            XCTAssertEqual(toast.value as? String, "当前已是最新版本")
             snapshot(app, "zh-Hans-current-version-toast-\(index)")
             XCTAssertTrue(toast.waitForNonExistence(timeout: 8))
         }
