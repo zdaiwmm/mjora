@@ -517,7 +517,7 @@ struct AssetTile: View {
         LocalPhotoImage(
             localIdentifier: localId,
             targetPixelSize: targetPixelSize,
-            cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize),
+            cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize),
             requestContentMode: DeviceTileRender.contentMode,
             coversTarget: DeviceTileRender.coversTile,
             // Grid loads stay on-device; cloud-only originals
@@ -537,17 +537,17 @@ struct AssetTile: View {
                     url: client.thumbnailURL(assetID: remoteID, cacheKey: asset.thumbhash),
                     targetPixelSize: targetPixelSize, thumbhash: asset.thumbhash,
                     placeholderImage: LocalImageLoader.shared.cachedPreview(localIdentifier: localId,
-                        cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize)),
+                        cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize)),
                     upgradeURL: client.thumbnailURL(assetID: remoteID, size: "preview", cacheKey: asset.thumbhash),
                     assetAspectRatio: asset.ratio, animatesLoads: animatesLoads
                 )
             }
         }
-        .task(id: "\(asset.id)|\(localId)|\(Int(targetPixelSize))|\(asset.thumbhash ?? "")|\(session.client?.offlineAccountKey ?? "device")|\(recoveryGeneration)") {
+        .task(id: "\(asset.id)|\(localId)|\(Int(targetPixelSize))|\(asset.localImageVersion ?? asset.thumbhash ?? "")|\(session.client?.offlineAccountKey ?? "device")|\(recoveryGeneration)") {
             localReady = LocalImageLoader.shared.cachedImage(
                 localIdentifier: localId, targetPixelSize: targetPixelSize,
                 contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
-                cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize)
+                cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize)
             ) != nil
             remoteFallbackVisible = false
             try? await Task.sleep(for: .seconds(2))

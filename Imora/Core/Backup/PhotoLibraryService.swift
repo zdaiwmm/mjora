@@ -58,7 +58,8 @@ nonisolated struct DeviceAsset: Codable, Equatable, Sendable {
             createdAt: nil,
             localIdentifier: localIdentifier,
             isLocalBackedUp: backedUp,
-            hasLocalMotion: isLivePhoto
+            hasLocalMotion: isLivePhoto,
+            localImageVersion: modificationDate.map { String($0.timeIntervalSinceReferenceDate.bitPattern) }
         )
     }
 }

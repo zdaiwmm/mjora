@@ -478,7 +478,7 @@ final class TimelineTileView: UIView {
             // falls back to the server thumbnail rather than downloading its
             // original from icloud.
             let allowsNetwork = false
-            let scope = AssetThumbnailSource.localCacheScope(accountKey: client?.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize)
+            let scope = AssetThumbnailSource.localCacheScope(accountKey: client?.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize)
             let key = "local|\(scope)|\(localIdentifier)#\(Int(targetPixelSize))"
             guard needsLoad(key: key, generation: generation) else { return }
             let serverThumbnail = client.flatMap { client in
@@ -510,7 +510,7 @@ final class TimelineTileView: UIView {
                 generation: generation,
                 thumbhash: asset.thumbhash,
                 placeholder: source.localIdentifier.flatMap {
-                    LocalImageLoader.shared.cachedPreview(localIdentifier: $0, cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.thumbhash, pixels: targetPixelSize))
+                    LocalImageLoader.shared.cachedPreview(localIdentifier: $0, cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize))
                 }
             )
         } else {

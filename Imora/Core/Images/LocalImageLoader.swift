@@ -263,100 +263,101 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
             // caller's actor like the single-image path.
             let work = Task.detached(priority: .userInitiated) { [self] in
                 do {
-                    let localPermit = try await Self.localSlots.acquire()
-                    request.registerLocalPermit(localPermit)
-                    let permit = try await ThumbnailLoadLimiter.shared.acquire()
-                    request.registerPermit(permit)
+                    try await ThumbnailProviderStart.run(acquireCapacity: {
+                        let localPermit = try await Self.localSlots.acquire()
+                        request.registerLocalPermit(localPermit)
+                        let permit = try await ThumbnailLoadLimiter.shared.acquire()
+                        request.registerPermit(permit)
+                    }, startProvider: {
+                        guard !request.isCancelled else {
+                            continuation.finish()
+                            return
+                        }
+                        guard let asset = fetchAsset(localIdentifier) else {
+                            continuation.yield(.terminal(.missing))
+                            continuation.finish()
+                            return
+                        }
+                        let size = Self.targetSize(
+                            for: asset,
+                            pixels: targetPixelSize,
+                            contentMode: contentMode,
+                            coversTarget: coversTarget
+                        )
+                        let requestID = manager.requestImage(
+                            for: asset,
+                            targetSize: size,
+                            contentMode: contentMode,
+                            options: Self.requestOptions(allowsNetwork: allowsNetwork)
+                        ) { image, info in
+                            guard !request.isCancelled else { return }
+                            guard self.libraryGeneration.withLock({ $0 }) == generation else {
+                                continuation.yield(.terminal(.missing))
+                                continuation.finish()
+                                return
+                            }
+                            switch LocalImageResult.classify(
+                                hasImage: image != nil,
+                                isDegraded: Self.isDegraded(info),
+                                isCancelled: Self.isCancelled(info),
+                                hasError: info?[PHImageErrorKey] != nil,
+                                isInCloud: (info?[PHImageResultIsInCloudKey] as? Bool) ?? false,
+                                allowsNetwork: allowsNetwork
+                            ) {
+                            case .waiting:
+                                return
+                            case .preview:
+                                if let image {
+                                    self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
+                                    continuation.yield(.preview(image))
+                                }
+                                return
+                            case .final:
+                                break
+                            case let outcome:
+                                continuation.yield(.terminal(outcome))
+                                continuation.finish()
+                                return
+                            }
+                            guard let image else { return }
+                            let actual = coversTarget
+                                ? min(image.size.width, image.size.height) * image.scale
+                                : max(image.size.width, image.size.height) * image.scale
+                            let original = CGFloat(coversTarget
+                                ? min(asset.pixelWidth, asset.pixelHeight)
+                                : max(asset.pixelWidth, asset.pixelHeight))
+                            if actual < min(targetPixelSize, original) * 0.95 {
+                                self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
+                                continuation.yield(.preview(image))
+                                continuation.yield(.terminal(.insufficient))
+                                continuation.finish()
+                                return
+                            }
+                            self.store(
+                                image,
+                                localIdentifier: localIdentifier,
+                                targetPixelSize: targetPixelSize,
+                                contentMode: contentMode,
+                                coversTarget: coversTarget,
+                                cacheScope: cacheScope
+                            )
+                            continuation.yield(.final(image))
+                            continuation.finish()
+                        }
+                        request.register(requestID, manager: manager)
+                    }, armDeadline: {
+                        let timeout = Task.detached {
+                            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                            continuation.yield(.terminal(.failed))
+                            continuation.finish()
+                        }
+                        request.registerTimeout(timeout)
+                    })
                 } catch {
                     continuation.finish()
-                    return
                 }
-                guard !request.isCancelled else {
-                    continuation.finish()
-                    return
-                }
-                guard let asset = fetchAsset(localIdentifier) else {
-                    continuation.yield(.terminal(.missing))
-                    continuation.finish()
-                    return
-                }
-                let size = Self.targetSize(
-                    for: asset,
-                    pixels: targetPixelSize,
-                    contentMode: contentMode,
-                    coversTarget: coversTarget
-                )
-                let requestID = manager.requestImage(
-                    for: asset,
-                    targetSize: size,
-                    contentMode: contentMode,
-                    options: Self.requestOptions(allowsNetwork: allowsNetwork)
-                ) { image, info in
-                    guard !request.isCancelled else { return }
-                    guard self.libraryGeneration.withLock({ $0 }) == generation else {
-                        continuation.yield(.terminal(.missing))
-                        continuation.finish()
-                        return
-                    }
-                    switch LocalImageResult.classify(
-                        hasImage: image != nil,
-                        isDegraded: Self.isDegraded(info),
-                        isCancelled: Self.isCancelled(info),
-                        hasError: info?[PHImageErrorKey] != nil,
-                        isInCloud: (info?[PHImageResultIsInCloudKey] as? Bool) ?? false,
-                        allowsNetwork: allowsNetwork
-                    ) {
-                    case .waiting:
-                        return
-                    case .preview:
-                        if let image {
-                            self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
-                            continuation.yield(.preview(image))
-                        }
-                        return
-                    case .final:
-                        break
-                    case let outcome:
-                        continuation.yield(.terminal(outcome))
-                        continuation.finish()
-                        return
-                    }
-                    guard let image else { return }
-                    let actual = coversTarget
-                        ? min(image.size.width, image.size.height) * image.scale
-                        : max(image.size.width, image.size.height) * image.scale
-                    let original = CGFloat(coversTarget
-                        ? min(asset.pixelWidth, asset.pixelHeight)
-                        : max(asset.pixelWidth, asset.pixelHeight))
-                    if actual < min(targetPixelSize, original) * 0.95 {
-                        self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
-                        continuation.yield(.preview(image))
-                        continuation.yield(.terminal(.insufficient))
-                        continuation.finish()
-                        return
-                    }
-                    self.store(
-                        image,
-                        localIdentifier: localIdentifier,
-                        targetPixelSize: targetPixelSize,
-                        contentMode: contentMode,
-                        coversTarget: coversTarget,
-                        cacheScope: cacheScope
-                    )
-                    continuation.yield(.final(image))
-                    continuation.finish()
-                }
-                request.register(requestID, manager: manager)
             }
             request.registerWork(work)
-            // Some providers send only a degraded callback. End the request
-            // and release its render slot even if PhotoKit never terminates.
-            let timeout = Task.detached {
-                do { try await Task.sleep(for: .seconds(8)) } catch { return }
-                continuation.yield(.terminal(.failed))
-                continuation.finish()
-            }
-            request.registerTimeout(timeout)
         }
     }
 
@@ -401,7 +402,9 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         targetPixelSize: CGFloat,
         contentMode: PHImageContentMode = .aspectFill,
         coversTarget: Bool = false,
-        allowsNetwork: Bool = true
+        allowsNetwork: Bool = true,
+        cacheScopes: [String: String] = [:],
+        ownerID: UUID? = nil
     ) {
         cachingQueue.async { [self] in
             setCaching(
@@ -410,7 +413,9 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                 targetPixelSize: targetPixelSize,
                 contentMode: contentMode,
                 coversTarget: coversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScopes: cacheScopes,
+                ownerID: ownerID
             )
         }
     }
@@ -420,7 +425,9 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         targetPixelSize: CGFloat,
         contentMode: PHImageContentMode = .aspectFill,
         coversTarget: Bool = false,
-        allowsNetwork: Bool = true
+        allowsNetwork: Bool = true,
+        cacheScopes: [String: String] = [:],
+        ownerID: UUID? = nil
     ) {
         cachingQueue.async { [self] in
             setCaching(
@@ -429,7 +436,9 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                 targetPixelSize: targetPixelSize,
                 contentMode: contentMode,
                 coversTarget: coversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScopes: cacheScopes,
+                ownerID: ownerID
             )
         }
     }
@@ -442,17 +451,20 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         targetPixelSize: CGFloat,
         contentMode: PHImageContentMode,
         coversTarget: Bool,
-        allowsNetwork: Bool
+        allowsNetwork: Bool,
+        cacheScopes: [String: String],
+        ownerID: UUID?
     ) {
         // PhotoKit's bulk cache API has no concurrency bound. Warm through
         // the same cancellable render lane as visible tiles instead.
         for identifier in localIdentifiers {
-            let cacheKey = String(key(identifier, targetPixelSize, contentMode, coversTarget: coversTarget))
+            let scope = cacheScopes[identifier] ?? ""
+            let cacheKey = "\(ownerID?.uuidString ?? "default")|\(key(identifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: scope))"
             if caching {
                 guard prefetchTasks[cacheKey] == nil else { continue }
                 prefetchTasks[cacheKey] = Task.detached(priority: .utility) { [self] in
                     _ = await image(localIdentifier: identifier, targetPixelSize: targetPixelSize,
-                                    contentMode: contentMode, coversTarget: coversTarget, allowsNetwork: false)
+                                    contentMode: contentMode, coversTarget: coversTarget, allowsNetwork: false, cacheScope: scope)
                 }
             } else {
                 prefetchTasks.removeValue(forKey: cacheKey)?.cancel()

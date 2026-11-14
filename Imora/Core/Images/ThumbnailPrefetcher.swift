@@ -13,11 +13,11 @@ final class ThumbnailPrefetcher {
     private enum Source: Hashable {
         case remote(URL)
         /// Device-only: warm only the locally available derivative.
-        case local(String)
+        case local(String, String)
         /// device copy of a server asset: rendered from the library when it
         /// has it, never downloaded for a tile the server can serve. kept
         /// apart because the caching manager only serves matching options.
-        case paired(String)
+        case paired(String, String)
     }
 
     private struct Warmed: Hashable {
@@ -41,6 +41,7 @@ final class ThumbnailPrefetcher {
     /// moving window diffs by index arithmetic: only the assets entering or
     /// leaving it are looked at, never a url per asset of the whole window.
     private var warmed: [Warmed] = []
+    private let ownerID = UUID()
     private weak var windowClient: ImoraClient?
     private var rowAssetCounts: [String: Int] = [:]
     private var rowCountsVersion = -1
@@ -109,7 +110,7 @@ final class ThumbnailPrefetcher {
             if let reusable, reusable.contains(index) {
                 source = warmed[index - reusable.lowerBound].source
             } else {
-                source = Self.source(of: assets[index], client: client, backup: backup)
+                source = Self.source(of: assets[index], client: client, backup: backup, pixels: self.targetPixelSize)
             }
             // photokit has one caching lane, so only server tiles split.
             let isDecoded: Bool
@@ -156,7 +157,7 @@ final class ThumbnailPrefetcher {
     /// viewer pages a flat list and picks its own thumbnail size.
     func warm(remote: Set<URL>, local: Set<String>) {
         let entries = remote.map { Warmed(source: .remote($0), isDecoded: true) }
-            + local.map { Warmed(source: .local($0), isDecoded: true) }
+            + local.map { Warmed(source: .local($0, ""), isDecoded: true) }
         let (start, stop) = Self.difference(from: warmed, to: entries)
         window = nil
         windowVersion = -1
@@ -183,12 +184,14 @@ final class ThumbnailPrefetcher {
 
     /// tiles render the device copy when one is paired, so warm the same
     /// source, with the same options, the tile will ask for.
-    private static func source(of asset: Asset, client: ImoraClient, backup: BackupManager?) -> Source {
+    private static func source(of asset: Asset, client: ImoraClient, backup: BackupManager?, pixels: CGFloat) -> Source {
+        let scope = AssetThumbnailSource.prefetchScope(accountKey: client.offlineAccountKey,
+            version: asset.localImageVersion ?? asset.thumbhash, pixels: pixels)
         if let localIdentifier = asset.localIdentifier {
-            return .local(localIdentifier)
+            return .local(localIdentifier, scope)
         }
         if let localIdentifier = backup?.localIdentifierByRemoteId[asset.id] {
-            return .paired(localIdentifier)
+            return .paired(localIdentifier, scope)
         }
         return .remote(client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash))
     }
@@ -203,8 +206,8 @@ final class ThumbnailPrefetcher {
         guard !start.isEmpty || !stop.isEmpty else { return }
         var decoded: (start: [URL], stop: [URL]) = ([], [])
         var data: (start: [URL], stop: [URL]) = ([], [])
-        var local: (start: [String], stop: [String]) = ([], [])
-        var paired: (start: [String], stop: [String]) = ([], [])
+        var local: (start: [String: String], stop: [String: String]) = ([:], [:])
+        var paired: (start: [String: String], stop: [String: String]) = ([:], [:])
         for (entries, isStart) in [(stop, false), (start, true)] {
             for entry in entries {
                 switch entry.source {
@@ -214,10 +217,10 @@ final class ThumbnailPrefetcher {
                     } else {
                         isStart ? data.start.append(url) : data.stop.append(url)
                     }
-                case .local(let identifier):
-                    isStart ? local.start.append(identifier) : local.stop.append(identifier)
-                case .paired(let identifier):
-                    isStart ? paired.start.append(identifier) : paired.stop.append(identifier)
+                case .local(let identifier, let scope):
+                    if isStart { local.start[identifier] = scope } else { local.stop[identifier] = scope }
+                case .paired(let identifier, let scope):
+                    if isStart { paired.start[identifier] = scope } else { paired.stop[identifier] = scope }
                 }
             }
         }
@@ -237,23 +240,25 @@ final class ThumbnailPrefetcher {
         syncLocal(start: paired.start, stop: paired.stop, allowsNetwork: false)
     }
 
-    private func syncLocal(start: [String], stop: [String], allowsNetwork: Bool) {
+    private func syncLocal(start: [String: String], stop: [String: String], allowsNetwork: Bool) {
         if !stop.isEmpty {
             LocalImageLoader.shared.stopCaching(
-                localIdentifiers: stop,
+                localIdentifiers: Array(stop.keys),
                 targetPixelSize: targetPixelSize,
                 contentMode: localContentMode,
                 coversTarget: localCoversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScopes: stop, ownerID: ownerID
             )
         }
         if !start.isEmpty {
             LocalImageLoader.shared.startCaching(
-                localIdentifiers: start,
+                localIdentifiers: Array(start.keys),
                 targetPixelSize: targetPixelSize,
                 contentMode: localContentMode,
                 coversTarget: localCoversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScopes: start, ownerID: ownerID
             )
         }
     }
