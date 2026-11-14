@@ -2,12 +2,13 @@ import Darwin
 import Foundation
 
 /// A small, typed record of background runtime. This API deliberately accepts
-/// no identifiers, URLs, filenames, messages, Error values, or userInfo.
+/// no account/photo identifiers, URLs, filenames, messages, Error values, or userInfo.
 @MainActor
 final class BackgroundTaskDiagnostics {
     static let shared = BackgroundTaskDiagnostics(fileURL: FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appending(path: "imora/background-diagnostics.json"))
+        .appending(path: "imora/background-diagnostics.json"),
+        environmentProvider: { BackgroundRuntimeResources.capture() })
 
     nonisolated enum Phase: String, Codable, Sendable {
         case idle, scanning, hashing, checking, uploading, done, error, cancelled
@@ -53,6 +54,23 @@ final class BackgroundTaskDiagnostics {
         let lowPowerMode: Bool
         let thermalState: ThermalState
         let protectedDataAvailable: Bool
+        let residentMemoryBytes: Int64?
+        /// Remaining headroom to this process's dirty-memory limit, not free RAM.
+        let availableMemoryBytes: Int64?
+        let availableDiskBytes: Int64?
+        let processIdentifier: Int32?
+
+        init(lowPowerMode: Bool, thermalState: ThermalState, protectedDataAvailable: Bool,
+             residentMemoryBytes: Int64? = nil, availableMemoryBytes: Int64? = nil,
+             availableDiskBytes: Int64? = nil, processIdentifier: Int32? = nil) {
+            self.lowPowerMode = lowPowerMode
+            self.thermalState = thermalState
+            self.protectedDataAvailable = protectedDataAvailable
+            self.residentMemoryBytes = residentMemoryBytes.flatMap { $0 >= 0 ? $0 : nil }
+            self.availableMemoryBytes = availableMemoryBytes.flatMap { $0 >= 0 ? $0 : nil }
+            self.availableDiskBytes = availableDiskBytes.flatMap { $0 >= 0 ? $0 : nil }
+            self.processIdentifier = processIdentifier.flatMap { $0 > 0 ? $0 : nil }
+        }
     }
 
     nonisolated struct Event: Codable, Equatable, Sendable {
@@ -68,20 +86,29 @@ final class BackgroundTaskDiagnostics {
         let environment: Environment?
     }
 
-    private struct Document: Codable {
-        let schemaVersion: Int
+    nonisolated struct PreviousAttempt: Codable, Equatable, Sendable {
         let attemptID: UUID
         let events: [Event]
     }
 
+    private struct Document: Codable {
+        let schemaVersion: Int
+        let attemptID: UUID
+        let events: [Event]
+        let previousAttempt: PreviousAttempt?
+    }
+
     private static let maximumEvents = 64
+    private static let maximumPreviousEvents = 8
     private static let maximumBytes = 32 * 1_024
     private static let progressWriteInterval: TimeInterval = 5
 
     private let fileURL: URL?
     private let clock: () -> TimeInterval
+    private let environmentProvider: (() -> Environment?)?
     private(set) var attemptID: UUID?
     private(set) var events: [Event] = []
+    private(set) var previousAttempt: PreviousAttempt?
     private var startedAt: TimeInterval?
     private var lastObservedTime: TimeInterval?
     private var lastPersistedAt: TimeInterval?
@@ -94,13 +121,19 @@ final class BackgroundTaskDiagnostics {
 
     /// The default is memory-only. Tests explicitly inject their temporary URL;
     /// only shared opts into the app's protected persistent destination.
-    init(fileURL: URL? = nil, clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    init(fileURL: URL? = nil, clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         environmentProvider: (() -> Environment?)? = nil) {
         self.fileURL = fileURL
         self.clock = clock
+        self.environmentProvider = environmentProvider
         load()
     }
 
     func beginAttempt(phase: Phase = .idle) {
+        if let attemptID, !events.isEmpty {
+            previousAttempt = PreviousAttempt(attemptID: attemptID,
+                events: Array(events.suffix(Self.maximumPreviousEvents)))
+        }
         attemptID = UUID()
         events = []
         lastObservedTime = nil
@@ -150,8 +183,9 @@ final class BackgroundTaskDiagnostics {
             elapsedSeconds: max(0, now - startedAt), progress: latestProgress,
             callbackAgeSeconds: lastCallbackAt.map { max(0, now - $0) },
             advanceAgeSeconds: lastAdvanceAt.map { max(0, now - $0) },
-            success: success, failure: failure, environment: environment))
-        if events.count > Self.maximumEvents { events.removeFirst(events.count - Self.maximumEvents) }
+            success: success, failure: failure, environment: sampledEnvironment(explicit: environment)))
+        let currentLimit = Self.maximumEvents - (previousAttempt?.events.count ?? 0)
+        if events.count > currentLimit { events.removeFirst(events.count - currentLimit) }
         lastPersistedAt = now
         persist()
     }
@@ -164,6 +198,19 @@ final class BackgroundTaskDiagnostics {
         return now
     }
 
+    private func sampledEnvironment(explicit: Environment?) -> Environment? {
+        // This is reached only after progress coalescing, never on every raw
+        // callback. Explicit lifecycle context keeps its own power/lock state.
+        let sampled = environmentProvider?()
+        guard let explicit else { return sampled }
+        return Environment(lowPowerMode: explicit.lowPowerMode, thermalState: explicit.thermalState,
+            protectedDataAvailable: explicit.protectedDataAvailable,
+            residentMemoryBytes: explicit.residentMemoryBytes ?? sampled?.residentMemoryBytes,
+            availableMemoryBytes: explicit.availableMemoryBytes ?? sampled?.availableMemoryBytes,
+            availableDiskBytes: explicit.availableDiskBytes ?? sampled?.availableDiskBytes,
+            processIdentifier: explicit.processIdentifier ?? sampled?.processIdentifier)
+    }
+
     private func load() {
         guard let fileURL,
               let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
@@ -173,16 +220,14 @@ final class BackgroundTaskDiagnostics {
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: Self.maximumBytes),
               let document = try? JSONDecoder().decode(Document.self, from: data),
-              document.schemaVersion == 1 else { return }
+              document.schemaVersion == 1 || document.schemaVersion == 2 else { return }
         attemptID = document.attemptID
-        events = document.events.suffix(Self.maximumEvents).map { event in
-            Event(sequence: max(0, event.sequence), lifecycle: event.lifecycle, phase: event.phase,
-                elapsedSeconds: Self.validAge(event.elapsedSeconds) ?? 0,
-                progress: event.progress.map { ProgressSnapshot(completed: $0.completed, total: $0.total) },
-                callbackAgeSeconds: Self.validAge(event.callbackAgeSeconds),
-                advanceAgeSeconds: Self.validAge(event.advanceAgeSeconds),
-                success: event.success, failure: event.failure, environment: event.environment)
+        if let previous = document.previousAttempt {
+            previousAttempt = PreviousAttempt(attemptID: previous.attemptID,
+                events: previous.events.suffix(Self.maximumPreviousEvents).map { Self.sanitized($0) })
         }
+        let currentLimit = Self.maximumEvents - (previousAttempt?.events.count ?? 0)
+        events = document.events.suffix(currentLimit).map { Self.sanitized($0) }
         // A restored record stays inspectable without appending a different
         // process's clock to it. Only an explicit new attempt starts recording.
     }
@@ -192,15 +237,29 @@ final class BackgroundTaskDiagnostics {
         return max(0, age)
     }
 
+    private static func sanitized(_ event: Event) -> Event {
+        let environment = event.environment.map {
+            Environment(lowPowerMode: $0.lowPowerMode, thermalState: $0.thermalState,
+                protectedDataAvailable: $0.protectedDataAvailable, residentMemoryBytes: $0.residentMemoryBytes,
+                availableMemoryBytes: $0.availableMemoryBytes, availableDiskBytes: $0.availableDiskBytes,
+                processIdentifier: $0.processIdentifier)
+        }
+        return Event(sequence: max(0, event.sequence), lifecycle: event.lifecycle, phase: event.phase,
+            elapsedSeconds: validAge(event.elapsedSeconds) ?? 0,
+            progress: event.progress.map { ProgressSnapshot(completed: $0.completed, total: $0.total) },
+            callbackAgeSeconds: validAge(event.callbackAgeSeconds), advanceAgeSeconds: validAge(event.advanceAgeSeconds),
+            success: event.success, failure: event.failure, environment: environment)
+    }
+
     private func persist() {
         guard let fileURL, let attemptID else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         do {
-            var data = try encoder.encode(Document(schemaVersion: 1, attemptID: attemptID, events: events))
+            var data = try encoder.encode(Document(schemaVersion: 2, attemptID: attemptID, events: events, previousAttempt: previousAttempt))
             while data.count > Self.maximumBytes, events.count > 1 {
                 events.removeFirst()
-                data = try encoder.encode(Document(schemaVersion: 1, attemptID: attemptID, events: events))
+                data = try encoder.encode(Document(schemaVersion: 2, attemptID: attemptID, events: events, previousAttempt: previousAttempt))
             }
             guard data.count <= Self.maximumBytes else { return }
             let directory = fileURL.deletingLastPathComponent()

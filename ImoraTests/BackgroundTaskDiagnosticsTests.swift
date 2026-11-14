@@ -124,6 +124,14 @@ final class BackgroundTaskDiagnosticsTests: XCTestCase {
         XCTAssertNil(first.callbackAgeSeconds)
         XCTAssertNil(first.advanceAgeSeconds)
         XCTAssertNil(first.failure)
+        XCTAssertEqual(reloaded.previousAttempt?.attemptID, oldAttempt)
+        XCTAssertEqual(reloaded.previousAttempt?.events.last?.lifecycle, .expired)
+        XCTAssertEqual(reloaded.previousAttempt?.events.last?.progress?.completed, 4)
+        now = 55
+        diagnostics.record(.progress, phase: .hashing, progress: .init(completed: 1, total: 10))
+        let afterProgress = BackgroundTaskDiagnostics(fileURL: url)
+        XCTAssertEqual(afterProgress.previousAttempt?.attemptID, oldAttempt)
+        XCTAssertEqual(afterProgress.previousAttempt?.events.last?.lifecycle, .expired)
     }
 
     func testPersistedSchemaHasOnlyApprovedTypedFields() throws {
@@ -133,16 +141,18 @@ final class BackgroundTaskDiagnosticsTests: XCTestCase {
         diagnostics.beginAttempt(phase: .uploading)
         diagnostics.record(.completed, phase: .error, progress: .init(completed: 1, total: 2), success: false,
             failure: .init(category: .photoKit, code: 3),
-            environment: .init(lowPowerMode: true, thermalState: .serious, protectedDataAvailable: false))
+            environment: .init(lowPowerMode: true, thermalState: .serious, protectedDataAvailable: false,
+                residentMemoryBytes: 200, availableMemoryBytes: 300, availableDiskBytes: 400, processIdentifier: 42))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        XCTAssertTrue(Set(object.keys).isSubset(of: ["schemaVersion", "attemptID", "events"]))
+        XCTAssertTrue(Set(object.keys).isSubset(of: ["schemaVersion", "attemptID", "events", "previousAttempt"]))
         let events = try XCTUnwrap(object["events"] as? [[String: Any]])
         let event = try XCTUnwrap(events.last)
         XCTAssertTrue(Set(event.keys).isSubset(of: ["sequence", "lifecycle", "phase", "elapsedSeconds", "progress", "callbackAgeSeconds", "advanceAgeSeconds", "success", "failure", "environment"]))
         let failure = try XCTUnwrap(event["failure"] as? [String: Any])
         XCTAssertEqual(Set(failure.keys), ["category", "code"])
         let environment = try XCTUnwrap(event["environment"] as? [String: Any])
-        XCTAssertEqual(Set(environment.keys), ["lowPowerMode", "thermalState", "protectedDataAvailable"])
+        XCTAssertEqual(Set(environment.keys), ["lowPowerMode", "thermalState", "protectedDataAvailable",
+            "residentMemoryBytes", "availableMemoryBytes", "availableDiskBytes", "processIdentifier"])
         let progress = try XCTUnwrap(event["progress"] as? [String: Any])
         XCTAssertEqual(Set(progress.keys), ["completed", "total"])
     }
@@ -156,7 +166,9 @@ final class BackgroundTaskDiagnosticsTests: XCTestCase {
         now = -1
         diagnostics.record(.progress, phase: .hashing, progress: .init(completed: -4, total: -10))
         now = .infinity
-        diagnostics.record(.expired, phase: .hashing, success: false)
+        diagnostics.record(.expired, phase: .hashing, success: false,
+            environment: .init(lowPowerMode: false, thermalState: .unknown, protectedDataAvailable: true,
+                residentMemoryBytes: -1, availableMemoryBytes: -2, availableDiskBytes: -3, processIdentifier: -4))
         let reloaded = BackgroundTaskDiagnostics(fileURL: url)
         let event = try XCTUnwrap(reloaded.events.last)
         XCTAssertEqual(event.lifecycle, .expired)
@@ -165,6 +177,10 @@ final class BackgroundTaskDiagnosticsTests: XCTestCase {
         XCTAssertEqual(event.progress?.total, 1)
         XCTAssertEqual(event.callbackAgeSeconds, 0)
         XCTAssertNil(event.advanceAgeSeconds)
+        XCTAssertNil(event.environment?.residentMemoryBytes)
+        XCTAssertNil(event.environment?.availableMemoryBytes)
+        XCTAssertNil(event.environment?.availableDiskBytes)
+        XCTAssertNil(event.environment?.processIdentifier)
     }
 
     func testOversizedExistingFileIsNotLoadedEvenWhenItContainsValidJSON() throws {
@@ -178,5 +194,110 @@ final class BackgroundTaskDiagnosticsTests: XCTestCase {
         let reloaded = BackgroundTaskDiagnostics(fileURL: url)
         XCTAssertNil(reloaded.attemptID)
         XCTAssertTrue(reloaded.events.isEmpty)
+    }
+
+    func testRetryAfterProcessRestartRetainsAnUnterminatedAttemptWithoutInventingAFailure() throws {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var now: TimeInterval = 100
+        let firstProcess = BackgroundTaskDiagnostics(fileURL: url, clock: { now })
+        firstProcess.beginAttempt(phase: .uploading)
+        let firstID = try XCTUnwrap(firstProcess.attemptID)
+        now = 444.664
+        firstProcess.record(.progress, phase: .uploading, progress: .init(completed: 800, total: 1_000),
+            environment: .init(lowPowerMode: false, thermalState: .nominal, protectedDataAvailable: true, processIdentifier: 41))
+        now = 1_000
+        let nextProcess = BackgroundTaskDiagnostics(fileURL: url, clock: { now })
+        nextProcess.beginAttempt(phase: .scanning)
+        let reloaded = BackgroundTaskDiagnostics(fileURL: url)
+        XCTAssertEqual(reloaded.previousAttempt?.attemptID, firstID)
+        let prior = try XCTUnwrap(reloaded.previousAttempt?.events.last)
+        XCTAssertEqual(prior.lifecycle, .progress)
+        XCTAssertEqual(prior.elapsedSeconds, 344.664, accuracy: 0.0001)
+        XCTAssertEqual(prior.environment?.processIdentifier, 41)
+        XCTAssertNil(prior.failure)
+        XCTAssertNil(prior.success)
+        XCTAssertEqual(reloaded.events.last?.lifecycle, .submitted)
+        XCTAssertEqual(reloaded.events.last?.elapsedSeconds, 0)
+    }
+
+    func testCurrentAndPreviousHistoriesShareTheSameEventAndByteBudgets() throws {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var now: TimeInterval = 0
+        let diagnostics = BackgroundTaskDiagnostics(fileURL: url, clock: { now })
+        diagnostics.beginAttempt(phase: .hashing)
+        for index in 1...90 {
+            now = Double(index)
+            diagnostics.record(.backgrounded, phase: .hashing)
+        }
+        diagnostics.record(.expired, phase: .hashing, success: false)
+        let oldID = try XCTUnwrap(diagnostics.attemptID)
+        now = 200
+        diagnostics.beginAttempt(phase: .uploading)
+        for index in 1...90 {
+            now = 200 + Double(index)
+            diagnostics.record(.foregrounded, phase: .uploading,
+                environment: .init(lowPowerMode: false, thermalState: .fair, protectedDataAvailable: true,
+                    residentMemoryBytes: 200_000_000, availableMemoryBytes: 800_000_000,
+                    availableDiskBytes: 60_000_000_000, processIdentifier: 42))
+        }
+        let reloaded = BackgroundTaskDiagnostics(fileURL: url)
+        let previous = try XCTUnwrap(reloaded.previousAttempt)
+        XCTAssertEqual(previous.attemptID, oldID)
+        XCTAssertEqual(previous.events.count, 8)
+        XCTAssertEqual(previous.events.last?.lifecycle, .expired)
+        XCTAssertLessThanOrEqual(reloaded.events.count + previous.events.count, 64)
+        XCTAssertLessThanOrEqual(try Data(contentsOf: url).count, 32 * 1_024)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let previousJSON = try XCTUnwrap(object["previousAttempt"] as? [String: Any])
+        XCTAssertEqual(Set(previousJSON.keys), ["attemptID", "events"])
+    }
+
+    func testResourceProviderIsSampledOnlyForWrittenEventsAndMergesExplicitLifecycleContext() throws {
+        var now: TimeInterval = 0
+        var samples = 0
+        let diagnostics = BackgroundTaskDiagnostics(clock: { now }, environmentProvider: {
+            samples += 1
+            return .init(lowPowerMode: false, thermalState: .nominal, protectedDataAvailable: true,
+                residentMemoryBytes: Int64(samples * 100), availableMemoryBytes: 900,
+                availableDiskBytes: 1_000, processIdentifier: 42)
+        })
+        diagnostics.beginAttempt(phase: .hashing)
+        XCTAssertEqual(samples, 1)
+        for index in 1...4 {
+            now = Double(index)
+            diagnostics.record(.progress, phase: .hashing, progress: .init(completed: Int64(index), total: 10))
+        }
+        XCTAssertEqual(samples, 1)
+        now = 5
+        diagnostics.record(.progress, phase: .hashing, progress: .init(completed: 5, total: 10))
+        XCTAssertEqual(samples, 2)
+        XCTAssertEqual(diagnostics.events.last?.environment?.residentMemoryBytes, 200)
+        now = 6
+        diagnostics.record(.expired, phase: .hashing,
+            environment: .init(lowPowerMode: true, thermalState: .serious, protectedDataAvailable: false))
+        XCTAssertEqual(samples, 3)
+        let environment = try XCTUnwrap(diagnostics.events.last?.environment)
+        XCTAssertTrue(environment.lowPowerMode)
+        XCTAssertEqual(environment.thermalState, .serious)
+        XCTAssertFalse(environment.protectedDataAvailable)
+        XCTAssertEqual(environment.residentMemoryBytes, 300)
+        XCTAssertEqual(environment.processIdentifier, 42)
+    }
+
+    func testLegacySchemaOneLoadsAndItsRecordSurvivesTheFirstSchemaTwoRetry() throws {
+        let url = fixtureURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let oldID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let legacy = #"{"schemaVersion":1,"attemptID":"00000000-0000-0000-0000-000000000001","events":[{"sequence":1,"lifecycle":"expired","phase":"hashing","elapsedSeconds":12,"success":false}]}"#
+        try Data(legacy.utf8).write(to: url)
+        let diagnostics = BackgroundTaskDiagnostics(fileURL: url, clock: { 100 })
+        XCTAssertEqual(diagnostics.attemptID, oldID)
+        diagnostics.beginAttempt(phase: .scanning)
+        let reloaded = BackgroundTaskDiagnostics(fileURL: url)
+        XCTAssertEqual(reloaded.previousAttempt?.attemptID, oldID)
+        XCTAssertEqual(reloaded.previousAttempt?.events.last?.lifecycle, .expired)
     }
 }
