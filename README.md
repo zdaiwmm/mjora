@@ -6,7 +6,7 @@ This modified version adds Simplified Chinese, immutable account/request boundar
 
 The repository starts from a reviewed publication snapshot. Local implementation/audit history containing private server settings is not published. The app's display name and original upstream notices are retained.
 
-Local validation: **83 tests, 82 passed, 1 physical-device check skipped, 0 failures**, including local Immich 3.4.1 integration and English/Chinese UI flows. See [validation results](docs/validation/2026-11-14-implementation-validation.md) and [publication notes](PUBLICATION.md). Physical-device, signed share-extension and system Photos confirmation gates remain open.
+Latest local validation: **110 tests, 109 passed, 1 physical-device check skipped, 0 failures**, including manual LAN routing, local Immich 3.4.1 integration and English/Chinese UI flows. See [manual LAN validation](docs/validation/2026-11-14-manual-lan-validation.md), [earlier implementation validation](docs/validation/2026-11-14-implementation-validation.md), and [publication notes](PUBLICATION.md). Physical-device, signed share-extension and system Photos confirmation gates remain open.
 
 ## Build and test
 
@@ -66,7 +66,7 @@ A native iOS client for your self-hosted photos. Supports [Imora](https://imora.
 
 - Guarded uploads while iOS grants the app execution time, with protected recovery records for resuming after interruptions. Sensitive uploads reject redirects; daemon-owned background continuation is not currently enabled.
 - Resumable uploads in chunks on Imora.
-- A local server address used on your home Wi-Fi networks, with the external address everywhere else.
+- A saved local server address, selectable from Backup or Local Network without reading the Wi-Fi name. Builds with Wi-Fi-name access can also select it automatically on saved networks. Manual LAN failures do not silently fall back to the external address.
 - Share extension that uploads photos and videos from any app.
 
 ### Account and administration

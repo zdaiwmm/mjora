@@ -1,8 +1,8 @@
 import Foundation
 import SwiftUI
 
-/// a second address for the server, used on the listed wi-fi networks so
-/// backups and browsing at home stay on the local network.
+/// A saved address for the same server, selected automatically on listed
+/// Wi-Fi networks or manually after confirmation without reading an SSID.
 struct LocalNetworkScreen: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
@@ -30,8 +30,10 @@ struct LocalNetworkScreen: View {
                     Label("Use Local Address", systemImage: "wifi")
                 }
             } footer: {
-                Text("On the Wi-Fi networks below, Imora connects to the local address when the server answers there, and to \(session.client?.apiURL.host() ?? String(localized: "the server")) everywhere else.")
+                Text("Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache.")
             }
+
+            ManualServerRouteSection(showsConfigurationLink: false)
 
             if isEnabled {
                 Section {
@@ -82,12 +84,8 @@ struct LocalNetworkScreen: View {
                     Text("Wi-Fi Networks")
                 } footer: {
                     Text(router.isLocationDenied
-                        ? "Imora needs precise location access to read the Wi-Fi name. Without it, the external address is always used."
-                        : "Reading the Wi-Fi name needs location access. Wi-Fi names and ping responses select a saved route; they do not verify server identity. HTTP sends photos and account credentials without transport encryption.")
-                }
-
-                Section {
-                    LabeledContent("Connected Through", value: statusText)
+                        ? String(localized: "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi.")
+                        : String(localized: "Reading the Wi-Fi name needs location access. Wi-Fi names and ping responses select a saved route; they do not verify server identity. HTTP sends photos and account credentials without transport encryption."))
                 }
             }
         }
@@ -113,14 +111,6 @@ struct LocalNetworkScreen: View {
             if !focused { saveAddress() }
         }
         .onDisappear(perform: saveAddress)
-    }
-
-    private var statusText: String {
-        switch router.status {
-        case .off, .external: String(localized: "External Address")
-        case .checking: String(localized: "Checking...")
-        case .local: String(localized: "Local Address")
-        }
     }
 
     private func edit(_ change: (inout LocalServerConfig) -> Void) {

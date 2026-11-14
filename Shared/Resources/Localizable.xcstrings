@@ -5522,6 +5522,23 @@
       },
       "comment": "Imora/Features/Search/SearchControls.swift:203"
     },
+    "Checking Local Address...": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking Local Address..."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查局域网地址…"
+          }
+        }
+      }
+    },
     "Checking backup status...": {
       "extractionState": "manual",
       "localizations": {
@@ -6115,6 +6132,23 @@
       },
       "comment": "Imora/Features/Admin/AdminModels.swift:356"
     },
+    "Configure Local Address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure Local Address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置局域网地址"
+          }
+        }
+      }
+    },
     "Confirm PIN": {
       "extractionState": "manual",
       "localizations": {
@@ -6236,6 +6270,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已确认：%lld。失败：%lld。"
+          }
+        }
+      }
+    },
+    "Connect to Wi-Fi to select the local address.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect to Wi-Fi to select the local address."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接 Wi-Fi 后即可选择局域网地址。"
           }
         }
       }
@@ -10128,6 +10179,23 @@
       },
       "comment": "Imora/Features/Admin/AdminUserDetailScreen.swift:316"
     },
+    "Current Connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前连接"
+          }
+        }
+      }
+    },
     "Current password": {
       "extractionState": "manual",
       "localizations": {
@@ -11775,6 +11843,23 @@
         }
       },
       "comment": "Imora/Features/Timeline/BackupStatusBanner.swift:123"
+    },
+    "Enable and save a local address to select it here.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable and save a local address to select it here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用并保存局域网地址后，即可在此选择。"
+          }
+        }
+      }
     },
     "End": {
       "extractionState": "manual",
@@ -13447,6 +13532,23 @@
         }
       },
       "comment": "Imora/Features/Backup/BackupScreen.swift:89"
+    },
+    "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora 需要精确位置权限才能读取 Wi-Fi 名称并自动选择地址。连接 Wi-Fi 后，仍可点按“立即使用局域网地址”。"
+          }
+        }
+      }
     },
     "Imora needs precise location access to read the Wi-Fi name. Without it, the external address is always used.": {
       "extractionState": "manual",
@@ -15139,6 +15241,23 @@
       },
       "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:122\nImora/Features/Settings/LocalNetworkScreen.swift:48"
     },
+    "Local Address (Manual)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Address (Manual)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网地址（手动）"
+          }
+        }
+      }
+    },
     "Local Network": {
       "extractionState": "manual",
       "localizations": {
@@ -15156,6 +15275,23 @@
         }
       },
       "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:94\nImora/Features/Settings/SettingsView.swift:145"
+    },
+    "Local address unavailable. The connection was not changed. Check the saved address and Wi-Fi connection.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local address unavailable. The connection was not changed. Check the saved address and Wi-Fi connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网地址不可用，连接未更改。请检查已保存的地址和 Wi-Fi 连接。"
+          }
+        }
+      }
     },
     "Location": {
       "extractionState": "manual",
@@ -15372,6 +15508,23 @@
         }
       },
       "comment": "Imora/Features/Admin/AdminScreen.swift:31"
+    },
+    "Manual choices reset when the network, account, or local settings change, or when you return to the app. Manual local connections do not switch to the external address on failure.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual choices reset when the network, account, or local settings change, or when you return to the app. Manual local connections do not switch to the external address on failure."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络、账号或局域网设置变化，或返回 App 时，手动选择会重置。手动局域网连接失败时，不会自动切换到外网地址。"
+          }
+        }
+      }
     },
     "Map": {
       "extractionState": "manual",
@@ -24201,6 +24354,23 @@
       },
       "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3233"
     },
+    "The local address did not answer. The connection was not changed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local address did not answer. The connection was not changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网地址未响应，连接未更改。"
+          }
+        }
+      }
+    },
     "The locked folder PIN is removed and the user can set up a new one.": {
       "extractionState": "manual",
       "localizations": {
@@ -24218,6 +24388,23 @@
         }
       },
       "comment": "Imora/Features/Admin/AdminUserActions.swift:106"
+    },
+    "The network, account, or settings changed. The local address was not selected.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The network, account, or settings changed. The local address was not selected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络、账号或设置已变化，未选择局域网地址。"
+          }
+        }
+      }
     },
     "The others are deleted for good.": {
       "extractionState": "manual",
@@ -26485,6 +26672,40 @@
       },
       "comment": "Imora/Features/Locked/PinEntryView.swift:62"
     },
+    "Use %@ on this Wi-Fi network? A ping checks reachability only and does not verify server identity.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use %@ on this Wi-Fi network? A ping checks reachability only and does not verify server identity."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要在此 Wi-Fi 网络中使用 %@ 吗？连通性检查只确认地址可达，不会验证服务器身份。"
+          }
+        }
+      }
+    },
+    "Use %@ on this Wi-Fi network? HTTP sends photos and account credentials without encryption. A ping checks reachability only and does not verify server identity.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use %@ on this Wi-Fi network? HTTP sends photos and account credentials without encryption. A ping checks reachability only and does not verify server identity."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要在此 Wi-Fi 网络中使用 %@ 吗？HTTP 会以未加密方式传输照片和账号凭据。连通性检查只确认地址可达，不会验证服务器身份。"
+          }
+        }
+      }
+    },
     "Use Apple Maps?": {
       "extractionState": "manual",
       "localizations": {
@@ -26539,6 +26760,23 @@
       },
       "comment": "Imora/Features/Map/MapScreen.swift:391"
     },
+    "Use External Address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use External Address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用外网地址"
+          }
+        }
+      }
+    },
     "Use Local Address": {
       "extractionState": "manual",
       "localizations": {
@@ -26556,6 +26794,57 @@
         }
       },
       "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:30"
+    },
+    "Use Local Now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Local Now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即使用局域网地址"
+          }
+        }
+      }
+    },
+    "Use This Local Address?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use This Local Address?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用此局域网地址？"
+          }
+        }
+      }
+    },
+    "Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在下方设置自动使用局域网地址的 Wi-Fi 网络，也可点按“立即使用局域网地址”，无需读取 Wi-Fi 名称。两个地址共用同一账号和照片缓存。"
+          }
+        }
+      }
     },
     "Used to show how old %@ is in a photo.": {
       "extractionState": "manual",

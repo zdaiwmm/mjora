@@ -1589,5 +1589,22 @@
   "Refresh Pending Shares": "刷新待处理分享",
   "Pending Shares": "待处理分享",
   "These local temporary copies include pending shares from all accounts on this device. Only the account that created a share can resume it while signed in. Shares needing attention must be shared again from their original source. Discarding a pending share cannot recall bytes already sent to the server.": "这些本地临时副本包含此设备上所有账号的待处理分享。只有创建该分享的账号登录后才能继续上传。需要处理的分享必须从原始来源重新分享。丢弃待处理分享无法撤回已发送到服务器的数据。",
-  "%@.": "%@。"
+  "%@.": "%@。",
+  "Current Connection": "当前连接",
+  "Use Local Now": "立即使用局域网地址",
+  "Checking Local Address...": "正在检查局域网地址…",
+  "Use External Address": "使用外网地址",
+  "Configure Local Address": "配置局域网地址",
+  "Local Address (Manual)": "局域网地址（手动）",
+  "Enable and save a local address to select it here.": "启用并保存局域网地址后，即可在此选择。",
+  "Connect to Wi-Fi to select the local address.": "连接 Wi-Fi 后即可选择局域网地址。",
+  "Manual choices reset when the network, account, or local settings change, or when you return to the app. Manual local connections do not switch to the external address on failure.": "网络、账号或局域网设置变化，或返回 App 时，手动选择会重置。手动局域网连接失败时，不会自动切换到外网地址。",
+  "Use This Local Address?": "使用此局域网地址？",
+  "Use %@ on this Wi-Fi network? HTTP sends photos and account credentials without encryption. A ping checks reachability only and does not verify server identity.": "要在此 Wi-Fi 网络中使用 %@ 吗？HTTP 会以未加密方式传输照片和账号凭据。连通性检查只确认地址可达，不会验证服务器身份。",
+  "Use %@ on this Wi-Fi network? A ping checks reachability only and does not verify server identity.": "要在此 Wi-Fi 网络中使用 %@ 吗？连通性检查只确认地址可达，不会验证服务器身份。",
+  "Local address unavailable. The connection was not changed. Check the saved address and Wi-Fi connection.": "局域网地址不可用，连接未更改。请检查已保存的地址和 Wi-Fi 连接。",
+  "The local address did not answer. The connection was not changed.": "局域网地址未响应，连接未更改。",
+  "The network, account, or settings changed. The local address was not selected.": "网络、账号或设置已变化，未选择局域网地址。",
+  "Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache.": "可在下方设置自动使用局域网地址的 Wi-Fi 网络，也可点按“立即使用局域网地址”，无需读取 Wi-Fi 名称。两个地址共用同一账号和照片缓存。",
+  "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi.": "Imora 需要精确位置权限才能读取 Wi-Fi 名称并自动选择地址。连接 Wi-Fi 后，仍可点按“立即使用局域网地址”。"
 }

@@ -22,6 +22,7 @@ struct BackupScreen: View {
 
     var body: some View {
         List {
+            ManualServerRouteSection()
             if let backup = session.backup {
                 autoSection(backup)
                 selectionSection(backup)

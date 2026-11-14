@@ -16,7 +16,7 @@ nonisolated struct LocalServerConfig: Codable, Equatable, Sendable {
     var networks: [String] = []
     var isEnabled = true
 
-    var isUsable: Bool { isEnabled && apiURL != nil && !networks.isEmpty }
+    var isUsable: Bool { isEnabled && apiURL.map(ServerTrustPolicy.validServerURL) == true }
 
     /// http by default: a server on the home network rarely has a certificate.
     static func apiURL(from input: String) -> URL? {
@@ -38,6 +38,7 @@ nonisolated enum ServerRoute {
     private struct Bases: Sendable {
         var external: URL
         var local: URL
+        var allowsFallback: Bool
     }
 
     private static let bases = Mutex<Bases?>(nil)
@@ -59,23 +60,20 @@ nonisolated enum ServerRoute {
         return components.url ?? url
     }
 
-    static func use(local: URL?, external: URL?) {
+    static func use(local: URL?, external: URL?, allowsFallback: Bool = true) {
         guard let local, let external else {
             bases.withLock { $0 = nil }
             return
         }
         guard ServerTrustPolicy.validServerURL(local), ServerTrustPolicy.validServerURL(external) else { return }
-        bases.withLock { $0 = Bases(external: external, local: local) }
+        bases.withLock { $0 = Bases(external: external, local: local, allowsFallback: allowsFallback) }
     }
 
     /// drops the local address when a request through it found nobody there,
     /// and says whether the request is worth sending again to the external
     /// one. a timeout may have reached the server, so only reads retry then.
     static func fallBack(from sent: URL?, after error: any Error, method: String = "GET") -> Bool {
-        guard let error = error as? URLError,
-              let sent,
-              let local = bases.withLock({ $0?.local }),
-              ServerTrustPolicy(apiURL: local).contains(sent)
+        guard let error = error as? URLError, let sent
         else { return false }
         switch error.code {
         case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
@@ -85,26 +83,37 @@ nonisolated enum ServerRoute {
         default:
             return false
         }
-        bases.withLock { $0 = nil }
+        let didFallBack = bases.withLock { current in
+            guard let route = current, route.allowsFallback,
+                  ServerTrustPolicy(apiURL: route.local).contains(sent)
+            else { return false }
+            current = nil
+            return true
+        }
+        guard didFallBack else { return false }
         Task { @MainActor in LocalServerRouter.shared.localUnreachable() }
         return true
     }
 
-    /// An explicit saved configuration, never an address learned from a redirect.
-    static func configuredLocal(for external: URL) -> URL? {
-        guard let data = UserDefaults.standard.data(forKey: "imora.localServer"),
+    /// A saved root may carry credentials only while that exact account and
+    /// local root are selected. Captured local URLs lose access on a reset.
+    static func configuredLocal(for external: URL, defaults: UserDefaults = .standard) -> URL? {
+        guard let data = defaults.data(forKey: "imora.localServer"),
               let config = try? JSONDecoder().decode(LocalServerConfig.self, from: data),
               config.server == external, config.isUsable,
               let local = config.apiURL, ServerTrustPolicy.validServerURL(local)
         else { return nil }
-        return local
+        return bases.withLock { route in
+            guard route?.external == external, route?.local == local else { return nil }
+            return local
+        }
     }
 
 }
 
-/// decides between the local and the external address. the local one is only
-/// used on a listed wi-fi network and once it answered there: an http address
-/// on somebody else's network could be anyone, and requests carry the token.
+/// The external API root stays the account identity. Automatic selection uses
+/// a saved Wi-Fi name; manual selection requires confirmation on this network.
+/// A ping proves reachability only, never the server's identity.
 @Observable
 final class LocalServerRouter {
     enum Status: Equatable {
@@ -114,26 +123,72 @@ final class LocalServerRouter {
         case local
     }
 
+    enum ManualSelectionResult: Equatable {
+        case selected
+        case unavailable
+        case unreachable
+        case superseded
+    }
+
+    private enum ManualOverride {
+        case local
+        case external
+    }
+
     static let shared = LocalServerRouter()
 
     private(set) var config: LocalServerConfig?
     private(set) var status: Status = .off
+    private(set) var isCheckingManualLocal = false
+    private(set) var selectionRevision: UInt64 = 0
+    private var manualOverride: ManualOverride?
+    private var network: String?
 
     @ObservationIgnored private var external: URL?
     @ObservationIgnored private var monitor: NWPathMonitor?
     @ObservationIgnored private var foregroundObserver: (any NSObjectProtocol)?
-    /// the wi-fi gateways, nil off wi-fi. a new value means another network,
-    /// which is when the local address has to prove itself again.
-    @ObservationIgnored private var network: String?
     @ObservationIgnored private var check: Task<Void, Never>?
-    @ObservationIgnored private let locationAccess = LocationAccess()
+    @ObservationIgnored private var locationAccess: LocationAccess?
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let monitoringEnabled: Bool
+    @ObservationIgnored private let notificationCenter: NotificationCenter
+    @ObservationIgnored private let probe: @Sendable (URLRequest) async -> Bool
+    @ObservationIgnored private let ssidProvider: @Sendable () async -> String?
 
     private static let defaultsKey = "imora.localServer"
-    private nonisolated static let probe = ControlledSession.noRedirect
+
+    init(
+        defaults: UserDefaults = .standard,
+        monitoringEnabled: Bool = true,
+        notificationCenter: NotificationCenter = .default,
+        probe: (@Sendable (URLRequest) async -> Bool)? = nil,
+        ssidProvider: (@Sendable () async -> String?)? = nil
+    ) {
+        self.defaults = defaults
+        self.monitoringEnabled = monitoringEnabled
+        self.notificationCenter = notificationCenter
+        self.probe = probe ?? Self.answers
+        self.ssidProvider = ssidProvider ?? Self.currentSSID
+    }
+
+    var isManualLocal: Bool { manualOverride == .local }
+
+    var activeEndpoint: URL? {
+        guard let external else { return nil }
+        return status == .local ? ServerRoute.resolve(external) : external
+    }
+
+    var canSelectManualLocal: Bool {
+        guard let external, let config, config.server == external,
+              config.isUsable, network != nil
+        else { return false }
+        return true
+    }
 
     func activate(external: URL) {
+        invalidateSelection()
         self.external = external
-        let stored = UserDefaults.standard.data(forKey: Self.defaultsKey)
+        let stored = defaults.data(forKey: Self.defaultsKey)
             .flatMap { try? JSONDecoder().decode(LocalServerConfig.self, from: $0) }
         config = stored?.server == external ? stored : nil
         startMonitoring()
@@ -142,10 +197,10 @@ final class LocalServerRouter {
 
     /// sign out forgets the local address along with the rest of the account.
     func deactivate() {
-        check?.cancel()
+        invalidateSelection()
         external = nil
         config = nil
-        UserDefaults.standard.removeObject(forKey: Self.defaultsKey)
+        defaults.removeObject(forKey: Self.defaultsKey)
         ServerRoute.use(local: nil, external: nil)
         status = .off
     }
@@ -154,9 +209,56 @@ final class LocalServerRouter {
         guard config.server == external, config != self.config else { return }
         self.config = config
         if let data = try? JSONEncoder().encode(config) {
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+            defaults.set(data, forKey: Self.defaultsKey)
         }
+        invalidateSelection()
         evaluate(resetting: true)
+    }
+
+    /// Called only after the user confirms this saved URL. No account request
+    /// is sent until an unauthenticated, redirect-blocking ping answers.
+    func requestManualLocal(confirmedURL: URL, revision: UInt64? = nil) async -> ManualSelectionResult {
+        guard revision == nil || revision == selectionRevision else { return .superseded }
+        guard canSelectManualLocal, let external, let config,
+              let local = config.apiURL, local == confirmedURL
+        else { return .unavailable }
+
+        check?.cancel()
+        check = nil
+        selectionRevision &+= 1
+        let revision = selectionRevision
+        let network = network
+        isCheckingManualLocal = true
+        // A cancelled automatic check must not leave a permanent Checking row.
+        if status == .checking { status = ServerRoute.isLocal ? .local : .external }
+        var request = URLRequest(url: local.appending(path: "server/ping"))
+        request.timeoutInterval = 3
+        let reachable = await probe(request)
+        guard !Task.isCancelled, revision == selectionRevision,
+              self.external == external, self.config == config, self.network == network
+        else {
+            if revision == selectionRevision { isCheckingManualLocal = false }
+            return .superseded
+        }
+        isCheckingManualLocal = false
+        guard reachable else { return .unreachable }
+        manualOverride = .local
+        ServerRoute.use(local: local, external: external, allowsFallback: false)
+        status = .local
+        return .selected
+    }
+
+    func useExternal() {
+        invalidateSelection()
+        manualOverride = .external
+        ServerRoute.use(local: nil, external: nil)
+        status = .external
+    }
+
+    func cancelManualSelection() {
+        guard isCheckingManualLocal else { return }
+        selectionRevision &+= 1
+        isCheckingManualLocal = false
     }
 
     func localUnreachable() {
@@ -164,53 +266,74 @@ final class LocalServerRouter {
         status = .external
     }
 
-    var isLocationDenied: Bool { locationAccess.isDenied }
+    var isLocationDenied: Bool { locationAccess?.isDenied ?? false }
 
     /// the wi-fi name needs precise location access, asked for here the
     /// first time since this is the only place that reads it on demand.
     func currentNetworkName() async -> String? {
+        if locationAccess == nil { locationAccess = LocationAccess() }
+        guard let locationAccess else { return nil }
         await locationAccess.requestIfNeeded()
-        let name = await Self.currentSSID()
+        let name = await ssidProvider()
         if name != nil { evaluate(resetting: false) }
         return name
     }
 
     private func startMonitoring() {
-        guard monitor == nil else { return }
+        if foregroundObserver == nil {
+            // Permission dialogs and Control Center only make the app inactive.
+            // A real background return invalidates this network's manual consent.
+            foregroundObserver = notificationCenter.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applicationReturnedToForeground() }
+            }
+        }
+        guard monitoringEnabled, monitor == nil else { return }
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let network = path.status == .satisfied && path.usesInterfaceType(.wifi)
                 ? path.gateways.map { "\($0)" }.joined(separator: ",")
                 : nil
-            MainActor.assumeIsolated { self?.pathChanged(network: network) }
+            MainActor.assumeIsolated { self?.networkChanged(network: network) }
         }
         monitor.start(queue: .main)
         self.monitor = monitor
-        // the name reads nil in the background, so a check that ran there
-        // gets another chance once the app is in front again.
-        foregroundObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.evaluate(resetting: false) }
-        }
     }
 
-    private func pathChanged(network: String?) {
-        guard network != self.network else { return }
+    /// Every path update invalidates manual consent, including updates whose
+    /// gateway string is unchanged. That string cannot establish identity.
+    func networkChanged(network: String?) {
         self.network = network
+        invalidateSelection()
         evaluate(resetting: true)
     }
 
-    private func evaluate(resetting: Bool) {
+    func applicationReturnedToForeground() {
+        invalidateSelection()
+        evaluate(resetting: true)
+    }
+
+    private func invalidateSelection() {
+        selectionRevision &+= 1
         check?.cancel()
-        guard let external, let config, config.isUsable, let local = config.apiURL else {
+        check = nil
+        isCheckingManualLocal = false
+        manualOverride = nil
+    }
+
+    private func evaluate(resetting: Bool) {
+        guard manualOverride == nil, !isCheckingManualLocal else { return }
+        check?.cancel()
+        guard let external, let config, config.server == external,
+              config.isUsable, let local = config.apiURL else {
             ServerRoute.use(local: nil, external: nil)
             status = config?.isEnabled == true ? .external : .off
             return
         }
-        guard network != nil else {
+        guard network != nil, !config.networks.isEmpty else {
             ServerRoute.use(local: nil, external: nil)
             status = .external
             return
@@ -219,16 +342,25 @@ final class LocalServerRouter {
             ServerRoute.use(local: nil, external: nil)
             status = .checking
         }
+        selectionRevision &+= 1
+        let revision = selectionRevision
+        let network = network
         check = Task {
-            let ssid = await Self.currentSSID()
-            guard !Task.isCancelled else { return }
+            let ssid = await ssidProvider()
+            guard !Task.isCancelled, revision == selectionRevision,
+                  self.external == external, self.config == config, self.network == network
+            else { return }
             guard let ssid, config.networks.contains(ssid) else {
                 ServerRoute.use(local: nil, external: nil)
                 status = .external
                 return
             }
-            let answers = await Self.answers(local)
-            guard !Task.isCancelled else { return }
+            var request = URLRequest(url: local.appending(path: "server/ping"))
+            request.timeoutInterval = 3
+            let answers = await probe(request)
+            guard !Task.isCancelled, revision == selectionRevision,
+                  self.external == external, self.config == config, self.network == network
+            else { return }
             ServerRoute.use(local: answers ? local : nil, external: external)
             status = answers ? .local : .external
         }
@@ -239,10 +371,8 @@ final class LocalServerRouter {
     }
 
     @concurrent
-    private nonisolated static func answers(_ apiURL: URL) async -> Bool {
-        var request = URLRequest(url: apiURL.appending(path: "server/ping"))
-        request.timeoutInterval = 3
-        guard let (_, response) = try? await probe.data(for: request) else { return false }
+    private nonisolated static func answers(_ request: URLRequest) async -> Bool {
+        guard let (_, response) = try? await ControlledSession.noRedirect.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 }
