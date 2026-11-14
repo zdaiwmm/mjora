@@ -12,7 +12,6 @@ nonisolated final class ImageLoader: Sendable {
 
     private let pipeline: ImagePipeline
     private let visibleTasks = Mutex<[UUID: ImageTask]>([:])
-    private let networkLoader: DataLoader
     private let authorization = AuthorizingDelegate()
     private let prefetcher: ImagePrefetcher
     /// fills the disk cache only. a fling usually races past what sits far
@@ -30,19 +29,6 @@ nonisolated final class ImageLoader: Sendable {
 
         let authorization = self.authorization
         var configuration = ImagePipeline.Configuration()
-        let loader: DataLoader = {
-            let config = URLSessionConfiguration.default
-            config.urlCache = nil
-            config.httpCookieStorage = nil
-            let loader = DataLoader(configuration: config)
-            loader.delegate = SafeRedirectDelegate(policyForRequest: { request in
-                guard let url = request.url, let client = authorization.client.withLock({ $0 }) else { return nil }
-                return client.context.policy(for: url, localAPIURL: ServerRoute.configuredLocal(for: client.apiURL))
-            })
-            return loader
-        }()
-        networkLoader = loader
-        configuration.dataLoader = loader
         configuration.dataCache = dataCache
         configuration.imageCache = ImageCache(costLimit: 96 << 20)
         // the sanitized key drops the thumbnail size, so one download serves
@@ -64,17 +50,13 @@ nonisolated final class ImageLoader: Sendable {
 
     /// call after login so image requests carry the token.
     func configure(client: ImoraClient?) {
-        let previous = authorization.client.withLock { value in let previous = value; value = nil; return previous }
+        authorization.client.withLock { $0 = nil }
         sweepTask.withLock { current in current?.cancel(); current = nil }
         prefetcher.stopPrefetching()
         diskPrefetcher.stopPrefetching()
         visibleTasks.withLock { tasks in tasks.values.forEach { $0.cancel() }; tasks.removeAll() }
-        if let previous {
-            networkLoader.session.getAllTasks { tasks in
-                for task in tasks where task.originalRequest?.value(forHTTPHeaderField: "Authorization") == "Bearer \(previous.accessToken)" {
-                    task.cancel()
-                }
-            }
+        authorization.networkTasks.withLock { tasks in
+            tasks.values.forEach { $0.cancel() }; tasks.removeAll()
         }
         pipeline.cache.removeAll()
         authorization.ephemeralAssetIDs.withLock { $0.removeAll() }
@@ -299,6 +281,11 @@ private final class FittingThumbnailDecoder: ImageDecoding, @unchecked Sendable 
 private final class AuthorizingDelegate: ImagePipeline.Delegate {
     let client = Mutex<ImoraClient?>(nil)
     let ephemeralAssetIDs = Mutex<Set<String>>([])
+    let networkTasks = Mutex<[UUID: Task<Void, Never>]>([:])
+
+    nonisolated func dataLoader(for request: ImageRequest, pipeline: ImagePipeline) -> any DataLoading {
+        AccountImageDataLoader(client: client.withLock { $0 }, owner: self)
+    }
 
     /// nuke asks before every disk read and write; nil keeps a locked asset
     /// memory only.
@@ -337,5 +324,42 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
               let url = task.request.url
         else { return }
         _ = ServerRoute.fallBack(from: ServerRoute.resolve(url), after: error)
+    }
+}
+
+/// Capture the account before Nuke's asynchronous authorization hook; a
+/// callback from a retired pipeline must never acquire a later account token.
+private nonisolated final class AccountImageDataLoader: DataLoading {
+    let client: ImoraClient?
+    let owner: AuthorizingDelegate
+    init(client: ImoraClient?, owner: AuthorizingDelegate) { self.client = client; self.owner = owner }
+
+    func loadData(with request: URLRequest, didReceiveData: @escaping @Sendable (Data, URLResponse) -> Void,
+                  completion: @escaping @Sendable (Error?) -> Void) -> any Cancellable {
+        let id = UUID(), owner = owner, client = client
+        let task = owner.networkTasks.withLock { values in
+            let task = Task {
+                defer { owner.networkTasks.withLock { _ = $0.removeValue(forKey: id) } }
+                do {
+                    try Task.checkCancellation()
+                    guard let client, owner.client.withLock({ $0 === client }),
+                          request.value(forHTTPHeaderField: "Authorization") == "Bearer \(client.accessToken)" else {
+                        throw ServerTrustError.sessionExpired
+                    }
+                    let (data, response) = try await client.imageData(for: request)
+                    guard owner.client.withLock({ $0 === client }) else { throw ServerTrustError.sessionExpired }
+                    didReceiveData(data, response)
+                    completion(nil)
+                } catch { completion(error) }
+            }
+            values[id] = task
+            return task
+        }
+        return ImageTransfer(task: task)
+    }
+
+    private struct ImageTransfer: Cancellable {
+        let task: Task<Void, Never>
+        func cancel() { task.cancel() }
     }
 }

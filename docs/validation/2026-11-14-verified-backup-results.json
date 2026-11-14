@@ -1,0 +1,18 @@
+{
+  "verifiedAt": "2026-11-14T12:05:35+08:00",
+  "result": "passed",
+  "totalTests": 193,
+  "passedTests": 192,
+  "skippedTests": 1,
+  "failedTests": 0,
+  "unitAndIntegrationTests": 191,
+  "uiFlows": 2,
+  "compilerLocalizationKeys": 1639,
+  "catalogEntriesIncludingPermissions": 1659,
+  "sourceBase": "c9836ceccdf07d37a8489a23fcd3db019e2e546f",
+  "testedSourceSHA256": "5f9a1e33386b590d2e5c490ccf39a92f0fcd9eb4a2a8a81f90ec041e745108a9",
+  "xcodeVersion": "27.2",
+  "simulatorVersion": "27.2",
+  "fixture": "dedicated loopback Immich 3.4.1 with synthetic account/media",
+  "physicalAcceptance": "separate deployment gate"
+}

@@ -28,7 +28,7 @@ nonisolated final class ImoraClient: Sendable {
     let apiURL: URL
     let accessToken: String
     let context: AccountRequestContext
-    private let session: URLSession
+    private let sessions = Mutex<[String: URLSession]>([:])
     private let mediaStore = ControlledMediaStore()
     /// `apiURL` with a trailing slash, so media urls are plain concatenation.
     private let mediaBase: String
@@ -40,25 +40,63 @@ nonisolated final class ImoraClient: Sendable {
     init(apiURL: URL, accessToken: String) {
         self.apiURL = apiURL
         self.accessToken = accessToken
-        let context = AccountRequestContext(apiURL: apiURL, token: accessToken)
+        let context = AccountRequestContext(apiURL: apiURL, token: accessToken, requestAllowed: {
+            ServerRoute.permitsRequest(to: $0, for: apiURL)
+        })
         self.context = context
         var base = apiURL.absoluteString
         if !base.hasSuffix("/") { base += "/" }
         mediaBase = base
-        let config = URLSessionConfiguration.default
-        config.httpAdditionalHeaders = ["Accept": "application/json"]
-        config.httpCookieStorage = nil
-        config.urlCache = nil
-        // the default 60s leaves every screen hanging when a server accepts
-        // connections but never answers. this is an idle timer - it resets as
-        // bytes arrive - so slow but live downloads are unaffected.
-        config.timeoutIntervalForRequest = 20
-        self.session = URLSession(configuration: config, delegate: SafeRedirectDelegate(policyForRequest: { request in
-            guard let url = request.url else { return nil }
-            return context.policy(for: url, localAPIURL: ServerRoute.configuredLocal(for: apiURL))
-        }), delegateQueue: nil)
     }
 
+    deinit { sessions.withLock { $0.values.forEach { $0.invalidateAndCancel() } } }
+
+    /// Each pin has its own immutable delegate and TLS connection pool. A
+    /// changed certificate can never reuse a previously trusted connection.
+    func transportSession(for request: URLRequest, redirectsAllowed: Bool = true) throws -> URLSession {
+        _ = try authorize(request)
+        let identity = try localIdentity(for: request)
+        let key = (identity?.sessionKey ?? "system-trust") + (redirectsAllowed ? "|read" : "|no-redirect")
+        return try sessions.withLock { values in
+            guard context.isActive else { throw ServerTrustError.sessionExpired }
+            if let session = values[key] { return session }
+            let config = URLSessionConfiguration.default
+            config.httpAdditionalHeaders = ["Accept": "application/json"]
+            config.httpCookieStorage = nil
+            config.urlCache = nil
+            config.timeoutIntervalForRequest = 20
+            let context = context, apiURL = apiURL
+            let policy: (@Sendable (URLRequest) -> ServerTrustPolicy?)?
+            if redirectsAllowed {
+                policy = { request in
+                    guard let url = request.url else { return nil }
+                    return context.policy(for: url, localAPIURL: ServerRoute.configuredLocal(for: apiURL))
+                }
+            } else { policy = nil }
+            let delegate = SafeRedirectDelegate(identity: identity, policyForRequest: policy)
+            let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+            values[key] = session
+            return session
+        }
+    }
+
+    func localIdentity(for request: URLRequest) throws -> LocalServerIdentity? {
+        guard let url = request.url else { throw ServerTrustError.untrustedTarget }
+        return try ServerRoute.transportIdentity(to: url, for: apiURL)
+    }
+
+    /// Nuke retains its caching/decoding pipeline; authenticated image bytes
+    /// use the same fixed-identity connection selection as the API.
+    func imageData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let request = try authorize(request)
+        let result = try await transportSession(for: request).data(for: request)
+        try Task.checkCancellation()
+        guard context.isActive else { throw ServerTrustError.sessionExpired }
+        guard let response = result.1 as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw ImoraError.http((result.1 as? HTTPURLResponse)?.statusCode ?? 0, "")
+        }
+        return result
+    }
 
 
     var serverKey: String { ServerTrustPolicy(apiURL: apiURL).canonicalRoot }
@@ -70,7 +108,7 @@ nonisolated final class ImoraClient: Sendable {
     }
 
     func authorizedRequest(url: URL, method: String = "GET") throws -> URLRequest {
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: ServerRoute.resolve(url))
         request.httpMethod = method
         return try authorize(request)
     }
@@ -81,18 +119,21 @@ nonisolated final class ImoraClient: Sendable {
 
     func invalidate() {
         context.invalidate()
-        session.invalidateAndCancel()
+        sessions.withLock { values in values.values.forEach { $0.invalidateAndCancel() }; values.removeAll() }
         Task { await mediaStore.removeAll() }
     }
 
     func readbackOriginal(assetID: String, expected: ResourceDigest) async throws -> ResourceDigest {
-        try await OriginalReadbackVerifier.verify(request: authorizedRequest(url: originalURL(assetID: assetID)), expected: expected, context: context)
+        let request = try authorizedRequest(url: originalURL(assetID: assetID))
+        return try await OriginalReadbackVerifier.verify(request: request, expected: expected, context: context,
+            session: transportSession(for: request, redirectsAllowed: false))
     }
 
     func invalidateMediaCache() async { await mediaStore.invalidateCachedFiles() }
 
     func localMediaFile(_ url: URL) async throws -> ControlledMediaFile {
-        try await mediaStore.file(request: authorizedRequest(url: url), session: session, context: context)
+        let request = try authorizedRequest(url: url)
+        return try await mediaStore.file(request: request, session: transportSession(for: request), context: context)
     }
 
     // MARK: - server resolution
@@ -415,11 +456,12 @@ nonisolated final class ImoraClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: authorize(request))
+            request = try authorize(request)
+            (data, response) = try await transportSession(for: request).data(for: request)
         } catch where ServerRoute.fallBack(from: request.url, after: error, method: method) {
             request.url = components.url
             request = try authorize(request)
-            (data, response) = try await session.data(for: authorize(request))
+            (data, response) = try await transportSession(for: request).data(for: request)
         }
         guard context.isActive else { throw ServerTrustError.sessionExpired }
         guard let http = response as? HTTPURLResponse else { throw ImoraError.unreachable }
@@ -1135,7 +1177,7 @@ nonisolated final class ImoraClient: Sendable {
         var request = try authorizedRequest(url: ServerRoute.resolve(apiURL.appending(path: "users/profile-image")), method: "POST")
         request.httpMethod = "POST"
         request.setValue(MultipartBody.contentType(boundary: boundary), forHTTPHeaderField: "Content-Type")
-        let (respData, response) = try await session.upload(for: request, from: body)
+        let (respData, response) = try await transportSession(for: request).upload(for: request, from: body)
         guard context.isActive else { throw ServerTrustError.sessionExpired }
         guard let http = response as? HTTPURLResponse else { throw ImoraError.unreachable }
         guard (200..<300).contains(http.statusCode) else {
@@ -1887,7 +1929,8 @@ nonisolated final class ImoraClient: Sendable {
     /// infers the resource type from it when importing.
     func downloadOriginal(assetID: String, to directory: URL, fileExtension: String) async throws -> URL {
         try ProtectedTemporaryFiles.prepareDirectory(directory)
-        let (tempURL, response) = try await session.download(for: authorizedRequest(url: originalURL(assetID: assetID)))
+        let request = try authorizedRequest(url: originalURL(assetID: assetID))
+        let (tempURL, response) = try await transportSession(for: request).download(for: request)
         guard context.isActive else {
             try? FileManager.default.removeItem(at: tempURL)
             throw ServerTrustError.sessionExpired
@@ -1937,6 +1980,7 @@ nonisolated final class ImoraClient: Sendable {
         maximumRequestBytes: Int64? = nil,
         lease: ProcessLease? = nil,
         lifetime: BackgroundUploader.RunLifetime? = nil,
+        onByteProgress: (@Sendable (UploadByteProgress) -> Void)? = nil,
         onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> AssetUploadResult {
         do {
@@ -1971,6 +2015,7 @@ nonisolated final class ImoraClient: Sendable {
                 context: context,
                 lease: lease,
                 lifetime: lifetime,
+                onByteProgress: onByteProgress,
                 onProgress: onProgress
             )
         } catch {
@@ -2018,6 +2063,7 @@ nonisolated final class ImoraClient: Sendable {
         source: BackupEntry,
         lease: ProcessLease? = nil,
         lifetime: BackgroundUploader.RunLifetime? = nil,
+        onByteProgress: (@Sendable (UploadByteProgress) -> Void)? = nil,
         onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> AssetUploadResult? {
         var request = URLRequest(url: ServerRoute.resolve(apiURL.appending(path: "assets/uploads/\(sessionID)")))
@@ -2044,6 +2090,7 @@ nonisolated final class ImoraClient: Sendable {
                 context: context,
                 lease: lease,
                 lifetime: lifetime,
+                onByteProgress: onByteProgress,
                 onProgress: onProgress
             )
         } catch {

@@ -30,11 +30,14 @@ nonisolated enum ChunkedAssetUpload {
         source: BackupEntry,
         lease: ProcessLease?,
         lifetime: BackgroundUploader.RunLifetime?,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)? = nil,
+        onByteProgress: (@Sendable (UploadByteProgress) -> Void)? = nil,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult {
         guard let resource = await PhotoLibraryService.resourceSize(
             localIdentifier: upload.deviceAssetId, motion: motion
         ) else { throw Unavailable() }
+        onResourceProgress?(.init(resourceID: UUID(), filename: resource.filename, stage: .preparing, fraction: nil))
         let relay = LeaseRelay(lease)
         defer { relay.release() }
 
@@ -52,7 +55,8 @@ nonisolated enum ChunkedAssetUpload {
                 let result = try await sendChunks(
                     upload, motion: motion, sessionID: id, offset: offset, size: resource.bytes,
                     policy: policy, client: client, account: account, source: source,
-                    relay: relay, lifetime: lifetime, onProgress: onProgress
+                    relay: relay, lifetime: lifetime, onResourceProgress: onResourceProgress,
+                    onByteProgress: onByteProgress, onProgress: onProgress
                 )
                 if let result { return result }
             } catch ImoraError.http(409, _) where conflicts < 2 {
@@ -82,6 +86,8 @@ nonisolated enum ChunkedAssetUpload {
         source: BackupEntry,
         relay: LeaseRelay,
         lifetime: BackgroundUploader.RunLifetime?,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)?,
+        onByteProgress: (@Sendable (UploadByteProgress) -> Void)?,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult? {
         let finished = OSAllocatedUnfairLock<AssetUploadResult?>(initialState: nil)
@@ -94,7 +100,8 @@ nonisolated enum ChunkedAssetUpload {
                 account: account,
                 source: source,
                 lease: await relay.handOff(),
-                lifetime: lifetime
+                lifetime: lifetime,
+                onByteProgress: onByteProgress
             ) { fraction in
                 onProgress((Double(chunk.offset) + fraction * Double(chunk.length)) / Double(size))
             }
@@ -116,6 +123,7 @@ nonisolated enum ChunkedAssetUpload {
                 chunkBytes: policy.chunkBytes,
                 expectedBytes: size,
                 to: BackgroundUploader.bodyDirectory,
+                onResourceProgress: onResourceProgress,
                 consume: send
             )
         }

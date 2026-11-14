@@ -21,4 +21,16 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         let completed = Int64((normalizedFraction * Double(Self.fractionScale)).rounded())
         self.init(completedUnitCount: completed, totalUnitCount: Self.fractionScale)
     }
+
+    /// Preparation owns the first fifth of a whole-library run. Unknown
+    /// PhotoKit fractions contribute no invented progress.
+    static func preparation(completed: Int, total: Int, inFlightFractions: [Double?]) -> ContinuedProgress {
+        guard total > 0 else { return ContinuedProgress(fraction: 0) }
+        let inFlight = inFlightFractions.reduce(0.0) { result, fraction in
+            guard let fraction, fraction.isFinite else { return result }
+            return result + min(1, max(0, fraction))
+        }
+        let units = min(Double(total), Double(max(0, completed)) + inFlight)
+        return ContinuedProgress(fraction: 0.2 * units / Double(total))
+    }
 }

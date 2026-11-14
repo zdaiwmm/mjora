@@ -127,6 +127,40 @@
       },
       "comment": "Imora/Core/Backup/BackupManager.swift:350"
     },
+    "%@ KB/s": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ KB/s"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ KB/秒"
+          }
+        }
+      }
+    },
+    "%@ MB/s": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB/s"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB/秒"
+          }
+        }
+      }
+    },
     "%@ Results": {
       "extractionState": "manual",
       "localizations": {
@@ -4246,6 +4280,23 @@
       },
       "comment": "Imora/Features/Settings/SettingsView.swift:133"
     },
+    "Automatically Use Verified Local Server": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically Use Verified Local Server"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动使用已验证的局域网服务器"
+          }
+        }
+      }
+    },
     "Automatically classify and tag photos.": {
       "extractionState": "manual",
       "localizations": {
@@ -4408,6 +4459,57 @@
       },
       "comment": "Imora/DesignSystem/RemoteImage.swift:567\nImora/DesignSystem/RemoteImage.swift:578\nImora/Features/Timeline/TimelineTileRow.swift:844\nImora/Features/Timeline/TimelineTileRow.swift:856\nImora/Features/Viewer/AssetViewerScreen.swift:3071\nImora/Features/Viewer/AssetViewerScreen.swift:3129\nImora/Features/Viewer/AssetViewerScreen.swift:3716"
     },
+    "Background App Refresh is available. iOS chooses when automatic recovery runs.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background App Refresh is available. iOS chooses when automatic recovery runs."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台 App 刷新已开启，自动恢复备份的时间由 iOS 决定。"
+          }
+        }
+      }
+    },
+    "Background App Refresh is off. Enable it in Settings > General > Background App Refresh to allow automatic recovery opportunities.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background App Refresh is off. Enable it in Settings > General > Background App Refresh to allow automatic recovery opportunities."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台 App 刷新已关闭。可前往“设置 > 通用 > 后台 App 刷新”开启，让系统有机会自动恢复备份。"
+          }
+        }
+      }
+    },
+    "Background Backup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background Backup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台备份"
+          }
+        }
+      }
+    },
     "Background Tasks": {
       "extractionState": "manual",
       "localizations": {
@@ -4425,6 +4527,57 @@
         }
       },
       "comment": "Imora/Features/Admin/AdminModels.swift:305"
+    },
+    "Background backup is unavailable in this app installation. Keep Imora open to continue.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background backup is unavailable in this app installation. Keep Imora open to continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前安装的 App 无法使用后台备份。保持 Imora 打开可继续备份。"
+          }
+        }
+      }
+    },
+    "Background request accepted. Waiting to start whole-library backup.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background request accepted. Waiting to start whole-library backup."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台请求已接受，正在等待开始备份整个图库。"
+          }
+        }
+      }
+    },
+    "Background time is unavailable. Check Background App Refresh and power settings. Keep Imora open to continue.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background time is unavailable. Check Background App Refresh and power settings. Keep Imora open to continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法在后台运行。请检查后台 App 刷新和电源设置，保持 Imora 打开可继续备份。"
+          }
+        }
+      }
     },
     "Backing Up… %lld%%": {
       "extractionState": "manual",
@@ -5198,6 +5351,23 @@
         }
       },
       "comment": "Imora/Core/Models/Cleanup.swift:19\nImora/Features/Cleanup/CleanupBurstsScreen.swift:59"
+    },
+    "CA Certificate SHA-256": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CA Certificate SHA-256"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CA 证书 SHA-256 指纹"
+          }
+        }
+      }
     },
     "Cached data is re-downloadable and separate from your backed up photos.": {
       "extractionState": "manual",
@@ -6149,6 +6319,40 @@
         }
       }
     },
+    "Configure verified automatic selection below, or choose Use Local Now. Both addresses use the same account and photo cache.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure verified automatic selection below, or choose Use Local Now. Both addresses use the same account and photo cache."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在下方配置经过身份验证的自动选择，也可点按“立即使用局域网地址”。两个地址共用同一账号和照片缓存。"
+          }
+        }
+      }
+    },
+    "Confirm Local Address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm Local Address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认局域网地址"
+          }
+        }
+      }
+    },
     "Confirm PIN": {
       "extractionState": "manual",
       "localizations": {
@@ -6309,6 +6513,23 @@
       },
       "comment": "Imora/Features/Auth/LoginFlowView.swift:64"
     },
+    "Connect to power and leave this screen open for a foreground backup, or request background continuation below.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect to power and leave this screen open for a foreground backup, or request background continuation below."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电源并保持此页面打开可在前台备份，也可在下方申请转到后台继续备份。"
+          }
+        }
+      }
+    },
     "Connect to power and leave this screen open. Locking your phone or switching apps lets iOS limit how long indexing and backup can continue.": {
       "extractionState": "manual",
       "localizations": {
@@ -6398,6 +6619,23 @@
         }
       },
       "comment": "Imora/Features/Auth/LoginFlowView.swift:132\nImora/Features/Auth/LoginFlowView.swift:69"
+    },
+    "Continue Backup in Background": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue Backup in Background"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在后台继续备份"
+          }
+        }
+      }
     },
     "Continue with OAuth": {
       "extractionState": "manual",
@@ -6614,6 +6852,23 @@
         }
       },
       "comment": "Imora/Features/Viewer/AssetEditScreen.swift:1474"
+    },
+    "Could not request background time. Keep Imora open and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not request background time. Keep Imora open and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法申请后台运行时间。请保持 Imora 打开后重试。"
+          }
+        }
+      }
     },
     "Could not save backup recovery state.": {
       "extractionState": "manual",
@@ -10196,6 +10451,23 @@
         }
       }
     },
+    "Current Files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前文件"
+          }
+        }
+      }
+    },
     "Current password": {
       "extractionState": "manual",
       "localizations": {
@@ -11375,6 +11647,23 @@
         }
       },
       "comment": "Imora/Features/Timeline/TimelineScreen.swift:1382\nImora/Features/Viewer/AssetViewerScreen.swift:3008\nImora/Features/Viewer/AssetViewerScreen.swift:3115"
+    },
+    "Downloading original from iCloud…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading original from iCloud…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在从 iCloud 下载原件…"
+          }
+        }
+      }
     },
     "Downloading some originals from iCloud": {
       "extractionState": "manual",
@@ -13838,6 +14127,23 @@
       },
       "comment": "Imora/Features/Admin/AdminModels.swift:315\nImora/Features/Admin/AdminModels.swift:481\nImora/Features/Admin/AdminModels.swift:485"
     },
+    "Invalid Server Identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid Server Identity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器身份无效"
+          }
+        }
+      }
+    },
     "Invert": {
       "extractionState": "manual",
       "localizations": {
@@ -15258,6 +15564,23 @@
         }
       }
     },
+    "Local Connection Paused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Connection Paused"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网连接已暂停"
+          }
+        }
+      }
+    },
     "Local Network": {
       "extractionState": "manual",
       "localizations": {
@@ -15289,6 +15612,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "局域网地址不可用，连接未更改。请检查已保存的地址和 Wi-Fi 连接。"
+          }
+        }
+      }
+    },
+    "Local connections are paused. The external address will not be used.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local connections are paused. The external address will not be used."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网连接已暂停，不会使用外网地址。"
           }
         }
       }
@@ -15455,6 +15795,23 @@
       },
       "comment": "Imora/Features/Cleanup/CleanupRewindScreen.swift:189"
     },
+    "Low Power Mode turns off Background App Refresh and limits automatic backup recovery.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Low Power Mode turns off Background App Refresh and limits automatic backup recovery."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "低电量模式会关闭后台 App 刷新，并限制自动恢复备份。"
+          }
+        }
+      }
+    },
     "MB": {
       "extractionState": "manual",
       "localizations": {
@@ -15522,6 +15879,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "网络、账号或局域网设置变化，或返回 App 时，手动选择会重置。手动局域网连接失败时，不会自动切换到外网地址。"
+          }
+        }
+      }
+    },
+    "Manual local mode stays selected until you choose the external address, change local settings, sign out, or restart the app. It never switches to the external address on failure.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual local mode stays selected until you choose the external address, change local settings, sign out, or restart the app. It never switches to the external address on failure."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动局域网模式会一直保持，直到你选择外网地址、更改局域网设置、退出账号或重新启动 App。连接失败时不会自动切换到外网地址。"
           }
         }
       }
@@ -15723,6 +16097,23 @@
         }
       },
       "comment": "Imora/Features/Backup/BackupScreen.swift:113"
+    },
+    "Measuring upload speed…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measuring upload speed…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在测量上传速度…"
+          }
+        }
+      }
     },
     "Media": {
       "extractionState": "manual",
@@ -16857,6 +17248,23 @@
       },
       "comment": "Imora/Features/Search/SearchControls.swift:199\nImora/Features/Search/SearchControls.swift:240"
     },
+    "No Server Identity Installed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Server Identity Installed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未安装服务器身份"
+          }
+        }
+      }
+    },
     "No Shared Spaces": {
       "extractionState": "manual",
       "localizations": {
@@ -17847,6 +18255,23 @@
       },
       "comment": "Imora/Features/Settings/StorageScreen.swift:96"
     },
+    "On Wi-Fi, Imora checks the server against this saved certificate before using the local address. It does not need the Wi-Fi name. Automatic mode uses the external address when the verified local server is unavailable. Manual local mode stays selected and never switches to the external address.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On Wi-Fi, Imora checks the server against this saved certificate before using the local address. It does not need the Wi-Fi name. Automatic mode uses the external address when the verified local server is unavailable. Manual local mode stays selected and never switches to the external address."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接 Wi-Fi 时，Imora 会先使用此已保存的证书验证服务器，再使用局域网地址，无需读取 Wi-Fi 名称。自动模式会在已验证的局域网服务器不可用时使用外网地址。手动局域网模式会保持选中，不会自动切换到外网地址。"
+          }
+        }
+      }
+    },
     "On the Wi-Fi networks below, Imora connects to the local address when the server answers there, and to %@ everywhere else.": {
       "extractionState": "manual",
       "localizations": {
@@ -17970,8 +18395,7 @@
             "value": "打开设置"
           }
         }
-      },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:254\nImora/Features/Map/MapScreen.swift:126\nImora/Features/Settings/LocalNetworkScreen.swift:78\nImora/Features/Settings/NotificationSettingsScreen.swift:37\nImora/Features/Settings/NotificationSettingsScreen.swift:51"
+      }
     },
     "Open in Browser": {
       "extractionState": "manual",
@@ -19356,6 +19780,23 @@
         }
       }
     },
+    "Preparing original…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing original…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备原件…"
+          }
+        }
+      }
+    },
     "Previous Day": {
       "extractionState": "manual",
       "localizations": {
@@ -19697,6 +20138,40 @@
         }
       },
       "comment": "Imora/Features/Notifications/NotificationsScreen.swift:78"
+    },
+    "Reading Wi-Fi names for the network-name method needs precise location access. Verified automatic selection and Use Local Now work without it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading Wi-Fi names for the network-name method needs precise location access. Verified automatic selection and Use Local Now work without it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按网络名称选择地址时，需要精确位置权限才能读取 Wi-Fi 名称。经过身份验证的自动选择和“立即使用局域网地址”无需此权限。"
+          }
+        }
+      }
+    },
+    "Reading file details…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading file details…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在读取文件信息…"
+          }
+        }
+      }
     },
     "Reading original resources from iCloud may also be needed and can use additional data and time. You can cancel or remove these copies later.": {
       "extractionState": "manual",
@@ -20523,6 +20998,23 @@
       },
       "comment": "Imora/Features/Admin/AdminQueuesScreen.swift:322"
     },
+    "Requesting background time for whole-library backup...": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requesting background time for whole-library backup..."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在为整个图库的备份申请后台运行时间…"
+          }
+        }
+      }
+    },
     "Require password change on first login": {
       "extractionState": "manual",
       "localizations": {
@@ -21152,6 +21644,23 @@
         }
       },
       "comment": "Imora/Features/Timeline/MemoryLane.swift:121"
+    },
+    "Saved Server Identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved Server Identity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存服务器身份"
+          }
+        }
+      }
     },
     "Saved to your photo library": {
       "extractionState": "manual",
@@ -21908,6 +22417,23 @@
         }
       },
       "comment": "Imora/Features/Settings/SettingsView.swift:137\nImora/Features/Settings/StorageScreen.swift:34\nImora/Features/Settings/StorageScreen.swift:46"
+    },
+    "Server Identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server Identity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器身份"
+          }
+        }
+      }
     },
     "Server Statistics": {
       "extractionState": "manual",
@@ -24318,6 +24844,40 @@
       },
       "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:254"
     },
+    "The app returned from the background or the network changed. Confirm the local address to resume. The external address will not be used.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The app returned from the background or the network changed. Confirm the local address to resume. The external address will not be used."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 已从后台返回，或网络发生了变化。请确认局域网地址以继续连接，不会使用外网地址。"
+          }
+        }
+      }
+    },
+    "The backed-up count increases after server verification.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The backed-up count increases after server verification."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器核验完成后，已备份数量才会增加。"
+          }
+        }
+      }
+    },
     "The connection failed during backup.": {
       "extractionState": "manual",
       "localizations": {
@@ -24838,6 +25398,23 @@
       },
       "comment": "Imora/Features/Admin/AdminUserActions.swift:316"
     },
+    "The verified local server did not answer. Local mode stays selected. Try again on your home Wi-Fi or choose the external address.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The verified local server did not answer. Local mode stays selected. Try again on your home Wi-Fi or choose the external address."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证的局域网服务器未响应。局域网模式仍保持选中。请在家中的 Wi-Fi 下重试，或选择外网地址。"
+          }
+        }
+      }
+    },
     "There are no other people on this server.": {
       "extractionState": "manual",
       "localizations": {
@@ -25214,6 +25791,23 @@
         }
       },
       "comment": "Imora/Features/Auth/LoginFlowView.swift:149"
+    },
+    "This control applies to whole-library backup. Selected-photo uploads need Imora to remain open. iOS may pause or stop background work; force-closing Imora stops it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This control applies to whole-library backup. Selected-photo uploads need Imora to remain open. iOS may pause or stop background work; force-closing Imora stops it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此控制仅适用于整个图库的备份。上传单独选择的照片时，需保持 Imora 打开。iOS 可能暂停或停止后台任务；强制退出 Imora 会停止任务。"
+          }
+        }
+      }
     },
     "This device": {
       "extractionState": "manual",
@@ -25790,6 +26384,23 @@
       },
       "comment": "Imora/Features/Viewer/VideoTrimEditor.swift:151"
     },
+    "Too many background requests are pending. Keep Imora open and try again later.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Too many background requests are pending. Keep Imora open and try again later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待处理的后台请求过多。请保持 Imora 打开，稍后重试。"
+          }
+        }
+      }
+    },
     "Total": {
       "extractionState": "manual",
       "localizations": {
@@ -25807,6 +26418,23 @@
         }
       },
       "comment": "Imora/Features/Admin/AdminScreen.swift:48"
+    },
+    "Total upload speed: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total upload speed: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "总上传速度：%@"
+          }
+        }
+      }
     },
     "Transcode Videos": {
       "extractionState": "manual",
@@ -26600,6 +27228,23 @@
       },
       "comment": "Imora/Core/Backup/UploadSizeLimit.swift:30"
     },
+    "Upload speed: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Upload speed: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上传速度：%@"
+          }
+        }
+      }
+    },
     "Uploading %@": {
       "extractionState": "manual",
       "localizations": {
@@ -26617,6 +27262,23 @@
         }
       },
       "comment": "Imora/Core/Backup/BackupManager.swift:2245"
+    },
+    "Uploading file…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uploading file…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在上传文件…"
+          }
+        }
+      }
     },
     "Uploading to Imora": {
       "extractionState": "manual",
@@ -26702,6 +27364,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "要在此 Wi-Fi 网络中使用 %@ 吗？HTTP 会以未加密方式传输照片和账号凭据。连通性检查只确认地址可达，不会验证服务器身份。"
+          }
+        }
+      }
+    },
+    "Use %@ on this Wi-Fi network? Imora will verify the server with the saved identity before connecting. Manual local mode never switches to the external address.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use %@ on this Wi-Fi network? Imora will verify the server with the saved identity before connecting. Manual local mode never switches to the external address."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要在此 Wi-Fi 网络中使用 %@ 吗？Imora 会在连接前使用已保存的身份验证服务器。手动局域网模式不会自动切换到外网地址。"
           }
         }
       }
@@ -26972,6 +27651,91 @@
       },
       "comment": "Imora/Features/Library/LibraryTab.swift:52"
     },
+    "Verified Connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接已验证"
+          }
+        }
+      }
+    },
+    "Verified Local Address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified Local Address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证的局域网地址"
+          }
+        }
+      }
+    },
+    "Verified Local Address (Manual)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified Local Address (Manual)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证的局域网地址（手动）"
+          }
+        }
+      }
+    },
+    "Verified Local Connection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified Local Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证的局域网连接"
+          }
+        }
+      }
+    },
+    "Verified automatic selection needs an HTTPS address and a server identity installed through trusted setup. This trust applies only inside Imora; it does not install an iPhone certificate profile. Editing the local address removes a mismatching identity.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified automatic selection needs an HTTPS address and a server identity installed through trusted setup. This trust applies only inside Imora; it does not install an iPhone certificate profile. Editing the local address removes a mismatching identity."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经过身份验证的自动选择需要 HTTPS 地址，以及通过可信设置安装的服务器身份。此信任仅在 Imora 内生效，不会向 iPhone 安装证书描述文件。编辑局域网地址时，会移除不匹配的身份。"
+          }
+        }
+      }
+    },
     "Verify Originals and Remove Device Copies": {
       "extractionState": "manual",
       "localizations": {
@@ -27054,6 +27818,23 @@
       },
       "comment": "Imora/Features/Backup/BackupScreen.swift:491"
     },
+    "Verifying backup with server…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying backup with server…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在向服务器核验备份…"
+          }
+        }
+      }
+    },
     "Verifying original files before removal...": {
       "extractionState": "manual",
       "localizations": {
@@ -27071,6 +27852,23 @@
         }
       },
       "comment": "Imora/Features/Backup/BackupScreen.swift:433"
+    },
+    "Verifying the local server on this Wi-Fi network. Connections remain paused until verification succeeds.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying the local server on this Wi-Fi network. Connections remain paused until verification succeeds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在验证此 Wi-Fi 网络中的局域网服务器。验证成功前，连接将保持暂停。"
+          }
+        }
+      }
     },
     "Verifying with server...": {
       "extractionState": "manual",
@@ -27468,6 +28266,40 @@
       },
       "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:108"
     },
+    "Whole-library backup can continue while iOS grants background time.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whole-library backup can continue while iOS grants background time."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 iOS 允许的后台运行时间内，将继续备份整个图库。"
+          }
+        }
+      }
+    },
+    "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整个图库的备份已暂停。点按“在后台继续备份”或“立即备份”可恢复已保存的备份请求。"
+          }
+        }
+      }
+    },
     "Wi-Fi Name": {
       "extractionState": "manual",
       "localizations": {
@@ -27503,6 +28335,23 @@
         }
       },
       "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:82"
+    },
+    "Wi-Fi is unavailable. Local mode stays selected, and new connections are blocked. The external address will not be used.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi is unavailable. Local mode stays selected, and new connections are blocked. The external address will not be used."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi 不可用。局域网模式仍保持选中，新连接已暂停，不会使用外网地址。"
+          }
+        }
+      }
     },
     "Winter": {
       "extractionState": "manual",
@@ -28151,6 +29000,23 @@
         }
       },
       "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:38"
+    },
+    "iOS could not grant background time right now. Whole-library backup can continue while Imora is open.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS could not grant background time right now. Whole-library backup can continue while Imora is open."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS 暂时无法提供后台运行时间。保持 Imora 打开可继续备份整个图库。"
+          }
+        }
+      }
     },
     "kept": {
       "extractionState": "manual",

@@ -471,6 +471,7 @@ actor AssetShareExporter {
         // in memory, which could jetsam the app on a large video.
         let download = AssetShareRemoteDownload(
             directory: directory,
+            identity: try client.localIdentity(for: request), context: client.context,
             progress: progress
         )
         let result = try await download.start(request)
@@ -527,12 +528,17 @@ private nonisolated final class AssetShareRemoteDownload:
     private let lock = OSAllocatedUnfairLock(initialState: State())
     private let directory: URL
     private let progress: @Sendable (Double) -> Void
+    private let identity: LocalServerIdentity?
+    private let context: AccountRequestContext
 
     init(
         directory: URL,
+        identity: LocalServerIdentity?, context: AccountRequestContext,
         progress: @escaping @Sendable (Double) -> Void
     ) {
         self.directory = directory
+        self.identity = identity
+        self.context = context
         self.progress = progress
     }
 
@@ -559,7 +565,8 @@ private nonisolated final class AssetShareRemoteDownload:
                     return true
                 }
                 if shouldStart {
-                    task.resume()
+                    do { try context.startWhileActive(for: request) { task.resume() } }
+                    catch { finish(.failure(error)) }
                 } else {
                     session.invalidateAndCancel()
                     continuation.resume(throwing: CancellationError())
@@ -568,6 +575,11 @@ private nonisolated final class AssetShareRemoteDownload:
         } onCancel: {
             cancel()
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @Sendable @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        LocalServerIdentity.answer(challenge, requestURL: task.currentRequest?.url, identity: identity, completion: completionHandler)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask,

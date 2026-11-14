@@ -6,7 +6,7 @@ This modified version adds Simplified Chinese, immutable account/request boundar
 
 The repository starts from a reviewed publication snapshot. Local implementation/audit history containing private server settings is not published. The app's display name and original upstream notices are retained.
 
-Latest local validation: **110 tests, 109 passed, 1 physical-device check skipped, 0 failures**, including manual LAN routing, local Immich 3.4.1 integration and English/Chinese UI flows. See [manual LAN validation](docs/validation/2026-11-14-manual-lan-validation.md), [earlier implementation validation](docs/validation/2026-11-14-implementation-validation.md), and [publication notes](PUBLICATION.md). Physical-device, signed share-extension and system Photos confirmation gates remain open.
+Latest local validation: **193 tests, 192 passed, 1 physical-device check skipped, 0 failures**, including pinned TLS LAN routing, real multipart upload and verified-count replay, background continuation policy, live transfer progress, local Immich 3.4.1 integration, and English/Chinese UI flows. See [verified backup validation](docs/validation/2026-11-14-verified-backup-validation.md) and [publication notes](PUBLICATION.md). Physical server/phone acceptance, signed share-extension and system Photos confirmation gates remain separate.
 
 ## Build and test
 
@@ -67,6 +67,9 @@ A native iOS client for your self-hosted photos. Supports [Imora](https://imora.
 - Guarded uploads while iOS grants the app execution time, with protected recovery records for resuming after interruptions. Sensitive uploads reject redirects; daemon-owned background continuation is not currently enabled.
 - Resumable uploads in chunks on Imora.
 - A saved local server address, selectable from Backup or Local Network without reading the Wi-Fi name. Builds with Wi-Fi-name access can also select it automatically on saved networks. Manual LAN failures do not silently fall back to the external address.
+- Automatic LAN selection can authenticate a saved HTTPS server using an app-scoped CA enrolled through trusted setup. Manual local mode holds instead of silently switching to WAN when connectivity or consent is unavailable.
+- Backup and Active Mode show original filenames, preparation/iCloud/upload/verification stages, and upload speeds measured from actual transport counters.
+- An explicit whole-library backup can request iOS continued-processing time, including promotion of an existing run. iOS controls runtime; automatic recovery uses discretionary processing, and selected-photo uploads retain foreground behavior.
 - Share extension that uploads photos and videos from any app.
 
 ### Account and administration

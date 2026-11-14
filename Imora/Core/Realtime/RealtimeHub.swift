@@ -229,19 +229,18 @@ final class RealtimeHub {
     /// one engine.io v4 + socket.io v4 session over a websocket. returns only
     /// when the socket closes or errors.
     private func connectOnce() async throws {
-        try await receiveLoop(
-            request: try client.authorizedRequest(url: ServerRoute.resolve(client.apiURL)),
-            token: client.accessToken, context: client.context
-        )
+        let request = try client.authorizedRequest(url: ServerRoute.resolve(client.apiURL))
+        try await receiveLoop(request: request, token: client.accessToken, context: client.context,
+            session: client.transportSession(for: request, redirectsAllowed: false))
     }
 
     /// concurrent so frame parsing and event decoding stay off the main
     /// thread - a bulk server job floods thousands of frames, and each used
     /// to cost json work on main. only the typed results hop back.
     @concurrent
-    private func receiveLoop(request: URLRequest, token: String, context: AccountRequestContext) async throws {
-        let task = SocketConnection.makeTask(request: request, token: token)
-        try context.startWhileActive {
+    private func receiveLoop(request: URLRequest, token: String, context: AccountRequestContext, session: URLSession) async throws {
+        let task = SocketConnection.makeTask(request: request, token: token, session: session)
+        try context.startWhileActive(for: request) {
             try Task.checkCancellation()
             task.resume()
         }
@@ -409,7 +408,7 @@ private nonisolated enum SocketConnection {
         case ignored
     }
 
-    static func makeTask(request authorized: URLRequest, token: String) -> URLSessionWebSocketTask {
+    static func makeTask(request authorized: URLRequest, token: String, session: URLSession) -> URLSessionWebSocketTask {
         let apiURL = authorized.url!
         var components = URLComponents(url: apiURL, resolvingAgainstBaseURL: false)!
         components.scheme = apiURL.scheme == "http" ? "ws" : "wss"
@@ -420,7 +419,7 @@ private nonisolated enum SocketConnection {
         // the server authenticates the handshake from the session cookie.
         request.setValue("imora_access_token=\(token)", forHTTPHeaderField: "Cookie")
         request.timeoutInterval = 60
-        return ControlledSession.noRedirect.webSocketTask(with: request)
+        return session.webSocketTask(with: request)
     }
 
     /// receive with a deadline: a healthy server pings every pinginterval, so

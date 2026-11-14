@@ -126,6 +126,7 @@ final class BackupManager {
     var userId: String? {
         didSet {
             if oldValue != userId {
+                activeTransfers.removeAll()
                 sizeExcludedRequestBytesByLocal = [:]
                 sizeExcludedLocalIdentifiers = []
                 updateRepeatedFailureSummary()
@@ -158,6 +159,9 @@ final class BackupManager {
 
     /// per-asset upload progress for tile overlays.
     private(set) var uploadStates: [String: LocalUploadState] = [:]
+    /// Current work is independent of verified summary counts. Preparing an
+    /// original never masquerades as a zero-percent network upload.
+    private(set) var activeTransfers = ActiveBackupTransfers()
     /// remote ids proven to be fully backed up from this device, for the
     /// merged cloud badge on remote tiles.
     private(set) var backedUpRemoteIds: Set<String> = []
@@ -387,7 +391,7 @@ final class BackupManager {
 
     var canStartBackup: Bool {
         PhotoLibraryService.hasFullAccess && !isRunning
-            && (libraryStatus.map { $0.pending > 0 } ?? true)
+            && (requiresExplicitResume || (libraryStatus.map { $0.pending > 0 } ?? true))
     }
 
     private var conditionsAllowWork: Bool {
@@ -397,7 +401,7 @@ final class BackupManager {
 
     /// the pipeline needs an upload request and permitted connection/battery conditions.
     private var uploadsPermitted: Bool {
-        runAllowsUploads && conditionsAllowWork
+        runAllowsUploads && conditionsAllowWork && !requiresExplicitResume
     }
 
     private let client: ImoraClient
@@ -431,12 +435,28 @@ final class BackupManager {
     private var remoteReconciliationTask: Task<Void, Never>?
     private var activeCleanupReportID: UUID?
     private var recoverAfterExpiration = false
+    private var explicitResumeRequired = false
+    private var hashingAssetIDs: Set<String> = []
     private var runLifetime = BackgroundUploader.RunLifetime()
 
     /// host|userId, stamped onto every background upload so a completion can
     /// never be applied to a different account's index.
     private var accountKey: String {
         "\(client.serverKey)|\(userId ?? "")"
+    }
+
+    /// An expiration can arrive before the first current-user response. Keep
+    /// that server's unresolved request paused after its identity is restored.
+    private var unresolvedAccountKey: String { "\(client.serverKey)|" }
+
+    var requiresExplicitResume: Bool {
+        explicitResumeRequired || BackupIntentStore.shared.requiresExplicitResume(accountKey)
+            || (userId != nil && BackupIntentStore.shared.requiresExplicitResume(unresolvedAccountKey))
+    }
+
+    private var automaticBackupMayResume: Bool {
+        !requiresExplicitResume
+            && BackupIntentStore.shared.canResumeAutomatically(accountKey, autoBackup: autoBackup)
     }
 
     nonisolated static var scratchDirectory: URL {
@@ -490,6 +510,7 @@ final class BackupManager {
     /// called by sessionstore on logout. the manager must not outlive its client.
     func shutdown() {
         isShutDown = true
+        activeTransfers.removeAll()
         remoteReconciliationTask?.cancel()
         remoteReconciliationTask = nil
         BackupIntentStore.shared.set(false, account: accountKey)
@@ -527,9 +548,20 @@ final class BackupManager {
 
     /// the settings screen confirms the current cellular/low-battery holds first.
     func start() {
+        guard !isShutDown else { return }
         manualBackupRequested = true
+        if !saveUnfinishedBackup() {
+            manualBackupRequested = false
+            return
+        }
         conditions.overrideCurrentHolds(allowCellular: backUpOnCellular,
             pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
+        // A fresh action can arrive while the expired run is still draining.
+        // Let that worker finish before beginning its explicit successor.
+        if isStopping, runTask != nil {
+            recoveryRequested = true
+            return
+        }
         beginRun(uploads: true)
     }
 
@@ -538,14 +570,14 @@ final class BackupManager {
     private func startAutomatically() {
         // do not start an iCloud-backed hash pass before the path monitor has
         // identified the connection, or while the user's data plan is gated.
-        guard networkStatusKnown, conditionsAllowWork else { return }
+        guard networkStatusKnown, conditionsAllowWork, !requiresExplicitResume else { return }
         if runTask == nil { policyInterruptedRun = false }
         else { recentAttempted = [:] }
-        beginRun(uploads: (autoBackup || hasUnfinishedBackup) && conditionsAllowWork)
+        beginRun(uploads: automaticBackupMayResume && conditionsAllowWork)
     }
 
     private func beginRun(uploads: Bool) {
-        guard !isShutDown else { return }
+        guard !isShutDown, !requiresExplicitResume else { return }
         if runTask == nil {
             isStopping = false
             recoverAfterExpiration = false
@@ -583,9 +615,12 @@ final class BackupManager {
     }
 
     func cancel() {
+        ContinuedProcessing.backup.withdraw(for: self)
         manualBackupRequested = false
         recoverAfterExpiration = false
         BackupIntentStore.shared.set(false, account: accountKey)
+        if userId != nil { BackupIntentStore.shared.set(false, account: unresolvedAccountKey) }
+        explicitResumeRequired = false
         BackupProcessing.shared.schedule(needed: false)
         stopWork()
     }
@@ -594,6 +629,7 @@ final class BackupManager {
         // stopping also withdraws any upload ask that raced this cancel.
         runAllowsUploads = false
         isStopping = true
+        activeTransfers.removeAll()
         policyInterruptedRun = false
         rerunRequested = false
         recoveryRequested = false
@@ -613,31 +649,49 @@ final class BackupManager {
     }
 
     private func saveUnfinishedBackup() -> Bool {
-        guard BackupIntentStore.shared.set(true, account: accountKey) else {
+        let stored = manualBackupRequested
+            ? BackupIntentStore.shared.resume(account: accountKey)
+            : BackupIntentStore.shared.set(true, account: accountKey)
+        guard stored else {
             phase = .error(String(localized: "Could not save backup recovery state. Check available device storage and try again."))
             return false
+        }
+        if manualBackupRequested {
+            if userId != nil,
+               BackupIntentStore.shared.contains(unresolvedAccountKey) || BackupIntentStore.shared.requiresExplicitResume(unresolvedAccountKey),
+               !BackupIntentStore.shared.set(false, account: unresolvedAccountKey) {
+                phase = .error(String(localized: "Could not save backup recovery state. Check available device storage and try again."))
+                return false
+            }
+            explicitResumeRequired = false
         }
         scheduleRecovery()
         return true
     }
 
     func scheduleRecovery() {
-        BackupProcessing.shared.schedule(needed: !isShutDown && (!isStopping || recoverAfterExpiration) && (autoBackup || hasUnfinishedBackup))
+        BackupProcessing.shared.schedule(needed: !isShutDown && (!isStopping || recoverAfterExpiration) && automaticBackupMayResume)
     }
 
-    /// an expired processing budget or a device lock, not a user cancel: the
-    /// run stops taking work, its system-owned transfers finish on their own
-    /// and the saved request resumes later.
-    func pauseForBackgroundExpiration() {
+    /// A discretionary processing budget may retry later. A continued task's
+    /// system stop or Cancel action instead requires a fresh foreground action.
+    func pauseForBackgroundExpiration(requiresExplicitResume: Bool = false) {
         let pending = hasUnfinishedBackup
+        if requiresExplicitResume {
+            manualBackupRequested = false
+            explicitResumeRequired = true
+            if !BackupIntentStore.shared.pause(account: accountKey) {
+                backupLog.error("could not persist explicit backup resume requirement")
+            }
+        }
         recoverAfterExpiration = true
         stopWork(cancelTransfers: false)
         // retain a retry without letting a network callback restart this run.
-        BackupProcessing.shared.schedule(needed: !isShutDown && (autoBackup || pending))
+        BackupProcessing.shared.schedule(needed: !isShutDown && !self.requiresExplicitResume && (autoBackup || pending))
     }
 
     func runScheduledBackup() async -> Bool {
-        guard !isShutDown, PhotoLibraryService.hasFullAccess else { return false }
+        guard !isShutDown, !requiresExplicitResume, PhotoLibraryService.hasFullAccess else { return false }
         if userId == nil {
             do { userId = try await client.currentUser().id }
             catch { return false }
@@ -649,7 +703,7 @@ final class BackupManager {
         }
         guard !Task.isCancelled, networkStatusKnown,
               conditionsAllowWork,
-              autoBackup || hasUnfinishedBackup else { return false }
+              automaticBackupMayResume else { return false }
         await primeLocalState()
         startAutomatically()
         while let task = runTask { await task.value }
@@ -667,7 +721,7 @@ final class BackupManager {
     func startIfIdle() {
         let runWasActive = runTask != nil
         networkWatcher?.refresh()
-        guard PhotoLibraryService.hasFullAccess else { return }
+        guard PhotoLibraryService.hasFullAccess, !requiresExplicitResume else { return }
         localChanged()
         if runTask != nil {
             // a healthy run picks new captures up itself; only a run stopped
@@ -764,7 +818,7 @@ final class BackupManager {
     // MARK: - recent captures
 
     private var automaticRecentUploadsPermitted: Bool {
-        autoBackup && conditionsAllowWork
+        autoBackup && conditionsAllowWork && !requiresExplicitResume
             && !isStopping && !recentQuotaReached && PhotoLibraryService.hasFullAccess
     }
 
@@ -825,9 +879,11 @@ final class BackupManager {
 
     private func backUpRecentAsset(_ asset: DeviceAsset) async {
         let localId = asset.localIdentifier
+        let transfer = beginActiveTransfer(localIdentifier: localId)
         uploadStates[localId] = .uploading(0)
         recentBackupStatus = String(localized: "Backing up the new item. \(recentBackedUpMedia.text) saved.")
         defer {
+            activeTransfers.finish(localIdentifier: localId, attempt: transfer.attempt)
             if Task.isCancelled || !automaticRecentUploadsPermitted {
                 recentAttempted[localId] = nil
             }
@@ -841,8 +897,10 @@ final class BackupManager {
             try Task.checkCancellation()
             let entry = await index.entry(for: localId)
             if entry == nil || current.modificationDate == nil || entry?.isLivePhoto != current.isLivePhoto || entry?.matches(modificationDate: current.modificationDate) != true {
+                let preparation = transfer.reporter.component()
                 let hashes = try await PhotoLibraryService.hash(
-                    localIdentifier: localId, includeMotion: current.isLivePhoto
+                    localIdentifier: localId, includeMotion: current.isLivePhoto,
+                    onResourceProgress: { preparation.resourceProgress($0) }
                 )
                 try Task.checkCancellation()
                 await index.setHashed(
@@ -854,6 +912,7 @@ final class BackupManager {
             }
             try Task.checkCancellation()
             guard automaticRecentUploadsPermitted else { return }
+            transfer.reporter.verifying()
             let pending = try await checkPhase([current], updatesPhase: false)
             try Task.checkCancellation()
             guard automaticRecentUploadsPermitted else { return }
@@ -865,7 +924,8 @@ final class BackupManager {
                 asset: current, client: client, index: index,
                 deviceId: DeviceID.current,
                 account: accountKey, maximumRequestBytes: maximumRequestBytes, chunking: chunking,
-                lifetime: runLifetime
+                lifetime: runLifetime,
+                progressReporter: transfer.reporter
             ) { [weak self] id, fraction in
                 Task { @MainActor [weak self] in self?.noteUploadProgress(id, fraction) }
             }
@@ -1109,6 +1169,18 @@ final class BackupManager {
         }
     }
 
+    private func beginActiveTransfer(localIdentifier: String) -> (attempt: UUID, reporter: BackupTransferProgressReporter) {
+        let attempt = activeTransfers.begin(localIdentifier: localIdentifier)
+        let reporter = BackupTransferProgressReporter { [weak self] event in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isShutDown, self.client.context.isActive,
+                      self.activeTransfers.apply(event, localIdentifier: localIdentifier, attempt: attempt) else { return }
+                self.onContinuedProgress?()
+            }
+        }
+        return (attempt, reporter)
+    }
+
     private func noteUploadProgress(_ localId: String, _ fraction: Double) {
         guard case .uploading(let current) = uploadStates[localId] else { return }
         // quantized so progress redraws stay coarse.
@@ -1127,7 +1199,7 @@ final class BackupManager {
         case .idle, .scanning, .cancelled:
             0
         case .hashing(let done, let total):
-            total > 0 ? 0.2 * Double(done) / Double(total) : 0
+            Double(continuedPreparationProgress(completed: done, total: total).completedUnitCount) / 1_000_000
         case .checking:
             0.2
         case .uploading(let done, let total):
@@ -1144,6 +1216,13 @@ final class BackupManager {
             }
             return total
         }
+    }
+
+    private func continuedPreparationProgress(completed: Int, total: Int) -> ContinuedProgress {
+        let fractions = activeTransfers.items.filter {
+            hashingAssetIDs.contains($0.id) && ($0.stage == .preparing || $0.stage == .downloadingOriginal)
+        }.map(\.fraction)
+        return ContinuedProgress.preparation(completed: completed, total: total, inFlightFractions: fractions)
     }
 
     // MARK: - pipeline
@@ -1221,6 +1300,7 @@ final class BackupManager {
             try Task.checkCancellation()
             await stackEditedRevisions()
             if uploadsAllowed {
+                let completionAccount = accountKey
                 await index.advanceBacklogCheckpoint(to: startedAt, completed: scanned,
                                                      maximumRequestBytes: maximumRequestBytes)
                 let entries = await index.allEntries()
@@ -1230,13 +1310,26 @@ final class BackupManager {
                     return entry.isBackedUp || entry.unsupported
                         || entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes)
                 }
-                if complete, await index.flush() {
-                    BackupIntentStore.shared.set(false, account: accountKey)
-                    manualBackupRequested = false
+                if complete {
+                    let flushed = await index.flush()
+                    // Expiration or an account change may have happened at any
+                    // index await. Only the live run can acknowledge completion.
+                    try Task.checkCancellation()
+                    guard !isStopping, !requiresExplicitResume, !isShutDown,
+                          client.context.isActive, accountKey == completionAccount else {
+                        throw CancellationError()
+                    }
+                    if flushed, BackupIntentStore.shared.complete(account: completionAccount) {
+                        manualBackupRequested = false
+                    }
                 }
             }
             await index.flush()
             await refreshLibraryStatus()
+            try Task.checkCancellation()
+            guard !isStopping, !requiresExplicitResume, !isShutDown, client.context.isActive else {
+                throw CancellationError()
+            }
             if uploadsAllowed {
                 phase = .done(summary)
             } else {
@@ -1318,7 +1411,13 @@ final class BackupManager {
     private nonisolated enum HashOutcome: Sendable {
         case hashed(DeviceAsset, LocalResourceHashes)
         case failed(DeviceAsset, message: String, kind: RepeatedBackupFailureKind)
-        case cancelled
+        case cancelled(DeviceAsset)
+
+        var asset: DeviceAsset {
+            switch self {
+            case .hashed(let asset, _), .failed(let asset, _, _), .cancelled(let asset): asset
+            }
+        }
     }
 
     private func hashPhase(_ scanned: [DeviceAsset]) async throws {
@@ -1342,8 +1441,14 @@ final class BackupManager {
         phaseMediaTotal = MediaCounts(assets: toHash)
         phaseMediaCompleted = MediaCounts()
         phase = .hashing(done: 0, total: toHash.count)
+        hashingAssetIDs = Set(toHash.map(\.localIdentifier))
         let workerLimit = min(max(1, min(hashWorkers, Self.hashWorkerOptions.max() ?? 32)), toHash.count)
         var cancelled = false
+        var attempts: [String: UUID] = [:]
+        defer {
+            hashingAssetIDs = []
+            for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
+        }
         let reportICloudDownload: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.downloadedOriginalsFromICloud = true
@@ -1358,16 +1463,20 @@ final class BackupManager {
                       conditionsAllowWork else { return }
                 let asset = toHash[next]
                 next += 1
+                let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
+                attempts[asset.localIdentifier] = transfer.attempt
+                let preparation = transfer.reporter.component()
                 group.addTask {
                     do {
                         let hashes = try await PhotoLibraryService.hash(
                             localIdentifier: asset.localIdentifier,
                             includeMotion: asset.isLivePhoto,
-                            onICloudDownload: reportICloudDownload
+                            onICloudDownload: reportICloudDownload,
+                            onResourceProgress: { preparation.resourceProgress($0) }
                         )
                         return .hashed(asset, hashes)
                     } catch is CancellationError {
-                        return .cancelled
+                        return .cancelled(asset)
                     } catch {
                         return .failed(asset, message: error.localizedDescription, kind: .init(error: error))
                     }
@@ -1376,6 +1485,10 @@ final class BackupManager {
 
             for _ in 0..<workerLimit { addNext() }
             while let outcome = await group.next() {
+                let localId = outcome.asset.localIdentifier
+                if let attempt = attempts.removeValue(forKey: localId) {
+                    activeTransfers.finish(localIdentifier: localId, attempt: attempt)
+                }
                 if Task.isCancelled || !conditionsAllowWork {
                     cancelled = true
                     group.cancelAll()
@@ -1400,7 +1513,7 @@ final class BackupManager {
                     summary.failedMedia.add(asset)
                     phaseMediaCompleted.add(asset)
                     markUploadFailed(asset, reason: message, kind: kind)
-                case .cancelled:
+                case .cancelled(_):
                     cancelled = true
                     group.cancelAll()
                     continue
@@ -1460,13 +1573,23 @@ final class BackupManager {
             } else { verify.append((asset, entry)) }
         }
         let client = client, index = index, account = accountKey
+        var attempts: [String: UUID] = [:]
+        defer {
+            for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
+        }
         await withTaskGroup(of: (DeviceAsset, BackupEntry, (any Error)?).self) { group in
             var next = 0
-            func addNext() {
+            @MainActor func addNext() {
                 guard next < verify.count, !Task.isCancelled else { return }
                 let (asset, entry) = verify[next]
                 next += 1
+                let transfer = updatesPhase ? beginActiveTransfer(localIdentifier: asset.localIdentifier) : nil
+                if let transfer { attempts[asset.localIdentifier] = transfer.attempt }
                 group.addTask {
+                    if let transfer {
+                        let resource = await PhotoLibraryService.primaryResourceInfo(localIdentifier: asset.localIdentifier)
+                        transfer.reporter.verifying(filename: resource?.filename)
+                    }
                     do {
                         try await Self.verifyBackup(asset: asset, entry: entry, client: client, index: index, account: account)
                         return (asset, entry, nil)
@@ -1475,6 +1598,9 @@ final class BackupManager {
             }
             for _ in 0..<min(Self.verificationWorkers, verify.count) { addNext() }
             while let (asset, source, error) = await group.next() {
+                if let attempt = attempts.removeValue(forKey: asset.localIdentifier) {
+                    activeTransfers.finish(localIdentifier: asset.localIdentifier, attempt: attempt)
+                }
                 guard !isShutDown, client.context.isActive, !Task.isCancelled else { group.cancelAll(); continue }
                 if let error {
                     let state = (error as? BackupVerificationError)?.state ?? .failed
@@ -1550,7 +1676,11 @@ final class BackupManager {
         phaseMediaCompleted = MediaCounts()
         phase = .uploading(done: 0, total: queue.count)
         backlogUploadIDs = Set(queue.map(\.localIdentifier))
-        defer { backlogUploadIDs = [] }
+        var attempts: [String: UUID] = [:]
+        defer {
+            backlogUploadIDs = []
+            for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
+        }
         let client = client
         let index = index
         let deviceId = DeviceID.current
@@ -1577,6 +1707,8 @@ final class BackupManager {
                 let asset = queue[next]
                 next += 1
                 uploadStates[asset.localIdentifier] = .uploading(0)
+                let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
+                attempts[asset.localIdentifier] = transfer.attempt
                 let lifetime = runLifetime
                 let requestLimit = maximumRequestBytes
                 let chunking = chunking
@@ -1587,6 +1719,7 @@ final class BackupManager {
                         maximumRequestBytes: requestLimit,
                         chunking: chunking,
                         lifetime: lifetime,
+                        progressReporter: transfer.reporter,
                         onProgress: progress
                     )
                     return (asset, outcome)
@@ -1595,6 +1728,9 @@ final class BackupManager {
             for _ in 0..<Self.uploadWorkers { addNext() }
             while let (asset, outcome) = await group.next() {
                 let localId = asset.localIdentifier
+                if let attempt = attempts.removeValue(forKey: localId) {
+                    activeTransfers.finish(localIdentifier: localId, attempt: attempt)
+                }
                 done += 1
                 phaseMediaCompleted.add(asset)
                 switch outcome {
@@ -1689,6 +1825,7 @@ final class BackupManager {
         maximumRequestBytes: Int64?,
         chunking: ChunkedAssetUpload.Policy?,
         lifetime: BackgroundUploader.RunLifetime? = nil,
+        progressReporter: BackupTransferProgressReporter? = nil,
         onProgress: @escaping @Sendable (String, Double) -> Void
     ) async -> UploadOutcome {
         // everything up to the hand-off, the export and the request body, has
@@ -1707,9 +1844,11 @@ final class BackupManager {
         var entry = await index.entry(for: asset.localIdentifier)
         if entry == nil || current.modificationDate == nil || entry?.isLivePhoto != current.isLivePhoto || entry?.matches(modificationDate: current.modificationDate) != true {
             do {
+                let preparation = progressReporter?.component()
                 let hashes = try await PhotoLibraryService.hash(
                     localIdentifier: current.localIdentifier,
-                    includeMotion: current.isLivePhoto
+                    includeMotion: current.isLivePhoto,
+                    onResourceProgress: { preparation?.resourceProgress($0) }
                 )
                 await index.setHashed(
                     localId: current.localIdentifier,
@@ -1755,7 +1894,8 @@ final class BackupManager {
                 )
                 let result = try await send(
                     upload, motion: true, client: client, chunking: chunking, account: account,
-                    source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime
+                    source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
+                    progressReporter: progressReporter
                 ) { fraction in
                     onProgress(current.localIdentifier, fraction)
                 }
@@ -1781,7 +1921,8 @@ final class BackupManager {
                 )
                 let result = try await send(
                     upload, motion: false, client: client, chunking: chunking, account: account,
-                    source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime
+                    source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
+                    progressReporter: progressReporter
                 ) { fraction in
                     onProgress(current.localIdentifier, fraction)
                 }
@@ -1789,6 +1930,10 @@ final class BackupManager {
                 if !result.isDuplicate { uploadedSomething = true }
             }
             guard let candidate = await index.entry(for: current.localIdentifier) else { throw BackupVerificationError.stale }
+            if let progressReporter {
+                let resource = await PhotoLibraryService.primaryResourceInfo(localIdentifier: current.localIdentifier)
+                progressReporter.verifying(filename: resource?.filename)
+            }
             try await verifyBackup(asset: current, entry: candidate, client: client, index: index, account: account)
             return uploadedSomething ? .uploaded : .duplicate
         } catch is CancellationError {
@@ -1831,13 +1976,22 @@ final class BackupManager {
         maximumRequestBytes: Int64?,
         lease: ProcessLease,
         lifetime: BackgroundUploader.RunLifetime?,
+        progressReporter: BackupTransferProgressReporter?,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult {
+        let transfer = progressReporter?.component()
+        let resourceProgress: @Sendable (BackupResourceProgress) -> Void = { transfer?.resourceProgress($0) }
+        let byteProgress: @Sendable (UploadByteProgress) -> Void = { transfer?.uploadByteProgress($0) }
+        let uploadProgress: @Sendable (Double) -> Void = { fraction in
+            transfer?.uploadProgress(fraction)
+            onProgress(fraction)
+        }
         if let chunking {
             do {
                 return try await ChunkedAssetUpload.send(
                     upload, motion: motion, policy: chunking, client: client, account: account,
-                    source: source, lease: lease, lifetime: lifetime, onProgress: onProgress
+                    source: source, lease: lease, lifetime: lifetime, onResourceProgress: resourceProgress,
+                    onByteProgress: byteProgress, onProgress: uploadProgress
                 )
             } catch is ChunkedAssetUpload.Unavailable {
                 backupLog.info("sending \(upload.deviceAssetId) in one request, its size is not known")
@@ -1847,14 +2001,18 @@ final class BackupManager {
         // mid-transfer, so it cannot live where the system may reclaim it.
         let body = motion
             ? try await PhotoLibraryService.exportMotion(
-                localIdentifier: upload.deviceAssetId, to: BackgroundUploader.bodyDirectory, form: upload.form
+                localIdentifier: upload.deviceAssetId, to: BackgroundUploader.bodyDirectory, form: upload.form,
+                onResourceProgress: resourceProgress
             )
             : try await PhotoLibraryService.exportPrimary(
-                localIdentifier: upload.deviceAssetId, to: BackgroundUploader.bodyDirectory, form: upload.form
+                localIdentifier: upload.deviceAssetId, to: BackgroundUploader.bodyDirectory, form: upload.form,
+                onResourceProgress: resourceProgress
             )
+        transfer?.uploading()
         return try await client.uploadAsset(
             upload, bodyURL: body.fileURL, account: account, source: source,
-            maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime, onProgress: onProgress
+            maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
+            onByteProgress: byteProgress, onProgress: uploadProgress
         )
     }
 
@@ -1909,6 +2067,8 @@ final class BackupManager {
             throw SingleAssetBackupError.missing
         }
 
+        let transfer = beginActiveTransfer(localIdentifier: localIdentifier)
+        defer { activeTransfers.finish(localIdentifier: localIdentifier, attempt: transfer.attempt) }
         uploadStates[localIdentifier] = .uploading(0)
         let progress: @Sendable (String, Double) -> Void = { [weak self] id, fraction in
             guard let self else { return }
@@ -1922,6 +2082,7 @@ final class BackupManager {
             account: accountKey,
             maximumRequestBytes: maximumRequestBytes,
             chunking: chunking,
+            progressReporter: transfer.reporter,
             onProgress: progress
         )
 
@@ -1998,6 +2159,10 @@ final class BackupManager {
         let deviceId = DeviceID.current
         let account = accountKey
         var quotaMessage: String?
+        var attempts: [String: UUID] = [:]
+        defer {
+            for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
+        }
         let progress: @Sendable (String, Double) -> Void = { [weak self] localId, fraction in
             guard let self else { return }
             Task { @MainActor in self.noteUploadProgress(localId, fraction) }
@@ -2010,6 +2175,8 @@ final class BackupManager {
                 let asset = queue[next]
                 next += 1
                 uploadStates[asset.localIdentifier] = .uploading(0)
+                let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
+                attempts[asset.localIdentifier] = transfer.attempt
                 let requestLimit = maximumRequestBytes
                 let chunking = chunking
                 group.addTask {
@@ -2018,6 +2185,7 @@ final class BackupManager {
                         deviceId: deviceId, account: account,
                         maximumRequestBytes: requestLimit,
                         chunking: chunking,
+                        progressReporter: transfer.reporter,
                         onProgress: progress
                     )
                     return (asset, result)
@@ -2026,6 +2194,9 @@ final class BackupManager {
             for _ in 0..<Self.uploadWorkers { addNext() }
             while let (asset, result) = await group.next() {
                 let localId = asset.localIdentifier
+                if let attempt = attempts.removeValue(forKey: localId) {
+                    activeTransfers.finish(localIdentifier: localId, attempt: attempt)
+                }
                 switch result {
                 case .uploaded:
                     outcome.uploaded += 1
@@ -2245,6 +2416,8 @@ final class BackupManager {
 // MARK: - continued processing
 
 extension BackupManager: ContinuedWorkload {
+    var continuedOwnerID: UUID { client.context.id }
+
     var continuedTitle: String {
         switch phase {
         // a run with nothing to send is not an achievement to announce.

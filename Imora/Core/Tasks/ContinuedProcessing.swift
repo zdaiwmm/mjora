@@ -9,6 +9,8 @@ import os
 /// more often than the wording changes.
 @MainActor
 protocol ContinuedWorkload: AnyObject {
+    /// Stable for the account/request context that owns this workload.
+    var continuedOwnerID: UUID { get }
     var isRunning: Bool { get }
     var continuedTitle: String { get }
     var continuedSubtitle: String { get }
@@ -22,9 +24,9 @@ protocol ContinuedWorkload: AnyObject {
     /// starts the job if idle and suspends until it ends. the task has to
     /// outlive the whole thing, so it needs something to await.
     func runToCompletion() async
-    /// stops taking new work at once but leaves transfers the system already
-    /// carries alone, and keeps the request so the job resumes later.
-    func pauseForBackgroundExpiration()
+    /// Stops new work and retains the request. An ambiguous continued-task
+    /// expiration requires an explicit action before any automatic retry.
+    func pauseForBackgroundExpiration(requiresExplicitResume: Bool)
     /// stops the job for good, transfers included, and forgets the request.
     func cancel()
 }
@@ -34,22 +36,26 @@ protocol ContinuedWorkload: AnyObject {
 /// island and on the lock screen, with its own cancel button.
 ///
 /// the api is only for work the user explicitly asked for, which is why the
-/// backup instance covers the back up now button and not the library-change
-/// reruns. share uploads ride their own background url sessions and need
-/// none of this.
-///
-/// locking the device expires the task too, see apple forums thread 796138,
-/// and expiration carries no reason. the job pauses at once either way, and
-/// only an expiry that does not turn out to be a lock cancels it.
+/// backup instance covers explicit whole-library backup actions, including a
+/// request to continue an existing run. It never starts from automatic changes.
+/// Expiration carries no reason, so the job pauses until the person resumes it.
 @Observable
 final class ContinuedProcessing {
     static let backup = ContinuedProcessing(
         identifier: "\(Bundle.main.bundleIdentifier ?? "app.imora").backup"
     )
 
-    /// set by whoever owns the job; the launch handler needs it to exist by the
-    /// time the system calls back.
-    @ObservationIgnored weak var workload: (any ContinuedWorkload)?
+    /// Replacing an account's workload withdraws its request. A delayed launch
+    /// must never treat the replacement account as the requesting person.
+    @ObservationIgnored weak var workload: (any ContinuedWorkload)? {
+        didSet { workloadDidChange(from: oldValue) }
+    }
+
+    private struct WorkloadBinding {
+        let workload: any ContinuedWorkload
+        let request: ContinuedSubmissionState.Request
+        let generation: UUID
+    }
 
     /// one fixed identifier per job kind, registered once. apple blocks wildcard
     /// handlers - the registered and submitted strings have to match - and only
@@ -60,16 +66,75 @@ final class ContinuedProcessing {
     /// nothing may touch a task past that point.
     private var current: BGContinuedProcessingTask?
     private var lastSubtitle = ""
-    private var backgroundedAt: Date?
+    private var submissionState = ContinuedSubmissionState()
+    private var ownerGeneration = UUID()
+    @ObservationIgnored private var pendingBinding: WorkloadBinding?
+    @ObservationIgnored private var currentBinding: WorkloadBinding?
+    @ObservationIgnored private let submitRequestOperation: @Sendable (String, String, String) async -> ContinuedSubmissionState.Denial?
+    @ObservationIgnored private let cancelRequestOperation: @MainActor (String) -> Void
 
-    /// a lock withdraws protected data within about ten seconds.
-    private static let lockGrace: Duration = .seconds(15)
-    /// an app sent to the background this recently was locked from the
-    /// foreground, which nothing else shows in time.
-    private static let foregroundLockWindow: TimeInterval = 3
+    var status: ContinuedSubmissionState.Status { submissionState.status }
+    var canRequestContinuation: Bool { current == nil && !status.isActive }
+    private(set) var backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
 
-    private init(identifier: String) {
+    init(
+        identifier: String,
+        isRegistered: Bool = false,
+        submitRequest: (@Sendable (String, String, String) async -> ContinuedSubmissionState.Denial?)? = nil,
+        cancelRequest: (@MainActor (String) -> Void)? = nil
+    ) {
         self.identifier = identifier
+        self.isRegistered = isRegistered
+        self.submitRequestOperation = submitRequest ?? { identifier, title, subtitle in
+            await Self.submitRequest(identifier: identifier, title: title, subtitle: subtitle)
+        }
+        self.cancelRequestOperation = cancelRequest ?? { identifier in
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+        }
+    }
+
+    private func workloadDidChange(from previous: (any ContinuedWorkload)?) {
+        let sameObject = previous.map { ObjectIdentifier($0) } == workload.map { ObjectIdentifier($0) }
+        let boundOwner = currentBinding?.request.owner ?? pendingBinding?.request.owner
+        if sameObject, boundOwner == nil || boundOwner == workload?.continuedOwnerID { return }
+        invalidateOwnerRequest()
+    }
+
+    /// An explicit in-app Cancel also withdraws a not-yet-launched request.
+    /// An old manager cannot withdraw a replacement account's continuation.
+    func withdraw(for owner: any ContinuedWorkload) {
+        guard let workload, ObjectIdentifier(workload) == ObjectIdentifier(owner) else { return }
+        invalidateOwnerRequest()
+    }
+
+    /// A withdrawn request returns false too, but must never restart a backup
+    /// through the foreground-only fallback in its original button action.
+    func canFallbackToForeground(for owner: any ContinuedWorkload) -> Bool {
+        guard let workload, ObjectIdentifier(workload) == ObjectIdentifier(owner),
+              case .denied = status else { return false }
+        return true
+    }
+
+    private func invalidateOwnerRequest() {
+        let hadRequest = status.isActive
+        ownerGeneration = UUID()
+        currentBinding?.workload.onContinuedProgress = nil
+        pendingBinding = nil
+        currentBinding = nil
+        if let task = current {
+            current = nil
+            task.expirationHandler = nil
+            task.setTaskCompleted(success: false)
+        }
+        submissionState.invalidateOwner()
+        if hadRequest { cancelRequestOperation(identifier) }
+    }
+
+    private func bindingIsCurrent(_ binding: WorkloadBinding) -> Bool {
+        guard let workload else { return false }
+        return binding.generation == ownerGeneration
+            && ObjectIdentifier(workload) == ObjectIdentifier(binding.workload)
+            && workload.continuedOwnerID == binding.request.owner
     }
 
     /// called from the app initializer. continued-processing registrations are
@@ -95,29 +160,65 @@ final class ContinuedProcessing {
             backupLog.error("continued processing identifier missing from the info plist")
         }
         _ = NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
+            forName: UIApplication.backgroundRefreshStatusDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.backgroundedAt = Date() }
+            MainActor.assumeIsolated { self?.refreshBackgroundRefreshStatus() }
         }
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshBackgroundRefreshStatus() }
+        }
+    }
+
+    func refreshBackgroundRefreshStatus() {
+        backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
     }
 
     /// asks the system to run the job as continued processing. false means it
     /// declined and the caller should just run in app.
     func submit(title: String, subtitle: String) async -> Bool {
-        guard isRegistered, workload?.isRunning != true else { return false }
-        return await Self.submitRequest(identifier: identifier, title: title, subtitle: subtitle)
+        guard canRequestContinuation,
+              let submission = submissionState.beginSubmission(owner: workload?.continuedOwnerID ?? ownerGeneration) else { return false }
+        guard isRegistered, let workload else {
+            submissionState.completeSubmission(submission, failure: .notPermitted)
+            return false
+        }
+        let binding = WorkloadBinding(workload: workload, request: submission, generation: ownerGeneration)
+        pendingBinding = binding
+        // Background App Refresh is diagnostic information, not a substitute
+        // for asking the scheduler whether this explicit task can run.
+        refreshBackgroundRefreshStatus()
+        let failure = await submitRequestOperation(identifier, title, subtitle)
+        guard bindingIsCurrent(binding) else { return false }
+        submissionState.completeSubmission(submission, failure: failure)
+        if failure != nil, pendingBinding?.request == submission { pendingBinding = nil }
+        return failure == nil
     }
 
     // MARK: - running
 
     private func begin(_ task: BGContinuedProcessingTask) {
-        guard current == nil, let workload else {
+        guard current == nil else {
             task.setTaskCompleted(success: false)
             return
         }
+        guard let binding = pendingBinding, bindingIsCurrent(binding),
+              submissionState.didStart(binding.request, owner: binding.workload.continuedOwnerID) else {
+            pendingBinding = nil
+            submissionState.invalidateOwner()
+            task.setTaskCompleted(success: false)
+            return
+        }
+        let workload = binding.workload
+        let request = binding.request
         backupLog.info("continued processing task started")
+        pendingBinding = nil
+        currentBinding = binding
         current = task
         lastSubtitle = ""
         task.progress.totalUnitCount = 1
@@ -125,72 +226,42 @@ final class ContinuedProcessing {
         task.expirationHandler = { [weak self, weak task] in
             Task { @MainActor in
                 guard let self, let task else { return }
-                self.expire(task)
+                self.expire(task, request: request)
             }
         }
         workload.onContinuedProgress = { [weak self, weak task] in
             guard let self, let task else { return }
-            self.report(to: task)
+            self.report(to: task, request: request)
         }
         Task {
-            guard task === current else { return }
+            guard task === current, currentBinding?.request == request else { return }
             await workload.runToCompletion()
-            guard task === current else { return }
+            guard task === current, currentBinding?.request == request else { return }
             workload.onContinuedProgress = nil
-            report(to: task)
-            finish(task, success: !workload.continuedFailed)
+            report(to: task, request: request)
+            finish(task, request: request, success: !workload.continuedFailed)
         }
     }
 
-    /// the cancel button in the system ui lands here, as does the system
-    /// reclaiming the task on a device lock, and nothing says which. the job
-    /// stops taking work and the task is closed at once either way. a lock
-    /// must not throw away uploads the system is still carrying, so the job
-    /// is only cancelled when the device turns out not to be locked. a paused
-    /// job resumes from its saved request on the next foreground or
-    /// background processing window, never through a new continued task.
-    private func expire(_ task: BGContinuedProcessingTask) {
-        guard task === current, let workload else { return }
+    /// The system's Cancel action and resource expiration use the same handler.
+    /// Retain work, stop immediately, and require a fresh foreground action.
+    private func expire(_ task: BGContinuedProcessingTask, request: ContinuedSubmissionState.Request) {
+        guard task === current, let binding = currentBinding, binding.request == request else { return }
+        let workload = binding.workload
         workload.onContinuedProgress = nil
-        workload.pauseForBackgroundExpiration()
-        finish(task, success: false)
-        let expiredAt = Date()
-        // nothing keeps the app alive any more; the wait needs its own time.
-        let lease = ProcessLease.take("continued processing expiry")
-        Task {
-            defer { lease.release() }
-            if await deviceLocked(expiredAt: expiredAt) {
-                backupLog.info("continued processing expired by a device lock, the backup resumes later")
-            } else {
-                backupLog.info("continued processing cancelled, cancelling the backup")
-                workload.cancel()
-            }
-        }
+        workload.pauseForBackgroundExpiration(requiresExplicitResume: true)
+        finish(task, request: request, success: false, paused: true)
+        backupLog.info("continued processing stopped; explicit whole-library resume required")
     }
 
-    /// a locked device withdraws protected data, within about ten seconds of
-    /// the lock, so that is polled for a little longer than that. the app
-    /// entering the background right around the expiry is the lock seen from
-    /// the foreground, which the withdrawal may be too slow to show; a
-    /// backgrounding well after the expiry is the user leaving and says nothing.
-    private func deviceLocked(expiredAt: Date) async -> Bool {
-        let deadline = ContinuousClock.now + Self.lockGrace
-        while true {
-            if !UIApplication.shared.isProtectedDataAvailable { return true }
-            if let backgroundedAt,
-               abs(backgroundedAt.timeIntervalSince(expiredAt)) < Self.foregroundLockWindow {
-                return true
-            }
-            guard ContinuousClock.now < deadline else { return false }
-            try? await Task.sleep(for: .seconds(1))
-        }
-    }
-
-    private func report(to task: BGContinuedProcessingTask) {
-        guard task === current, let workload else { return }
+    private func report(to task: BGContinuedProcessingTask, request: ContinuedSubmissionState.Request) {
+        guard task === current, let binding = currentBinding, binding.request == request else { return }
+        let workload = binding.workload
         if let progress = workload.continuedProgress {
             task.progress.totalUnitCount = progress.totalUnitCount
-            task.progress.completedUnitCount = progress.completedUnitCount
+            // PhotoKit can move to the next component of a Live Photo. Keep
+            // measured task progress from moving backwards at that boundary.
+            task.progress.completedUnitCount = max(task.progress.completedUnitCount, progress.completedUnitCount)
         }
         let subtitle = workload.continuedSubtitle
         // byte progress ticks far more often than the wording changes.
@@ -199,9 +270,12 @@ final class ContinuedProcessing {
         task.updateTitle(workload.continuedTitle, subtitle: subtitle)
     }
 
-    private func finish(_ task: BGContinuedProcessingTask, success: Bool) {
-        guard task === current else { return }
+    private func finish(_ task: BGContinuedProcessingTask, request: ContinuedSubmissionState.Request, success: Bool, paused: Bool = false) {
+        guard task === current, currentBinding?.request == request else { return }
         current = nil
+        currentBinding = nil
+        submissionState.didFinish(request, paused: paused)
+        task.expirationHandler = nil
         task.setTaskCompleted(success: success)
     }
 
@@ -212,7 +286,7 @@ final class ContinuedProcessing {
         identifier: String,
         title: String,
         subtitle: String
-    ) async -> Bool {
+    ) async -> ContinuedSubmissionState.Denial? {
         let request = BGContinuedProcessingTaskRequest(
             identifier: identifier,
             title: title,
@@ -227,10 +301,18 @@ final class ContinuedProcessing {
             } else {
                 try BGTaskScheduler.shared.submit(request)
             }
-            return true
+            return nil
         } catch {
-            backupLog.info("continued processing declined: \((error as NSError).code)")
-            return false
+            let failure = error as NSError
+            backupLog.info("continued processing declined: \(failure.code)")
+            guard failure.domain == BGTaskScheduler.errorDomain else { return .unknown }
+            switch BGTaskScheduler.Error.Code(rawValue: failure.code) {
+            case .immediateRunIneligible: return .systemBusy
+            case .unavailable: return .systemUnavailable
+            case .notPermitted: return .notPermitted
+            case .tooManyPendingTaskRequests: return .tooManyRequests
+            default: return .unknown
+            }
         }
     }
 }

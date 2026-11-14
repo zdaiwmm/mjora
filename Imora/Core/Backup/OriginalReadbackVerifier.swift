@@ -16,11 +16,11 @@ nonisolated enum OriginalReadbackError: Error, LocalizedError {
 nonisolated enum OriginalReadbackVerifier {
     /// No original bytes are accumulated in memory or written to disk. A small
     /// buffer amortizes SHA1 updates, including for large Live Photo videos.
-    static func verify(request: URLRequest, expected: ResourceDigest, context: AccountRequestContext) async throws -> ResourceDigest {
+    static func verify(request: URLRequest, expected: ResourceDigest, context: AccountRequestContext, session: URLSession = ControlledSession.noRedirect) async throws -> ResourceDigest {
         guard expected.byteCount > 0, context.isActive else { throw OriginalReadbackError.contentMismatch }
         var request = request
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let (bytes, response) = try await ControlledSession.noRedirect.bytes(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         defer { bytes.task.cancel() }
         try Task.checkCancellation()
         guard context.isActive else { throw ServerTrustError.sessionExpired }

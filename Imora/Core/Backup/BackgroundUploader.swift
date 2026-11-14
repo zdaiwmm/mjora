@@ -55,10 +55,12 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         .appending(path: "imora/uploads")
 
     private var session: URLSession!
+    private var pinnedSessions: [String: URLSession] = [:]
     private let lock = NSLock()
-    private var continuations: [Int: CheckedContinuation<Data, any Error>] = [:]
-    private var buffers: [Int: Data] = [:]
-    private var progressHandlers: [Int: @Sendable (Double) -> Void] = [:]
+    private var continuations: [ObjectIdentifier: CheckedContinuation<Data, any Error>] = [:]
+    private var buffers: [ObjectIdentifier: Data] = [:]
+    private var progressHandlers: [ObjectIdentifier: @Sendable (Double) -> Void] = [:]
+    private var byteProgressHandlers: [ObjectIdentifier: (id: UUID, callback: @Sendable (UploadByteProgress) -> Void)] = [:]
     private var orphanHandler: (@Sendable ([Completion]) async -> [Completion])?
     private var replayScheduled = false
     private let journal = UploadJournal()
@@ -71,6 +73,29 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         config.httpCookieStorage = nil
         config.httpMaximumConnectionsPerHost = 3
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }
+
+    private func session(for request: URLRequest, context: AccountRequestContext) throws -> URLSession {
+        guard let url = request.url else { throw ServerTrustError.untrustedTarget }
+        guard let identity = try ServerRoute.transportIdentity(to: url, for: context.apiURL) else { return session }
+        return lock.withLock {
+            if let value = pinnedSessions[identity.sessionKey] { return value }
+            let config = URLSessionConfiguration.default
+            config.httpCookieStorage = nil
+            config.urlCache = nil
+            config.httpMaximumConnectionsPerHost = 3
+            let value = URLSession(configuration: config,
+                delegate: PinnedBackupDelegate(owner: self, identity: identity), delegateQueue: nil)
+            pinnedSessions[identity.sessionKey] = value
+            return value
+        }
+    }
+
+    private func allTasks() async -> [URLSessionTask] {
+        let values = lock.withLock { [session!] + Array(pinnedSessions.values) }
+        var tasks: [URLSessionTask] = []
+        for value in values { tasks += await value.allTasks }
+        return tasks
     }
 
     /// Retire legacy daemon-owned transfers before beginning guarded work.
@@ -123,7 +148,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         var waited = false
         while true {
             try Task.checkCancellation()
-            let tasks = await session.allTasks
+            let tasks = await allTasks()
             let exists = tasks.contains {
                 guard let ticket = Self.decode($0.taskDescription) else { return false }
                 return ticket.account == account && ticket.localId == localId
@@ -155,6 +180,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         context: AccountRequestContext,
         lease: ProcessLease? = nil,
         lifetime: RunLifetime? = nil,
+        onByteProgress: (@Sendable (UploadByteProgress) -> Void)? = nil,
         onProgress: (@Sendable (Double) -> Void)?
     ) async throws -> Data {
         try Task.checkCancellation()
@@ -165,9 +191,9 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         try ProtectedTemporaryFiles.protect(bodyURL)
         // Persist a source candidate, not a completion proof, before sending.
         try journal.prepare(ticket)
-        let task = session.uploadTask(with: request, fromFile: bodyURL)
+        let task = try session(for: request, context: context).uploadTask(with: request, fromFile: bodyURL)
         task.taskDescription = Self.encode(ticket)
-        let id = task.taskIdentifier
+        let id = ObjectIdentifier(task)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 // registered before the task runs, or a fast failure would find
@@ -176,10 +202,12 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
                     guard !Task.isCancelled, lifetime?.hasExpired != true else { return false }
                     continuations[id] = continuation
                     progressHandlers[id] = onProgress
-                    do { try context.startWhileActive { task.resume() } }
+                    if let onByteProgress { byteProgressHandlers[id] = (UUID(), onByteProgress) }
+                    do { try context.startWhileActive(for: request) { task.resume() } }
                     catch {
                         continuations[id] = nil
                         progressHandlers[id] = nil
+                        byteProgressHandlers[id] = nil
                         return false
                     }
                     return true
@@ -194,6 +222,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
             // the file. completion still reaches the durable receipt journal.
             let continuation = self?.lock.withLock {
                 self?.progressHandlers[id] = nil
+                self?.byteProgressHandlers[id] = nil
                 return self?.continuations.removeValue(forKey: id)
             }
             if lifetime?.hasExpired != true { task.cancel() }
@@ -202,7 +231,8 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
     }
 
     func cancelAll(contextID: UUID) {
-        session.getAllTasks { tasks in
+        Task {
+            let tasks = await allTasks()
             for task in tasks {
                 guard let ticket = Self.decode(task.taskDescription), ticket.contextID == contextID else { continue }
                 task.cancel()
@@ -214,7 +244,8 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
     /// them behind and nothing else ever will. anything recent is spared: a
     /// body is on disk for a moment before its task exists.
     func sweepAbandonedBodies() {
-        session.getAllTasks { tasks in
+        Task {
+            let tasks = await allTasks()
             let live = Set(tasks.compactMap { Self.decode($0.taskDescription)?.bodyPath })
             let manager = FileManager.default
             let contents = (try? manager.contentsOfDirectory(
@@ -241,7 +272,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
 
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        lock.withLock { buffers[dataTask.taskIdentifier, default: Data()].append(data) }
+        lock.withLock { buffers[ObjectIdentifier(dataTask), default: Data()].append(data) }
         if let ticket = Self.decode(dataTask.taskDescription) {
             do { try journal.appendResponse(data, ticket: ticket) }
             catch { backupLog.error("upload response could not be saved: \((error as NSError).code)") }
@@ -255,13 +286,19 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         totalBytesSent: Int64,
         totalBytesExpectedToSend: Int64
     ) {
+        let byteHandler = lock.withLock { byteProgressHandlers[ObjectIdentifier(task)] }
+        if let byteHandler {
+            byteHandler.callback(UploadByteProgress(transferID: byteHandler.id, bytesSent: bytesSent,
+                totalBytesSent: totalBytesSent, totalBytesExpectedToSend: totalBytesExpectedToSend,
+                timestamp: ProcessInfo.processInfo.systemUptime))
+        }
         guard totalBytesExpectedToSend > 0 else { return }
-        let handler = lock.withLock { progressHandlers[task.taskIdentifier] }
+        let handler = lock.withLock { progressHandlers[ObjectIdentifier(task)] }
         handler?(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        let id = task.taskIdentifier
+        let id = ObjectIdentifier(task)
         let ticket = Self.decode(task.taskDescription)
         let (continuation, data) = lock.withLock { () -> (CheckedContinuation<Data, any Error>?, Data) in
             let continuation = continuations.removeValue(forKey: id)
@@ -269,6 +306,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
             let persisted = ticket.flatMap { journal.response(for: $0) }
             let data = (persisted?.count ?? 0) >= buffered.count ? (persisted ?? buffered) : buffered
             progressHandlers[id] = nil
+            byteProgressHandlers[id] = nil
             return (continuation, data)
         }
         let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
@@ -325,5 +363,31 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
             if let messages = object["message"] as? [String] { return messages.joined(separator: "\n") }
         }
         return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+/// A distinct delegate/connection pool for each enrolled private CA. Task
+/// object keys in the owner avoid collisions between session-local task IDs.
+private nonisolated final class PinnedBackupDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let owner: BackgroundUploader
+    private let identity: LocalServerIdentity
+    init(owner: BackgroundUploader, identity: LocalServerIdentity) { self.owner = owner; self.identity = identity }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @Sendable @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        LocalServerIdentity.answer(challenge, requestURL: task.currentRequest?.url, identity: identity, completion: completionHandler)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @Sendable @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        owner.urlSession(session, dataTask: dataTask, didReceive: data)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        owner.urlSession(session, task: task, didSendBodyData: bytesSent,
+            totalBytesSent: totalBytesSent, totalBytesExpectedToSend: totalBytesExpectedToSend)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        owner.urlSession(session, task: task, didCompleteWithError: error)
     }
 }

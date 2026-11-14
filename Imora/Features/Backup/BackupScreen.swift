@@ -8,6 +8,7 @@ struct BackupScreen: View {
     @State private var cleanupTask: Task<Void, Never>?
     @State private var confirmCleanup = false
     @State private var confirmBackupConditions = false
+    @State private var confirmBackgroundConditions = false
     @State private var reportsNextBackupFailure = false
     @State private var activeBackupPresented = false
 
@@ -29,6 +30,20 @@ struct BackupScreen: View {
                 batterySection(backup)
                 repeatedFailuresSection(backup)
                 statusSection(backup)
+                Section("Background Backup") {
+                    BackgroundBackupControls(backup: backup) {
+                        if backup.manualBackupNeedsApproval {
+                            confirmBackgroundConditions = true
+                        } else {
+                            startBackup(backup)
+                        }
+                    }
+                }
+                if !backup.activeTransfers.items.isEmpty {
+                    Section {
+                        ActiveBackupTransfersView(transfers: backup.activeTransfers)
+                    }
+                }
                 advancedSection(backup)
                 cleanupSection(backup)
             }
@@ -37,6 +52,14 @@ struct BackupScreen: View {
         .onDisappear { cleanupTask?.cancel() }
         .navigationTitle("Backup")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Back up now?", isPresented: $confirmBackgroundConditions, titleVisibility: .visible) {
+            if let backup = session.backup {
+                Button("Continue Backup in Background") { startBackup(backup) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let backup = session.backup { Text(backup.manualBackupApprovalMessage) }
+        }
         .fullScreenCover(isPresented: $activeBackupPresented) {
             if let backup = session.backup {
                 ActiveBackupScreen(backup: backup)
@@ -371,7 +394,7 @@ struct BackupScreen: View {
                 title: String(localized: "Backing up"),
                 subtitle: String(localized: "Indexing your library...")
             )
-            if !accepted { backup.start() }
+            if !accepted, ContinuedProcessing.backup.canFallbackToForeground(for: backup) { backup.start() }
         }
     }
 

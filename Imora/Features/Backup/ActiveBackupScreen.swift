@@ -11,6 +11,7 @@ struct ActiveBackupScreen: View {
     let backup: BackupManager
 
     @State private var idleTimerOwner = UUID()
+    @State private var confirmBackgroundConditions = false
 
     var body: some View {
         ZStack {
@@ -49,6 +50,12 @@ struct ActiveBackupScreen: View {
         }
         .onChange(of: backup.isRunning) { _, running in
             if !running { finishActiveMode() }
+        }
+        .confirmationDialog("Back up now?", isPresented: $confirmBackgroundConditions, titleVisibility: .visible) {
+            Button("Continue Backup in Background") { requestBackgroundContinuation() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(backup.manualBackupApprovalMessage)
         }
     }
 
@@ -100,19 +107,35 @@ struct ActiveBackupScreen: View {
                     .accessibilityIdentifier("active-backup-recent-status")
             }
 
+            if !backup.activeTransfers.items.isEmpty {
+                ActiveBackupTransfersView(transfers: backup.activeTransfers)
+                    .frame(maxWidth: 420)
+            }
+
             VStack(spacing: 10) {
                 Text("Especially helpful for your first backup")
                     .font(.callout.weight(.semibold))
                 Text("This screen prevents automatic locking and keeps Imora active, giving it more time to index your library and upload missing photos and videos.")
                 Text("Indexing checks your files against the server so photos and videos already backed up don't upload again.")
                 Text("When the backup finishes, Imora returns to Backup settings and lets your screen lock normally again.")
-                Text("Connect to power and leave this screen open. Locking your phone or switching apps lets iOS limit how long indexing and backup can continue.")
+                Text("Connect to power and leave this screen open for a foreground backup, or request background continuation below.")
             }
             .font(.footnote)
             .foregroundStyle(.white.opacity(0.75))
             .multilineTextAlignment(.center)
             .frame(maxWidth: 360)
             .accessibilityIdentifier("active-backup-explanation")
+
+            BackgroundBackupControls(backup: backup, usesDarkBackground: true) {
+                if backup.manualBackupNeedsApproval {
+                    confirmBackgroundConditions = true
+                } else {
+                    requestBackgroundContinuation()
+                }
+            }
+            .buttonStyle(.bordered)
+            .tint(.white.opacity(0.85))
+            .frame(maxWidth: 360)
 
             Spacer()
 
@@ -130,6 +153,16 @@ struct ActiveBackupScreen: View {
         // release the idle timer before dismissal, auto-lock applies again.
         releaseIdleTimer()
         dismiss()
+    }
+
+    private func requestBackgroundContinuation() {
+        Task {
+            let accepted = await ContinuedProcessing.backup.submit(
+                title: String(localized: "Backing up"),
+                subtitle: String(localized: "Indexing your library...")
+            )
+            if !accepted, ContinuedProcessing.backup.canFallbackToForeground(for: backup) { backup.start() }
+        }
     }
 
     private func acquireIdleTimer() {

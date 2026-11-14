@@ -278,33 +278,39 @@ nonisolated enum PhotoLibraryService {
     static func hash(
         localIdentifier: String,
         includeMotion: Bool,
-        onICloudDownload: (@Sendable () -> Void)? = nil
+        onICloudDownload: (@Sendable () -> Void)? = nil,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)? = nil
     ) async throws -> LocalResourceHashes {
         guard let asset = fetchPHAsset(localIdentifier) else { throw PhotoLibraryError.assetMissing }
         guard let primary = primaryResource(for: asset) else { throw PhotoLibraryError.resourceMissing }
-        let primaryHash = try await sha1Base64(of: primary, onICloudDownload: onICloudDownload)
+        let primaryHash = try await sha1Base64(of: primary, onICloudDownload: onICloudDownload, onResourceProgress: onResourceProgress)
         var motionHash: ResourceDigest?
         if includeMotion {
             guard let motion = motionResource(for: asset) else { throw PhotoLibraryError.resourceMissing }
-            motionHash = try await sha1Base64(of: motion, onICloudDownload: onICloudDownload)
+            motionHash = try await sha1Base64(of: motion, onICloudDownload: onICloudDownload, onResourceProgress: onResourceProgress)
         }
         return LocalResourceHashes(primaryDigest: primaryHash, motionDigest: motionHash)
     }
 
     private static func sha1Base64(
         of resource: PHAssetResource,
-        onICloudDownload: (@Sendable () -> Void)?
+        onICloudDownload: (@Sendable () -> Void)?,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)?
     ) async throws -> ResourceDigest {
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
         let box = DataRequestBox()
-        options.progressHandler = { _ in
+        let progress = PhotoResourceProgressEmitter(filename: resource.originalFilename,
+            expectedBytes: resource.value(forKey: "fileSize") as? Int64, observer: onResourceProgress)
+        progress.started()
+        options.progressHandler = { fraction in
             box.reportICloudDownload(onICloudDownload)
+            progress.downloading(fraction)
         }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let requestID = PHAssetResourceManager.default().requestData(for: resource, options: options) { data in
-                    box.append(data)
+                    if let bytes = box.append(data) { progress.read(bytes) }
                 } completionHandler: { error in
                     // photokit calls this exactly once, including after a cancel.
                     if let error {
@@ -411,22 +417,24 @@ nonisolated enum PhotoLibraryService {
         localIdentifier: String,
         to directory: URL,
         form: MultipartBody.Form? = nil,
-        progress: (@Sendable (Double) -> Void)? = nil
+        progress: (@Sendable (Double) -> Void)? = nil,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)? = nil
     ) async throws -> ExportedResource {
         guard let asset = fetchPHAsset(localIdentifier) else { throw PhotoLibraryError.assetMissing }
         guard let resource = primaryResource(for: asset) else { throw PhotoLibraryError.resourceMissing }
-        return try await export(resource, to: directory, form: form, progress: progress)
+        return try await export(resource, to: directory, form: form, progress: progress, onResourceProgress: onResourceProgress)
     }
 
     @concurrent
     static func exportMotion(
         localIdentifier: String,
         to directory: URL,
-        form: MultipartBody.Form? = nil
+        form: MultipartBody.Form? = nil,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)? = nil
     ) async throws -> ExportedResource {
         guard let asset = fetchPHAsset(localIdentifier) else { throw PhotoLibraryError.assetMissing }
         guard let resource = motionResource(for: asset) else { throw PhotoLibraryError.resourceMissing }
-        return try await export(resource, to: directory, form: form, progress: nil)
+        return try await export(resource, to: directory, form: form, progress: nil, onResourceProgress: onResourceProgress)
     }
 
     /// streams the resource into a temp file through the same cancellable
@@ -435,11 +443,15 @@ nonisolated enum PhotoLibraryService {
         _ resource: PHAssetResource,
         to directory: URL,
         form: MultipartBody.Form?,
-        progress: (@Sendable (Double) -> Void)?
+        progress: (@Sendable (Double) -> Void)?,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)?
     ) async throws -> ExportedResource {
         // created first: capacity cannot be read for a missing directory.
         try ProtectedTemporaryFiles.prepareDirectory(directory)
         let resourceBytes = resource.value(forKey: "fileSize") as? Int64 ?? 0
+        let resourceProgress = PhotoResourceProgressEmitter(filename: resource.originalFilename,
+            expectedBytes: resourceBytes, observer: onResourceProgress)
+        resourceProgress.started()
         guard availableCapacity(at: directory) > resourceBytes + storageFloor else {
             throw PhotoLibraryError.insufficientStorage
         }
@@ -451,6 +463,7 @@ nonisolated enum PhotoLibraryService {
         options.isNetworkAccessAllowed = true
         options.progressHandler = { fraction in
             progress?(fraction)
+            resourceProgress.downloading(fraction)
         }
         let box = DataRequestBox(fileHandle: handle)
         do {
@@ -460,7 +473,7 @@ nonisolated enum PhotoLibraryService {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     let requestID = PHAssetResourceManager.default().requestData(for: resource, options: options) { data in
-                        box.append(data)
+                        if let bytes = box.append(data) { resourceProgress.read(bytes) }
                     } completionHandler: { error in
                         if let error {
                             continuation.resume(throwing: mapCancellation(error))
@@ -523,12 +536,16 @@ nonisolated enum PhotoLibraryService {
         chunkBytes: Int64,
         expectedBytes: Int64,
         to directory: URL,
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)? = nil,
         consume: @escaping @Sendable (ResourceChunk) async throws -> Void
     ) async throws {
         guard let asset = fetchPHAsset(localIdentifier) else { throw PhotoLibraryError.assetMissing }
         guard let resource = motion ? motionResource(for: asset) : primaryResource(for: asset) else {
             throw PhotoLibraryError.resourceMissing
         }
+        let resourceProgress = PhotoResourceProgressEmitter(filename: resource.originalFilename,
+            expectedBytes: expectedBytes, observer: onResourceProgress)
+        resourceProgress.started()
         try ProtectedTemporaryFiles.prepareDirectory(directory)
         guard availableCapacity(at: directory) > 2 * chunkBytes + storageFloor else {
             throw PhotoLibraryError.insufficientStorage
@@ -543,6 +560,7 @@ nonisolated enum PhotoLibraryService {
         )
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
+        options.progressHandler = { fraction in resourceProgress.downloading(fraction) }
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -564,6 +582,7 @@ nonisolated enum PhotoLibraryService {
                     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                         let requestID = PHAssetResourceManager.default().requestData(for: resource, options: options) { data in
                             writer.append(data)
+                            resourceProgress.read(writer.streamedByteCount)
                         } completionHandler: { error in
                             if let error {
                                 let error = mapCancellation(error)
@@ -655,6 +674,27 @@ nonisolated enum PhotoLibraryService {
 /// lock-guarded accumulator shared between photokit's data callback, the
 /// completion handler and the task cancellation handler. no assumptions about
 /// which queue photokit uses.
+private nonisolated struct PhotoResourceProgressEmitter: Sendable {
+    private let resourceID = UUID()
+    let filename: String
+    let expectedBytes: Int64?
+    let observer: (@Sendable (BackupResourceProgress) -> Void)?
+
+    init(filename: String, expectedBytes: Int64?, observer: (@Sendable (BackupResourceProgress) -> Void)?) {
+        self.filename = filename; self.expectedBytes = expectedBytes; self.observer = observer
+    }
+
+    func started() { observer?(.init(resourceID: resourceID, filename: filename, stage: .preparing, fraction: nil)) }
+    func downloading(_ fraction: Double) {
+        observer?(.init(resourceID: resourceID, filename: filename, stage: .downloadingOriginal, fraction: fraction))
+    }
+    func read(_ bytes: Int64) {
+        guard let expectedBytes, expectedBytes > 0, bytes > 0 else { return }
+        observer?(.init(resourceID: resourceID, filename: filename, stage: .preparing,
+            fraction: Double(bytes) / Double(expectedBytes)))
+    }
+}
+
 private nonisolated final class DataRequestBox: @unchecked Sendable {
     private struct State {
         var hasher = Insecure.SHA1()
@@ -673,21 +713,24 @@ private nonisolated final class DataRequestBox: @unchecked Sendable {
         self.lock = OSAllocatedUnfairLock(initialState: State())
     }
 
-    func append(_ data: Data) {
+    @discardableResult
+    func append(_ data: Data) -> Int64? {
         lock.withLock { state in
             if let fileHandle {
-                guard state.writeError == nil else { return }
+                guard state.writeError == nil else { return nil }
                 do {
                     try fileHandle.write(contentsOf: data)
                 } catch {
                     if state.writeError == nil {
                         state.writeError = error as NSError
                     }
+                    return nil
                 }
             } else {
                 state.hasher.update(data: data)
-                state.byteCount += Int64(data.count)
             }
+            state.byteCount += Int64(data.count)
+            return state.byteCount
         }
     }
 
@@ -763,6 +806,8 @@ private nonisolated final class ChunkWriter: @unchecked Sendable {
     private var chunkOffset: Int64 = 0
     private var chunkLength: Int64 = 0
     private var hasYielded = false
+    /// Read only from requestData's serial data callback, after append.
+    var streamedByteCount: Int64 { position }
 
     init(
         start: Int64,

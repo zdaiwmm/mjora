@@ -30,7 +30,7 @@ struct LocalNetworkScreen: View {
                     Label("Use Local Address", systemImage: "wifi")
                 }
             } footer: {
-                Text("Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache.")
+                Text("Configure verified automatic selection below, or choose Use Local Now. Both addresses use the same account and photo cache.")
             }
 
             ManualServerRouteSection(showsConfigurationLink: false)
@@ -54,6 +54,8 @@ struct LocalNetworkScreen: View {
                             .foregroundStyle(.red)
                     }
                 }
+
+                identitySection
 
                 Section {
                     ForEach(networks, id: \.self) { name in
@@ -84,7 +86,7 @@ struct LocalNetworkScreen: View {
                     Text("Wi-Fi Networks")
                 } footer: {
                     Text(router.isLocationDenied
-                        ? String(localized: "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi.")
+                        ? String(localized: "Reading Wi-Fi names for the network-name method needs precise location access. Verified automatic selection and Use Local Now work without it.")
                         : String(localized: "Reading the Wi-Fi name needs location access. Wi-Fi names and ping responses select a saved route; they do not verify server identity. HTTP sends photos and account credentials without transport encryption."))
                 }
             }
@@ -111,6 +113,44 @@ struct LocalNetworkScreen: View {
             if !focused { saveAddress() }
         }
         .onDisappear(perform: saveAddress)
+    }
+
+    private var identitySection: some View {
+        Section {
+            if let identity = config?.verifiedIdentity {
+                Toggle(isOn: Binding(
+                    get: { config?.automaticallyUseVerifiedLocal ?? false },
+                    set: { enabled in edit { $0.automaticallyUseVerifiedLocal = enabled } }
+                )) {
+                    Label("Automatically Use Verified Local Server", systemImage: "checkmark.shield")
+                }
+                .accessibilityIdentifier("local-network-verified-auto")
+                LabeledContent("Server Identity", value: router.isLocalIdentityVerified
+                    ? String(localized: "Verified Connection") : String(localized: "Saved Server Identity"))
+                    .accessibilityIdentifier("local-network-identity-state")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("CA Certificate SHA-256")
+                        .font(.footnote)
+                    Text(identity.fingerprint)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("local-network-identity-fingerprint")
+                }
+            } else {
+                Text(config?.identity == nil ? String(localized: "No Server Identity Installed") : String(localized: "Invalid Server Identity"))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("local-network-identity-state")
+            }
+        } header: {
+            Text("Verified Local Connection")
+        } footer: {
+            if config?.verifiedIdentity != nil {
+                Text("On Wi-Fi, Imora checks the server against this saved certificate before using the local address. It does not need the Wi-Fi name. Automatic mode uses the external address when the verified local server is unavailable. Manual local mode stays selected and never switches to the external address.")
+            } else {
+                Text("Verified automatic selection needs an HTTPS address and a server identity installed through trusted setup. This trust applies only inside Imora; it does not install an iPhone certificate profile. Editing the local address removes a mismatching identity.")
+            }
+        }
     }
 
     private func edit(_ change: (inout LocalServerConfig) -> Void) {

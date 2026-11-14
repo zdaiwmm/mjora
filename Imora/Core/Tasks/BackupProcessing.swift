@@ -62,6 +62,11 @@ final class BackupProcessing {
                 finish(task, success: false)
                 return
             }
+            guard !manager.requiresExplicitResume else {
+                manager.scheduleRecovery()
+                finish(task, success: false)
+                return
+            }
             manager.scheduleRecovery()
             let success = await manager.runScheduledBackup()
             guard current === task else { return }

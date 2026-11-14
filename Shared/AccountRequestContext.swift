@@ -7,11 +7,13 @@ nonisolated final class AccountRequestContext: Sendable {
     let id = UUID()
     let apiURL: URL
     private let token: String
+    private let requestAllowed: @Sendable (URL) -> Bool
     private let active = Mutex(true)
 
-    init(apiURL: URL, token: String) {
+    init(apiURL: URL, token: String, requestAllowed: @escaping @Sendable (URL) -> Bool = { _ in true }) {
         self.apiURL = apiURL
         self.token = token
+        self.requestAllowed = requestAllowed
     }
 
     var isActive: Bool { active.withLock { $0 } }
@@ -23,6 +25,14 @@ nonisolated final class AccountRequestContext: Sendable {
         }
     }
 
+    func startWhileActive(for request: URLRequest, _ operation: () throws -> Void) throws {
+        try active.withLock { value in
+            guard value else { throw ServerTrustError.sessionExpired }
+            guard let url = request.url, requestAllowed(url) else { throw ServerTrustError.untrustedTarget }
+            try operation()
+        }
+    }
+
     func mediaURL(_ url: URL) -> URL {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.fragment = "imora-session=\(id.uuidString)"
@@ -30,7 +40,7 @@ nonisolated final class AccountRequestContext: Sendable {
     }
 
     func policy(for url: URL, localAPIURL: URL? = nil) -> ServerTrustPolicy? {
-        guard isActive else { return nil }
+        guard isActive, requestAllowed(url) else { return nil }
         if let fragment = url.fragment, fragment != "imora-session=\(id.uuidString)" { return nil }
         let external = ServerTrustPolicy(apiURL: apiURL)
         if external.contains(url) { return external }

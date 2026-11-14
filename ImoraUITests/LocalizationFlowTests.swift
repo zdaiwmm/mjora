@@ -23,6 +23,14 @@ final class LocalizationFlowTests: XCTestCase {
         XCTAssertTrue(element.waitForExistence(timeout: 10), id)
         element.tap()
     }
+    private func enter(_ value: String, in field: XCUIElement, app: XCUIApplication) {
+        XCTAssertTrue(field.waitForExistence(timeout: 20))
+        field.tap()
+        // Keyboard presentation can reposition the form during a locale change.
+        _ = app.keyboards.firstMatch.waitForExistence(timeout: 2)
+        field.tap()
+        field.typeText(value)
+    }
     private func checkFlow(language: String, chinese: Bool) throws {
         continueAfterFailure = false
         let fixture = try fixture()
@@ -33,13 +41,13 @@ final class LocalizationFlowTests: XCTestCase {
         XCTAssertTrue(server.waitForExistence(timeout: 20), "A fresh signed-out fixture session is required")
         XCTAssertTrue(app.staticTexts[chinese ? "连接到您的 Imora 服务器" : "Connect to your Imora server"].exists)
         snapshot(app, "\(language)-login")
-        server.tap(); server.typeText(fixture.apiURL)
+        enter(fixture.apiURL, in: server, app: app)
         app.buttons["auth-continue"].tap()
         let email = app.textFields["auth-email"]
         XCTAssertTrue(email.waitForExistence(timeout: 20))
-        email.tap(); email.typeText(fixture.email)
+        enter(fixture.email, in: email, app: app)
         let password = app.secureTextFields["auth-password"]
-        password.tap(); password.typeText(fixture.password)
+        enter(fixture.password, in: password, app: app)
         app.buttons["auth-sign-in"].tap()
         XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
         snapshot(app, "\(language)-photos")

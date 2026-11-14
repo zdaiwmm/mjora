@@ -14,6 +14,7 @@ struct ManualServerRouteSection: View {
     private struct Confirmation {
         let url: URL
         let revision: UInt64
+        let verifiesIdentity: Bool
     }
 
     var body: some View {
@@ -33,18 +34,22 @@ struct ManualServerRouteSection: View {
             Button {
                 guard let url = router.config?.apiURL else { return }
                 failure = nil
-                confirmation = Confirmation(url: url, revision: router.selectionRevision)
+                confirmation = Confirmation(url: url, revision: router.selectionRevision, verifiesIdentity: router.config?.verifiedIdentity != nil)
             } label: {
-                if router.isCheckingManualLocal {
+                if router.isCheckingManualLocal || router.holdReason == .checking {
                     HStack {
                         ProgressView()
                         Text("Checking Local Address...")
                     }
                 } else {
-                    Label("Use Local Now", systemImage: "wifi")
+                    if router.holdReason == .confirmationRequired {
+                        Label("Confirm Local Address", systemImage: "wifi")
+                    } else {
+                        Label("Use Local Now", systemImage: "wifi")
+                    }
                 }
             }
-            .disabled(!router.canSelectManualLocal || router.isCheckingManualLocal || router.isManualLocal)
+            .disabled(!router.canSelectManualLocal || router.isCheckingManualLocal || router.holdReason == .checking || (router.isManualLocal && router.status == .local))
             .accessibilityIdentifier("server-route-use-local")
 
             Button {
@@ -73,12 +78,15 @@ struct ManualServerRouteSection: View {
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("server-route-failure")
                 }
-                if router.config?.isUsable != true {
+                if router.status == .held {
+                    Text(holdText)
+                        .accessibilityIdentifier("server-route-hold-reason")
+                } else if router.config?.isUsable != true {
                     Text("Enable and save a local address to select it here.")
                 } else if !router.canSelectManualLocal {
                     Text("Connect to Wi-Fi to select the local address.")
                 }
-                Text("Manual choices reset when the network, account, or local settings change, or when you return to the app. Manual local connections do not switch to the external address on failure.")
+                Text("Manual local mode stays selected until you choose the external address, change local settings, sign out, or restart the app. It never switches to the external address on failure.")
             }
         }
         .alert("Use This Local Address?", isPresented: Binding(
@@ -91,7 +99,9 @@ struct ManualServerRouteSection: View {
             .accessibilityIdentifier("server-route-confirm-local")
             Button("Cancel", role: .cancel) {}
         } message: { confirmed in
-            if confirmed.url.scheme?.lowercased() == "http" {
+            if confirmed.verifiesIdentity {
+                Text("Use \(confirmed.url.absoluteString) on this Wi-Fi network? Imora will verify the server with the saved identity before connecting. Manual local mode never switches to the external address.")
+            } else if confirmed.url.scheme?.lowercased() == "http" {
                 Text("Use \(confirmed.url.absoluteString) on this Wi-Fi network? HTTP sends photos and account credentials without encryption. A ping checks reachability only and does not verify server identity.")
             } else {
                 Text("Use \(confirmed.url.absoluteString) on this Wi-Fi network? A ping checks reachability only and does not verify server identity.")
@@ -107,8 +117,28 @@ struct ManualServerRouteSection: View {
         switch router.status {
         case .off, .external: String(localized: "External Address")
         case .checking: String(localized: "Checking...")
+        case .held: String(localized: "Local Connection Paused")
         case .local:
-            router.isManualLocal ? String(localized: "Local Address (Manual)") : String(localized: "Local Address")
+            if router.isLocalIdentityVerified {
+                router.isManualLocal ? String(localized: "Verified Local Address (Manual)") : String(localized: "Verified Local Address")
+            } else {
+                router.isManualLocal ? String(localized: "Local Address (Manual)") : String(localized: "Local Address")
+            }
+        }
+    }
+
+    private var holdText: String {
+        switch router.holdReason {
+        case .wifiRequired:
+            String(localized: "Wi-Fi is unavailable. Local mode stays selected, and new connections are blocked. The external address will not be used.")
+        case .confirmationRequired:
+            String(localized: "The app returned from the background or the network changed. Confirm the local address to resume. The external address will not be used.")
+        case .checking:
+            String(localized: "Verifying the local server on this Wi-Fi network. Connections remain paused until verification succeeds.")
+        case .unreachable:
+            String(localized: "The verified local server did not answer. Local mode stays selected. Try again on your home Wi-Fi or choose the external address.")
+        case nil:
+            String(localized: "Local connections are paused. The external address will not be used.")
         }
     }
 

@@ -215,7 +215,7 @@ final class ManualServerRouteTests: XCTestCase {
         XCTAssertFalse(fixture.router.isManualLocal)
     }
 
-    func testManualOverrideClearsOnNetworkUpdateEvenWhenGatewayIsUnchanged() async throws {
+    func testUnverifiedSameGatewayCallbackHoldsManualIntentWithoutWAN() async throws {
         let fixture = try fixture()
         defer { fixture.cleanUp() }
         let result = await fixture.router.requestManualLocal(confirmedURL: local)
@@ -224,11 +224,16 @@ final class ManualServerRouteTests: XCTestCase {
         fixture.router.networkChanged(network: "test-network")
         await Task.yield()
 
-        XCTAssertEqual(ServerRoute.resolve(externalAsset), externalAsset)
-        XCTAssertFalse(fixture.router.isManualLocal)
+        XCTAssertEqual(ServerRoute.resolve(externalAsset), localAsset)
+        XCTAssertTrue(fixture.router.isManualLocal)
+        XCTAssertEqual(fixture.router.status, .held)
+        XCTAssertNil(ServerRoute.configuredLocal(for: external, defaults: fixture.defaults))
+        XCTAssertFalse(ServerRoute.permitsRequest(to: externalAsset, for: external))
+        XCTAssertFalse(ServerRoute.permitsRequest(to: localAsset, for: external))
+        XCTAssertFalse(ServerRoute.fallBack(from: localAsset, after: URLError(.cannotConnectToHost)))
     }
 
-    func testManualOverrideClearsWhenReturningAfterBackground() async throws {
+    func testHTTPManualIntentIsHeldWhenReturningAfterBackground() async throws {
         let fixture = try fixture()
         defer { fixture.cleanUp() }
         let result = await fixture.router.requestManualLocal(confirmedURL: local)
@@ -237,8 +242,11 @@ final class ManualServerRouteTests: XCTestCase {
         fixture.router.applicationReturnedToForeground()
         await Task.yield()
 
-        XCTAssertEqual(ServerRoute.resolve(externalAsset), externalAsset)
-        XCTAssertFalse(fixture.router.isManualLocal)
+        XCTAssertEqual(ServerRoute.resolve(externalAsset), localAsset)
+        XCTAssertTrue(fixture.router.isManualLocal)
+        XCTAssertEqual(fixture.router.status, .held)
+        XCTAssertNil(ServerRoute.configuredLocal(for: external, defaults: fixture.defaults))
+        XCTAssertFalse(ServerRoute.permitsRequest(to: externalAsset, for: external))
     }
 
     func testManualOverrideClearsWhenConfigurationChanges() async throws {
@@ -373,7 +381,7 @@ final class ManualServerRouteTests: XCTestCase {
         XCTAssertEqual(ServerRoute.configuredLocal(for: external, defaults: fixture.defaults), local)
     }
 
-    func testRealBackgroundReturnClearsManualRouteAndRevokesLocalAuthorization() async throws {
+    func testRealBackgroundReturnHoldsHTTPManualRouteAndRevokesLocalAuthorization() async throws {
         let fixture = try fixture()
         defer { fixture.cleanUp() }
         let context = AccountRequestContext(apiURL: external, token: "test-route-token")
@@ -386,8 +394,10 @@ final class ManualServerRouteTests: XCTestCase {
         fixture.notifications.post(name: UIApplication.willEnterForegroundNotification, object: nil)
         fixture.notifications.post(name: UIApplication.didBecomeActiveNotification, object: nil)
 
-        XCTAssertFalse(fixture.router.isManualLocal)
-        XCTAssertEqual(ServerRoute.resolve(externalAsset), externalAsset)
+        XCTAssertTrue(fixture.router.isManualLocal)
+        XCTAssertEqual(fixture.router.status, .held)
+        XCTAssertEqual(ServerRoute.resolve(externalAsset), localAsset)
+        XCTAssertFalse(ServerRoute.permitsRequest(to: externalAsset, for: external))
         assertLocalRequestsRejected(fixture: fixture, context: context, capturedMedia: captured)
     }
 
@@ -441,7 +451,7 @@ private struct RouteFixture {
     let notifications: NotificationCenter
 
     func cleanUp() {
-        router.cancelManualSelection()
+        router.deactivate()
         ServerRoute.use(local: nil, external: nil)
         defaults.removePersistentDomain(forName: suiteName)
     }

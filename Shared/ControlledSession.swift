@@ -6,11 +6,19 @@ import Synchronization
 nonisolated final class SafeRedirectDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     private let policy: ServerTrustPolicy?
     private let policyForRequest: (@Sendable (URLRequest) -> ServerTrustPolicy?)?
+    private let identity: LocalServerIdentity?
     private let counts = Mutex<[Int: Int]>([:])
 
-    init(policy: ServerTrustPolicy? = nil, policyForRequest: (@Sendable (URLRequest) -> ServerTrustPolicy?)? = nil) {
+    init(policy: ServerTrustPolicy? = nil, identity: LocalServerIdentity? = nil,
+         policyForRequest: (@Sendable (URLRequest) -> ServerTrustPolicy?)? = nil) {
         self.policy = policy
+        self.identity = identity
         self.policyForRequest = policyForRequest
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @Sendable @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        LocalServerIdentity.answer(challenge, requestURL: task.currentRequest?.url, identity: identity, completion: completionHandler)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask,
@@ -39,11 +47,12 @@ nonisolated final class SafeRedirectDelegate: NSObject, URLSessionTaskDelegate, 
 nonisolated enum ControlledSession {
     static let noRedirect = make()
 
-    static func make(apiURL: URL? = nil, configuration: URLSessionConfiguration = .ephemeral) -> URLSession {
+    static func make(apiURL: URL? = nil, identity: LocalServerIdentity? = nil,
+                     configuration: URLSessionConfiguration = .ephemeral) -> URLSession {
         configuration.httpAdditionalHeaders = ["Accept": "application/json"]
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 20
-        return URLSession(configuration: configuration, delegate: SafeRedirectDelegate(policy: apiURL.map { ServerTrustPolicy(apiURL: $0) }), delegateQueue: nil)
+        return URLSession(configuration: configuration, delegate: SafeRedirectDelegate(policy: apiURL.map { ServerTrustPolicy(apiURL: $0) }, identity: identity), delegateQueue: nil)
     }
 }

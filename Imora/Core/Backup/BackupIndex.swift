@@ -443,6 +443,11 @@ actor BackupIndex {
                   current.isLivePhoto == source.isLivePhoto,
                   current.primaryChecksum == source.primaryChecksum,
                   current.motionChecksum == source.motionChecksum else { return true }
+            // The foreground worker may already have verified this completion
+            // before its durable journal replays. An identical receipt adds no
+            // evidence and must not erase that proof (or a newer trash state).
+            let remoteID = receipt.ticket.isMotion ? current.motionRemoteId : current.primaryRemoteId
+            if remoteID == receipt.remoteId { return persist ? flush() : true }
         } else {
             entries[localId] = source
             if let remoteId = source.primaryRemoteId { remoteToLocal[remoteId] = localId }

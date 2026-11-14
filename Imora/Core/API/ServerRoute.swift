@@ -15,8 +15,39 @@ nonisolated struct LocalServerConfig: Codable, Equatable, Sendable {
     var apiURL: URL?
     var networks: [String] = []
     var isEnabled = true
+    var identity: LocalServerIdentity?
+    var automaticallyUseVerifiedLocal = false
 
     var isUsable: Bool { isEnabled && apiURL.map(ServerTrustPolicy.validServerURL) == true }
+
+    var verifiedIdentity: LocalServerIdentity? {
+        guard let identity, identity.isValid, identity.apiURL == apiURL else { return nil }
+        return identity
+    }
+
+    init(server: URL, apiURL: URL? = nil, networks: [String] = [], isEnabled: Bool = true,
+         identity: LocalServerIdentity? = nil, automaticallyUseVerifiedLocal: Bool = false) {
+        self.server = server
+        self.apiURL = apiURL
+        self.networks = networks
+        self.isEnabled = isEnabled
+        self.identity = identity
+        self.automaticallyUseVerifiedLocal = automaticallyUseVerifiedLocal
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case server, apiURL, networks, isEnabled, identity, automaticallyUseVerifiedLocal
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        server = try values.decode(URL.self, forKey: .server)
+        apiURL = try values.decodeIfPresent(URL.self, forKey: .apiURL)
+        networks = try values.decodeIfPresent([String].self, forKey: .networks) ?? []
+        isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        identity = try values.decodeIfPresent(LocalServerIdentity.self, forKey: .identity)
+        automaticallyUseVerifiedLocal = try values.decodeIfPresent(Bool.self, forKey: .automaticallyUseVerifiedLocal) ?? false
+    }
 
     /// http by default: a server on the home network rarely has a certificate.
     static func apiURL(from input: String) -> URL? {
@@ -39,11 +70,13 @@ nonisolated enum ServerRoute {
         var external: URL
         var local: URL
         var allowsFallback: Bool
+        let identity: LocalServerIdentity?
+        var isReady: Bool
     }
 
     private static let bases = Mutex<Bases?>(nil)
 
-    static var isLocal: Bool { bases.withLock { $0 != nil } }
+    static var isLocal: Bool { bases.withLock { $0?.isReady == true } }
 
     static func resolve(_ url: URL) -> URL {
         guard let bases = bases.withLock({ $0 }) else { return url }
@@ -60,13 +93,57 @@ nonisolated enum ServerRoute {
         return components.url ?? url
     }
 
-    static func use(local: URL?, external: URL?, allowsFallback: Bool = true) {
+    static func use(local: URL?, external: URL?, allowsFallback: Bool = true, identity: LocalServerIdentity? = nil) {
         guard let local, let external else {
             bases.withLock { $0 = nil }
             return
         }
         guard ServerTrustPolicy.validServerURL(local), ServerTrustPolicy.validServerURL(external) else { return }
-        bases.withLock { $0 = Bases(external: external, local: local, allowsFallback: allowsFallback) }
+        guard identity == nil || (identity?.isValid == true && identity?.apiURL == local) else { return }
+        bases.withLock { $0 = Bases(external: external, local: local, allowsFallback: allowsFallback, identity: identity, isReady: true) }
+    }
+
+    /// Keep the selected destination while denying new account requests.
+    /// A held manual connection never means permission to use the WAN route.
+    static func holdManual(local: URL, external: URL, identity: LocalServerIdentity?) {
+        guard ServerTrustPolicy.validServerURL(local), ServerTrustPolicy.validServerURL(external),
+              identity == nil || (identity?.isValid == true && identity?.apiURL == local)
+        else { return }
+        bases.withLock { $0 = Bases(external: external, local: local, allowsFallback: false, identity: identity, isReady: false) }
+    }
+
+    static func permitsRequest(to url: URL, for external: URL) -> Bool {
+        bases.withLock { route in
+            let isExternal = ServerTrustPolicy(apiURL: external).contains(url)
+            guard let route, route.external == external else { return isExternal }
+            guard route.isReady else { return false }
+            // Manual local mode also rejects a captured external URL. Callers
+            // resolve canonical URLs just before authorizing them instead.
+            return (route.allowsFallback && isExternal) || ServerTrustPolicy(apiURL: route.local).contains(url)
+        }
+    }
+
+    /// One pool-selection decision keeps a local pin from becoming nil/system
+    /// trust if the route is held or reset after a request was authorized.
+    static func transportIdentity(to url: URL, for external: URL, defaults: UserDefaults = .standard) throws -> LocalServerIdentity? {
+        let config = defaults.data(forKey: "imora.localServer")
+            .flatMap { try? JSONDecoder().decode(LocalServerConfig.self, from: $0) }
+        return try bases.withLock { route in
+            let isExternal = ServerTrustPolicy(apiURL: external).contains(url)
+            guard let route, route.external == external else {
+                guard isExternal else { throw ServerTrustError.untrustedTarget }
+                return nil
+            }
+            guard route.isReady else { throw ServerTrustError.untrustedTarget }
+            if ServerTrustPolicy(apiURL: route.local).contains(url) {
+                guard let config, config.server == external, config.isUsable,
+                      config.apiURL == route.local, config.verifiedIdentity == route.identity
+                else { throw ServerTrustError.untrustedTarget }
+                return route.identity
+            }
+            guard route.allowsFallback, isExternal else { throw ServerTrustError.untrustedTarget }
+            return nil
+        }
     }
 
     /// drops the local address when a request through it found nobody there,
@@ -84,7 +161,7 @@ nonisolated enum ServerRoute {
             return false
         }
         let didFallBack = bases.withLock { current in
-            guard let route = current, route.allowsFallback,
+            guard let route = current, route.isReady, route.allowsFallback,
                   ServerTrustPolicy(apiURL: route.local).contains(sent)
             else { return false }
             current = nil
@@ -104,8 +181,23 @@ nonisolated enum ServerRoute {
               let local = config.apiURL, ServerTrustPolicy.validServerURL(local)
         else { return nil }
         return bases.withLock { route in
-            guard route?.external == external, route?.local == local else { return nil }
+            guard route?.isReady == true, route?.external == external, route?.local == local,
+                  route?.identity == config.verifiedIdentity
+            else { return nil }
             return local
+        }
+    }
+
+    static func configuredIdentity(for external: URL, defaults: UserDefaults = .standard) -> LocalServerIdentity? {
+        guard let data = defaults.data(forKey: "imora.localServer"),
+              let config = try? JSONDecoder().decode(LocalServerConfig.self, from: data),
+              config.server == external, config.isUsable, let identity = config.verifiedIdentity
+        else { return nil }
+        return bases.withLock { route in
+            guard route?.isReady == true, route?.external == external,
+                  route?.local == identity.apiURL, route?.identity == identity
+            else { return nil }
+            return identity
         }
     }
 
@@ -121,6 +213,14 @@ final class LocalServerRouter {
         case external
         case checking
         case local
+        case held
+    }
+
+    enum HoldReason: Equatable {
+        case wifiRequired
+        case confirmationRequired
+        case checking
+        case unreachable
     }
 
     enum ManualSelectionResult: Equatable {
@@ -135,10 +235,11 @@ final class LocalServerRouter {
         case external
     }
 
-    static let shared = LocalServerRouter()
+    static let shared = LocalServerRouter(provisioningData: LocalServerIdentityProvisioning.bundledData())
 
     private(set) var config: LocalServerConfig?
     private(set) var status: Status = .off
+    private(set) var holdReason: HoldReason?
     private(set) var isCheckingManualLocal = false
     private(set) var selectionRevision: UInt64 = 0
     private var manualOverride: ManualOverride?
@@ -154,6 +255,8 @@ final class LocalServerRouter {
     @ObservationIgnored private let notificationCenter: NotificationCenter
     @ObservationIgnored private let probe: @Sendable (URLRequest) async -> Bool
     @ObservationIgnored private let ssidProvider: @Sendable () async -> String?
+    @ObservationIgnored private let identityProbe: @Sendable (URLRequest, LocalServerIdentity) async -> Bool
+    @ObservationIgnored private let provisioning: LocalServerIdentityProvisioning?
 
     private static let defaultsKey = "imora.localServer"
 
@@ -162,21 +265,27 @@ final class LocalServerRouter {
         monitoringEnabled: Bool = true,
         notificationCenter: NotificationCenter = .default,
         probe: (@Sendable (URLRequest) async -> Bool)? = nil,
-        ssidProvider: (@Sendable () async -> String?)? = nil
+        ssidProvider: (@Sendable () async -> String?)? = nil,
+        identityProbe: (@Sendable (URLRequest, LocalServerIdentity) async -> Bool)? = nil,
+        provisioningData: Data? = nil
     ) {
         self.defaults = defaults
         self.monitoringEnabled = monitoringEnabled
         self.notificationCenter = notificationCenter
         self.probe = probe ?? Self.answers
         self.ssidProvider = ssidProvider ?? Self.currentSSID
+        self.identityProbe = identityProbe ?? Self.answersWithIdentity
+        provisioning = LocalServerIdentityProvisioning.decode(provisioningData)
     }
 
     var isManualLocal: Bool { manualOverride == .local }
 
     var activeEndpoint: URL? {
         guard let external else { return nil }
-        return status == .local ? ServerRoute.resolve(external) : external
+        return status == .local || status == .held ? ServerRoute.resolve(external) : external
     }
+
+    var isLocalIdentityVerified: Bool { status == .local && config?.verifiedIdentity != nil }
 
     var canSelectManualLocal: Bool {
         guard let external, let config, config.server == external,
@@ -191,6 +300,9 @@ final class LocalServerRouter {
         let stored = defaults.data(forKey: Self.defaultsKey)
             .flatMap { try? JSONDecoder().decode(LocalServerConfig.self, from: $0) }
         config = stored?.server == external ? stored : nil
+        if let provisioning {
+            config = provisioning.applying(to: config, activeExternal: external, defaults: defaults)
+        }
         startMonitoring()
         evaluate(resetting: true)
     }
@@ -205,7 +317,12 @@ final class LocalServerRouter {
         status = .off
     }
 
-    func update(_ config: LocalServerConfig) {
+    func update(_ proposed: LocalServerConfig) {
+        var config = proposed
+        if let identity = config.identity, identity.apiURL != config.apiURL {
+            config.identity = nil
+            config.automaticallyUseVerifiedLocal = false
+        }
         guard config.server == external, config != self.config else { return }
         self.config = config
         if let data = try? JSONEncoder().encode(config) {
@@ -218,7 +335,7 @@ final class LocalServerRouter {
     /// Called only after the user confirms this saved URL. No account request
     /// is sent until an unauthenticated, redirect-blocking ping answers.
     func requestManualLocal(confirmedURL: URL, revision: UInt64? = nil) async -> ManualSelectionResult {
-        guard revision == nil || revision == selectionRevision else { return .superseded }
+        guard !Task.isCancelled, revision == nil || revision == selectionRevision else { return .superseded }
         guard canSelectManualLocal, let external, let config,
               let local = config.apiURL, local == confirmedURL
         else { return .unavailable }
@@ -233,7 +350,10 @@ final class LocalServerRouter {
         if status == .checking { status = ServerRoute.isLocal ? .local : .external }
         var request = URLRequest(url: local.appending(path: "server/ping"))
         request.timeoutInterval = 3
-        let reachable = await probe(request)
+        let identity = config.verifiedIdentity
+        let reachable: Bool
+        if let identity { reachable = await identityProbe(request, identity) }
+        else { reachable = await probe(request) }
         guard !Task.isCancelled, revision == selectionRevision,
               self.external == external, self.config == config, self.network == network
         else {
@@ -243,7 +363,8 @@ final class LocalServerRouter {
         isCheckingManualLocal = false
         guard reachable else { return .unreachable }
         manualOverride = .local
-        ServerRoute.use(local: local, external: external, allowsFallback: false)
+        holdReason = nil
+        ServerRoute.use(local: local, external: external, allowsFallback: false, identity: identity)
         status = .local
         return .selected
     }
@@ -281,8 +402,8 @@ final class LocalServerRouter {
 
     private func startMonitoring() {
         if foregroundObserver == nil {
-            // Permission dialogs and Control Center only make the app inactive.
-            // A real background return invalidates this network's manual consent.
+            // Inactive excursions do not change intent. A real return keeps
+            // pinned local mode and holds an unverified route for confirmation.
             foregroundObserver = notificationCenter.addObserver(
                 forName: UIApplication.willEnterForegroundNotification,
                 object: nil,
@@ -294,34 +415,90 @@ final class LocalServerRouter {
         guard monitoringEnabled, monitor == nil else { return }
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
-            let network = path.status == .satisfied && path.usesInterfaceType(.wifi)
-                ? path.gateways.map { "\($0)" }.joined(separator: ",")
-                : nil
+            let network = Self.networkSignature(
+                gateways: path.gateways.map { "\($0)" },
+                connectedToWiFi: path.status == .satisfied && path.usesInterfaceType(.wifi)
+            )
             MainActor.assumeIsolated { self?.networkChanged(network: network) }
         }
         monitor.start(queue: .main)
         self.monitor = monitor
     }
 
-    /// Every path update invalidates manual consent, including updates whose
-    /// gateway string is unchanged. That string cannot establish identity.
+    nonisolated static func networkSignature(gateways: [String], connectedToWiFi: Bool) -> String? {
+        connectedToWiFi ? gateways.sorted().joined(separator: ",") : nil
+    }
+
+    /// A gateway signature cannot authenticate a network. Only a pinned route
+    /// can ignore duplicate callbacks; unverified manual intent stays selected
+    /// but requires confirmation before any new account request can proceed.
     func networkChanged(network: String?) {
+        guard network != self.network || config?.verifiedIdentity == nil else { return }
         self.network = network
+        if manualOverride == .local {
+            holdManualIntent()
+            return
+        }
         invalidateSelection()
         evaluate(resetting: true)
     }
 
     func applicationReturnedToForeground() {
+        if manualOverride == .local {
+            if config?.verifiedIdentity != nil, network != nil, status == .local { return }
+            if holdReason != .checking { holdManualIntent() }
+            return
+        }
+        if manualOverride == .external { return }
         invalidateSelection()
         evaluate(resetting: true)
     }
 
     private func invalidateSelection() {
+        cancelChecks()
+        manualOverride = nil
+        holdReason = nil
+    }
+
+    private func cancelChecks() {
         selectionRevision &+= 1
         check?.cancel()
         check = nil
         isCheckingManualLocal = false
-        manualOverride = nil
+    }
+
+    private func holdManualIntent() {
+        cancelChecks()
+        guard let external, let config, let local = config.apiURL else { return }
+        let identity = config.verifiedIdentity
+        ServerRoute.holdManual(local: local, external: external, identity: identity)
+        status = .held
+        guard network != nil else {
+            holdReason = .wifiRequired
+            return
+        }
+        guard let identity else {
+            holdReason = .confirmationRequired
+            return
+        }
+        holdReason = .checking
+        let revision = selectionRevision
+        let network = network
+        check = Task {
+            var request = URLRequest(url: local.appending(path: "server/ping"))
+            request.timeoutInterval = 3
+            let reachable = await identityProbe(request, identity)
+            guard !Task.isCancelled, revision == selectionRevision, manualOverride == .local,
+                  self.external == external, self.config == config, self.network == network
+            else { return }
+            if reachable {
+                ServerRoute.use(local: local, external: external, allowsFallback: false, identity: identity)
+                holdReason = nil
+                status = .local
+            } else {
+                holdReason = .unreachable
+            }
+        }
     }
 
     private func evaluate(resetting: Bool) {
@@ -333,7 +510,9 @@ final class LocalServerRouter {
             status = config?.isEnabled == true ? .external : .off
             return
         }
-        guard network != nil, !config.networks.isEmpty else {
+        let identity = config.verifiedIdentity
+        let verifiesAutomatically = config.automaticallyUseVerifiedLocal && identity != nil
+        guard network != nil, verifiesAutomatically || !config.networks.isEmpty else {
             ServerRoute.use(local: nil, external: nil)
             status = .external
             return
@@ -346,22 +525,26 @@ final class LocalServerRouter {
         let revision = selectionRevision
         let network = network
         check = Task {
-            let ssid = await ssidProvider()
-            guard !Task.isCancelled, revision == selectionRevision,
-                  self.external == external, self.config == config, self.network == network
-            else { return }
-            guard let ssid, config.networks.contains(ssid) else {
-                ServerRoute.use(local: nil, external: nil)
-                status = .external
-                return
+            if !verifiesAutomatically {
+                let ssid = await ssidProvider()
+                guard !Task.isCancelled, revision == selectionRevision,
+                      self.external == external, self.config == config, self.network == network
+                else { return }
+                guard let ssid, config.networks.contains(ssid) else {
+                    ServerRoute.use(local: nil, external: nil)
+                    status = .external
+                    return
+                }
             }
             var request = URLRequest(url: local.appending(path: "server/ping"))
             request.timeoutInterval = 3
-            let answers = await probe(request)
+            let answers: Bool
+            if let identity { answers = await identityProbe(request, identity) }
+            else { answers = await probe(request) }
             guard !Task.isCancelled, revision == selectionRevision,
                   self.external == external, self.config == config, self.network == network
             else { return }
-            ServerRoute.use(local: answers ? local : nil, external: external)
+            ServerRoute.use(local: answers ? local : nil, external: external, identity: identity)
             status = answers ? .local : .external
         }
     }
@@ -373,6 +556,14 @@ final class LocalServerRouter {
     @concurrent
     private nonisolated static func answers(_ request: URLRequest) async -> Bool {
         guard let (_, response) = try? await ControlledSession.noRedirect.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    @concurrent
+    private nonisolated static func answersWithIdentity(_ request: URLRequest, identity: LocalServerIdentity) async -> Bool {
+        let session = ControlledSession.make(identity: identity)
+        defer { session.invalidateAndCancel() }
+        guard let (_, response) = try? await session.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 }
