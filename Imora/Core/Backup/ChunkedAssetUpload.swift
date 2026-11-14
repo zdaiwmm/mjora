@@ -32,6 +32,7 @@ nonisolated enum ChunkedAssetUpload {
         lifetime: BackgroundUploader.RunLifetime?,
         onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)? = nil,
         onByteProgress: (@Sendable (UploadByteProgress) -> Void)? = nil,
+        beforeUpload: @escaping @Sendable () async throws -> Void = {},
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult {
         guard let resource = await PhotoLibraryService.resourceSize(
@@ -43,6 +44,7 @@ nonisolated enum ChunkedAssetUpload {
 
         var conflicts = 0
         while true {
+            try await beforeUpload()
             let id: String
             let offset: Int64
             switch try await client.openUploadSession(upload, filename: resource.filename, size: resource.bytes) {
@@ -56,7 +58,7 @@ nonisolated enum ChunkedAssetUpload {
                     upload, motion: motion, sessionID: id, offset: offset, size: resource.bytes,
                     policy: policy, client: client, account: account, source: source,
                     relay: relay, lifetime: lifetime, onResourceProgress: onResourceProgress,
-                    onByteProgress: onByteProgress, onProgress: onProgress
+                    onByteProgress: onByteProgress, beforeUpload: beforeUpload, onProgress: onProgress
                 )
                 if let result { return result }
             } catch ImoraError.http(409, _) where conflicts < 2 {
@@ -88,10 +90,16 @@ nonisolated enum ChunkedAssetUpload {
         lifetime: BackgroundUploader.RunLifetime?,
         onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)?,
         onByteProgress: (@Sendable (UploadByteProgress) -> Void)?,
+        beforeUpload: @escaping @Sendable () async throws -> Void,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult? {
         let finished = OSAllocatedUnfairLock<AssetUploadResult?>(initialState: nil)
         let send: @Sendable (PhotoLibraryService.ResourceChunk) async throws -> Void = { chunk in
+            do { try await beforeUpload() }
+            catch {
+                try? FileManager.default.removeItem(at: chunk.fileURL)
+                throw error
+            }
             let result = try await client.uploadChunk(
                 sessionID: sessionID,
                 offset: chunk.offset,

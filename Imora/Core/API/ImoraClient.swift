@@ -1981,6 +1981,7 @@ nonisolated final class ImoraClient: Sendable {
         lease: ProcessLease? = nil,
         lifetime: BackgroundUploader.RunLifetime? = nil,
         onByteProgress: (@Sendable (UploadByteProgress) -> Void)? = nil,
+        beforeUpload: (@Sendable () async throws -> Void)? = nil,
         onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> AssetUploadResult {
         do {
@@ -1999,6 +2000,11 @@ nonisolated final class ImoraClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         request = try authorize(request)
+        do { try await beforeUpload?() }
+        catch {
+            try? FileManager.default.removeItem(at: bodyURL)
+            throw error
+        }
         let ticket = BackgroundUploader.Ticket(
             account: account,
             localId: upload.deviceAssetId,

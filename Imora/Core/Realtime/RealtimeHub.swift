@@ -11,6 +11,7 @@ protocol RealtimeListener: AnyObject {
     func realtimeAssetsRemoved(_ ids: Set<String>)
     func realtimeAssetUpdated(_ detail: AssetDetail)
     func realtimeResync()
+    func realtimeCatchUp()
     func realtimeAlbumsChanged()
     func realtimeLocalChanged()
     func realtimeNotification(_ notification: ServerNotification)
@@ -20,6 +21,7 @@ extension RealtimeListener {
     func realtimeAssetsRemoved(_ ids: Set<String>) {}
     func realtimeAssetUpdated(_ detail: AssetDetail) {}
     func realtimeResync() {}
+    func realtimeCatchUp() { realtimeResync() }
     func realtimeAlbumsChanged() {}
     func realtimeLocalChanged() {}
     func realtimeNotification(_ notification: ServerNotification) {}
@@ -104,7 +106,7 @@ final class RealtimeHub {
             resyncOnConnect = true
             startConnection()
             // the resync doubles as the missed-while-backgrounded catch-up.
-            broadcastResyncNow()
+            broadcast { $0.realtimeCatchUp() }
             onBackupReconciliationNeeded?()
             startSafetyTick()
         } else {
@@ -282,7 +284,7 @@ final class RealtimeHub {
         if resyncOnConnect {
             onBackupReconciliationNeeded?()
             resyncOnConnect = false
-            broadcastResyncNow()
+            broadcast { $0.realtimeCatchUp() }
         }
     }
 

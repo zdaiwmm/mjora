@@ -51,6 +51,28 @@ final class LocalizationFlowTests: XCTestCase {
         app.buttons["auth-sign-in"].tap()
         XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
         snapshot(app, "\(language)-photos")
+        let tiles = app.buttons.matching(identifier: "asset-tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
+        XCTAssertGreaterThanOrEqual(tiles.count, 2)
+        for (step, index) in [0, 1, 0, 1, 0].enumerated() {
+            tiles.element(boundBy: index).tap()
+            let close = app.buttons["viewer-close"]
+            XCTAssertTrue(close.waitForExistence(timeout: 8), "A different asset must open after returning from the viewer")
+            if step == 2 {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).doubleTap()
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+                XCTAssertTrue(close.waitForExistence(timeout: 8))
+                close.tap()
+            } else if step == 3 {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+                    .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+            } else {
+                close.tap()
+            }
+            XCTAssertTrue(close.waitForNonExistence(timeout: 8), "Returning must actually detach the fullscreen viewer")
+            XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 8))
+            XCTAssertTrue(tiles.element(boundBy: (index + 1) % 2).isHittable)
+        }
         app.buttons["profile-avatar"].tap()
         XCTAssertTrue(app.navigationBars[chinese ? "设置" : "Settings"].waitForExistence(timeout: 10))
         snapshot(app, "\(language)-settings")

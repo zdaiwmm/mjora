@@ -1597,9 +1597,9 @@ final class BackupManager {
                 continue
             }
             if entry.unsupported { summary.unsupportedMedia.add(asset) }
-            else if entry.verificationState == .trashed { summary.failedMedia.add(asset) }
             else if entry.primaryRemoteId == nil || (entry.isLivePhoto && entry.motionRemoteId == nil) {
-                if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes) { summary.skippedMedia.add(asset) }
+                if entry.isUploadBlockedByRemoteRemoval { summary.failedMedia.add(asset) }
+                else if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes) { summary.skippedMedia.add(asset) }
                 else { queue.append(asset) }
             } else { verify.append((asset, entry)); continue }
             noteCheckedWork()
@@ -1640,7 +1640,9 @@ final class BackupManager {
                     await index.recordVerificationFailure(localId: asset.localIdentifier, source: source, generation: client.context.id, state: state)
                     if case BackupVerificationError.component(let id, .missing) = error {
                         await index.clearMissingComponent(localId: asset.localIdentifier, source: source, remoteID: id, generation: client.context.id)
-                        queue.append(asset)
+                        summary.failedMedia.add(asset)
+                        markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error))
+                        if lastFailure == nil { lastFailure = error.localizedDescription }
                     } else {
                         summary.failedMedia.add(asset)
                         markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error))
@@ -1659,7 +1661,8 @@ final class BackupManager {
     private static func verifyBackup(asset: DeviceAsset, entry: BackupEntry, client: ImoraClient, index: BackupIndex, account: String) async throws {
         guard let owner = account.split(separator: "|").last.map(String.init), !owner.isEmpty else { throw BackupVerificationError.stale }
         let proof = try await BackupVerifier.verify(asset: asset, entry: entry, ownerID: owner, account: account,
-                                                   generation: client.context.id, remote: client, repairEmptyPair: entry.pairRepairDenied != true, current: {
+                                                   generation: client.context.id, remote: client,
+                                                   repairEmptyPair: !entry.isUploadBlockedByRemoteRemoval && entry.pairRepairDenied != true, current: {
             guard client.context.isActive, !Task.isCancelled else { return false }
             return await PhotoLibraryService.assetInfo(localIdentifier: asset.localIdentifier) == asset
         })
@@ -1903,6 +1906,9 @@ final class BackupManager {
             }
         }
         guard let entry else { return .failed(String(localized: "no index entry")) }
+        if entry.isUploadBlockedByRemoteRemoval {
+            return .failed(BackupVerificationError.component("", entry.verificationState == .trashed ? .trashed : .missing).localizedDescription)
+        }
         if entry.unsupported { return .failed(String(localized: "this file format is not supported by the server.")) }
         if entry.isBackedUp { return .duplicate }
         if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes),
@@ -1930,7 +1936,7 @@ final class BackupManager {
                     isMotion: true
                 )
                 let result = try await send(
-                    upload, motion: true, client: client, chunking: chunking, account: account,
+                    upload, motion: true, client: client, index: index, chunking: chunking, account: account,
                     source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
                     progressReporter: progressReporter
                 ) { fraction in
@@ -1957,7 +1963,7 @@ final class BackupManager {
                     livePhotoVideoId: motionRemoteId
                 )
                 let result = try await send(
-                    upload, motion: false, client: client, chunking: chunking, account: account,
+                    upload, motion: false, client: client, index: index, chunking: chunking, account: account,
                     source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
                     progressReporter: progressReporter
                 ) { fraction in
@@ -2007,6 +2013,7 @@ final class BackupManager {
         _ upload: AssetUploadRequest,
         motion: Bool,
         client: ImoraClient,
+        index: BackupIndex,
         chunking: ChunkedAssetUpload.Policy?,
         account: String,
         source: BackupEntry,
@@ -2016,6 +2023,13 @@ final class BackupManager {
         progressReporter: BackupTransferProgressReporter?,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult {
+        let validate: @Sendable () async throws -> Void = {
+            try Task.checkCancellation()
+            guard client.context.isActive,
+                  await index.permitsUpload(localId: upload.deviceAssetId, source: source, generation: client.context.id)
+            else { throw BackupVerificationError.stale }
+        }
+        try await validate()
         let transfer = progressReporter?.component()
         let resourceProgress: @Sendable (BackupResourceProgress) -> Void = { transfer?.resourceProgress($0) }
         let byteProgress: @Sendable (UploadByteProgress) -> Void = { transfer?.uploadByteProgress($0) }
@@ -2028,7 +2042,7 @@ final class BackupManager {
                 return try await ChunkedAssetUpload.send(
                     upload, motion: motion, policy: chunking, client: client, account: account,
                     source: source, lease: lease, lifetime: lifetime, onResourceProgress: resourceProgress,
-                    onByteProgress: byteProgress, onProgress: uploadProgress
+                    onByteProgress: byteProgress, beforeUpload: validate, onProgress: uploadProgress
                 )
             } catch is ChunkedAssetUpload.Unavailable {
                 backupLog.info("sending \(upload.deviceAssetId) in one request, its size is not known")
@@ -2049,7 +2063,7 @@ final class BackupManager {
         return try await client.uploadAsset(
             upload, bodyURL: body.fileURL, account: account, source: source,
             maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
-            onByteProgress: byteProgress, onProgress: uploadProgress
+            onByteProgress: byteProgress, beforeUpload: validate, onProgress: uploadProgress
         )
     }
 

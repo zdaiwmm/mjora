@@ -2156,6 +2156,13 @@ final class TimelineModel {
 // MARK: - realtime
 
 extension TimelineModel: RealtimeListener {
+    /// Counts cannot reveal a deletion balanced by a new upload while this
+    /// app was disconnected. Revalidate loaded membership on catch-up.
+    func realtimeCatchUp() {
+        staleBucketIDs.formUnion(sections.filter(\.isLoaded).map(\.id))
+        requestResync()
+    }
+
     func realtimeAssetsRemoved(_ ids: Set<String>) {
         let present = ids.filter { flatAssetIndex(for: $0) != nil }
         guard !present.isEmpty else { return }

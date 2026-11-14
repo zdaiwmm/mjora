@@ -27,6 +27,13 @@ nonisolated struct BackupEntry: Codable, Sendable, Equatable {
     var pairRepairDenied: Bool? = nil
     var primaryByteCount: Int64? = nil
     var motionByteCount: Int64? = nil
+    /// A known server copy was removed or trashed. Keep this independently of transient
+    /// verification state so reconciliation never recreates it automatically.
+    var remoteDeletionDetected: Bool? = nil
+
+    var isUploadBlockedByRemoteRemoval: Bool {
+        remoteDeletionDetected == true || verificationState == .trashed
+    }
 
     init(
         modificationDate: Date?,
@@ -300,7 +307,8 @@ actor BackupIndex {
         for id in Array(entries.keys) where localIds == nil || localIds!.contains(id) {
             guard var entry = entries[id] else { continue }
             entry.proof = nil
-            entry.verificationState = .pending
+            if entry.verificationState == .trashed { entry.remoteDeletionDetected = true }
+            if entry.verificationState != .trashed { entry.verificationState = .pending }
             entry.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
             entries[id] = entry
         }
@@ -314,6 +322,9 @@ actor BackupIndex {
         else { return false }
         entries[localId]?.proof = proof
         entries[localId]?.verificationState = .verified
+        // An externally restored/recreated copy is recognized only after
+        // read-only verification of every component, never by uploading it.
+        entries[localId]?.remoteDeletionDetected = nil
         entries[localId]?.lastVerifiedAt = proof.verifiedAt
         entries[localId]?.pairRepairDenied = nil
         entries[localId]?.sizeExcludedRequestBytes = nil
@@ -326,6 +337,10 @@ actor BackupIndex {
               entries[localId]?.verificationRevision == source.verificationRevision else { return }
         entries[localId]?.proof = nil
         entries[localId]?.verificationState = state
+        if state == .trashed {
+            entries[localId]?.remoteDeletionDetected = true
+            entries[localId]?.verificationRevision = (source.verificationRevision ?? 0) &+ 1
+        }
         if state == .pairPermissionDenied { entries[localId]?.pairRepairDenied = true }
         markDirty()
     }
@@ -337,8 +352,17 @@ actor BackupIndex {
         if result.isConfirmedDuplicate, let id = result.assetId {
             if motion { setMotionRemoteId(localId: localId, id) }
             else { setPrimaryRemoteId(localId: localId, id) }
-            if result.isTrashed == true { entries[localId]?.verificationState = .trashed }
+            if result.isTrashed == true {
+                entries[localId]?.verificationState = .trashed
+                entries[localId]?.remoteDeletionDetected = true
+                entries[localId]?.verificationRevision = (source.verificationRevision ?? 0) &+ 1
+            }
         } else if result.action == "accept" {
+            let previousID = motion ? entries[localId]?.motionRemoteId : entries[localId]?.primaryRemoteId
+            if previousID != nil {
+                entries[localId]?.remoteDeletionDetected = true
+                entries[localId]?.verificationRevision = (source.verificationRevision ?? 0) &+ 1
+            }
             if motion { clearMotionRemoteId(localId: localId) }
             else { clearPrimaryRemoteId(localId: localId) }
             entries[localId]?.verificationState = .missing
@@ -349,6 +373,10 @@ actor BackupIndex {
     func clearMissingComponent(localId: String, source: BackupEntry, remoteID: String, generation: UUID) {
         guard self.generation == generation, let entry = entries[localId], entry.hasSameResources(as: source),
               entry.verificationRevision == source.verificationRevision else { return }
+        if entry.primaryRemoteId == remoteID || entry.motionRemoteId == remoteID {
+            entries[localId]?.remoteDeletionDetected = true
+            entries[localId]?.verificationRevision = (source.verificationRevision ?? 0) &+ 1
+        }
         if entry.primaryRemoteId == remoteID { clearPrimaryRemoteId(localId: localId) }
         if entry.motionRemoteId == remoteID { clearMotionRemoteId(localId: localId) }
     }
@@ -362,9 +390,12 @@ actor BackupIndex {
             entries[localID]?.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
             switch change {
             case .deleted:
+                entries[localID]?.remoteDeletionDetected = true
                 if let id = entry.primaryRemoteId, ids.contains(id) { clearPrimaryRemoteId(localId: localID) }
                 if let id = entry.motionRemoteId, ids.contains(id) { clearMotionRemoteId(localId: localID) }
-            case .trashed: entries[localID]?.verificationState = .trashed
+            case .trashed:
+                entries[localID]?.verificationState = .trashed
+                entries[localID]?.remoteDeletionDetected = true
             case .restored: entries[localID]?.verificationState = .pending
             case .hidden: break
             }
@@ -394,6 +425,8 @@ actor BackupIndex {
         entry.primaryByteCount = primaryByteCount ?? (old?.primaryChecksum == primaryChecksum ? old?.primaryByteCount : nil)
         entry.motionByteCount = motionByteCount ?? (old?.motionChecksum == motionChecksum ? old?.motionByteCount : nil)
         if let old {
+            entry.remoteDeletionDetected = old.remoteDeletionDetected
+            if old.verificationState == .trashed { entry.verificationState = .trashed }
             if old.primaryChecksum == primaryChecksum {
                 entry.primaryRemoteId = old.primaryRemoteId
                 entry.unsupported = old.unsupported
@@ -439,6 +472,7 @@ actor BackupIndex {
         guard loaded, let source = receipt.ticket.source else { return false }
         let localId = receipt.ticket.localId
         if let current = entries[localId] {
+            if current.isUploadBlockedByRemoteRemoval { return persist ? flush() : true }
             guard current.modificationDate == source.modificationDate,
                   current.isLivePhoto == source.isLivePhoto,
                   current.primaryChecksum == source.primaryChecksum,
@@ -448,6 +482,11 @@ actor BackupIndex {
             // evidence and must not erase that proof (or a newer trash state).
             let remoteID = receipt.ticket.isMotion ? current.motionRemoteId : current.primaryRemoteId
             if remoteID == receipt.remoteId { return persist ? flush() : true }
+            // Fresh proof after a removal/restore outranks an older queued
+            // receipt for the retired ID. Unverified recovery still replays.
+            if current.isBackedUp, current.verificationRevision != source.verificationRevision {
+                return persist ? flush() : true
+            }
         } else {
             entries[localId] = source
             if let remoteId = source.primaryRemoteId { remoteToLocal[remoteId] = localId }
@@ -458,6 +497,13 @@ actor BackupIndex {
             setPrimaryRemoteId(localId: localId, receipt.remoteId)
         }
         return persist ? flush() : true
+    }
+
+    /// Rechecked after exporting and before each upload handoff. A deletion
+    /// received while PhotoKit was preparing bytes must still stop the send.
+    func permitsUpload(localId: String, source: BackupEntry, generation: UUID) -> Bool {
+        guard loaded, self.generation == generation, let current = entries[localId] else { return false }
+        return current.hasSameResources(as: source) && !current.isUploadBlockedByRemoteRemoval
     }
 
     /// uploaded edits whose previous revision still has to go under them.
