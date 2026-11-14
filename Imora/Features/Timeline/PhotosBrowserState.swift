@@ -97,6 +97,9 @@ nonisolated struct PhotoScrollRequest: Equatable {
 final class PhotosGridControls {
     var columns = 3
     var usesOriginalAspectRatio = false
+    var groupsByDate = false
+    var sortByAdded = false
+    var mediaFilter: PhotoMediaFilter = .all
     var isSelecting = false
     var browsingPast = false
     var mode: PhotoBrowseMode = .all

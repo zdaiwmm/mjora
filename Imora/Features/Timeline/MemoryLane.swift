@@ -4,7 +4,15 @@ import SwiftUI
 /// horizontal "on this day" and birthday carousel above the main timeline.
 struct MemoryLane: View {
     @Environment(SessionStore.self) private var session
+    var showsHeading = true
+    var cardWidth: CGFloat = 148
+    var cardHeight: CGFloat = 196
+    var cornerRadius: CGFloat = 16
+    var contentInset: CGFloat = 16
+    var showsEmptyPlaceholder = false
     @State private var memories: [Memory] = []
+    @State private var hasLoaded = false
+    @State private var loadFailed = false
     @State private var viewer = ViewerPresentation()
     @Namespace private var zoomNamespace
 
@@ -15,9 +23,9 @@ struct MemoryLane: View {
             Color.clear.frame(height: 0)
         } else if !memories.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Memories")
+                if showsHeading { Text("Memories")
                     .font(.title3.weight(.bold))
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, contentInset) }
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -52,7 +60,7 @@ struct MemoryLane: View {
                     }
                     .scrollTargetLayout()
                 }
-                .contentMargins(.horizontal, 16, for: .scrollContent)
+                .contentMargins(.horizontal, contentInset, for: .scrollContent)
                 .scrollTargetBehavior(.viewAligned)
             }
             .padding(.top, 4)
@@ -67,6 +75,21 @@ struct MemoryLane: View {
                     onDismissed: { viewer.complete(route.id) }
                 ) { _ in }
             }
+        } else if showsEmptyPlaceholder {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "clock.arrow.circlepath").font(.title2).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+                if !hasLoaded { ProgressView() }
+                else if loadFailed {
+                    Button { Task { await load() } } label: { Label("Couldn't load memories. Retry", systemImage: "arrow.clockwise") }
+                } else {
+                    Text("No Memories Yet").font(.headline).foregroundStyle(.secondary)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, minHeight: cardHeight, maxHeight: cardHeight, alignment: .leading)
+            .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: cornerRadius))
+            .task { await load() }
         } else {
             Color.clear
                 .frame(height: 0)
@@ -82,7 +105,7 @@ struct MemoryLane: View {
                     targetPixelSize: 640,
                     thumbhash: cover.thumbhash
                 )
-                .frame(width: 148, height: 196)
+                .frame(width: cardWidth, height: cardHeight)
                 .clipped()
             }
             LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
@@ -122,8 +145,8 @@ struct MemoryLane: View {
                     .transition(.scale.combined(with: .opacity))
             }
         }
-        .frame(width: 148, height: 196)
-        .clipShape(.rect(cornerRadius: 16))
+        .frame(width: cardWidth, height: cardHeight)
+        .clipShape(.rect(cornerRadius: cornerRadius))
     }
 
     private func title(_ memory: Memory) -> String {
@@ -176,10 +199,13 @@ struct MemoryLane: View {
 
     private func load() async {
         guard let client = session.client, memories.isEmpty else { return }
+        defer { hasLoaded = true }
         if let fetched = try? await client.memories(for: Date()) {
+            guard session.client === client else { return }
+            loadFailed = false
             // birthdays lead, like the official clients.
             let shown = fetched.filter { !$0.assets.isEmpty }
             memories = shown.filter(\.isBirthday) + shown.filter { !$0.isBirthday }
-        }
+        } else { loadFailed = true }
     }
 }

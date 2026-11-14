@@ -278,7 +278,7 @@ struct SelectionControlBar: View {
                 : "Deleted items can be restored from the trash later.")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.red)
+        .foregroundStyle(.primary)
         .glassEffect(.regular, in: .circle)
         .opacity(actionsDisabled || trashDisabled ? 0.5 : 1)
         .disabled(actionsDisabled || trashDisabled)
@@ -298,7 +298,7 @@ struct SelectionControlBar: View {
                     .glassEffect(.regular, in: .capsule)
             } else {
                 Button(action: onShowSelected) {
-                    Text(mediaCounts.text)
+                    Text("Show Selected (\(count))")
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                         .minimumScaleFactor(0.85)

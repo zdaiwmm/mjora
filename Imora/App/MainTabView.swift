@@ -63,19 +63,14 @@ struct MainTabView: View {
                 .accessibilityHidden(true)
 
             TabView(selection: tabSelection) {
-                Tab("Photos", systemImage: "photo.on.rectangle.angled", value: TabKey.photos) {
+                Tab("Photos", systemImage: "photo.on.rectangle", value: TabKey.photos) {
                     TimelineTab()
+                        .id(session.client?.offlineAccountKey)
                 }
                 Tab("Albums", systemImage: "rectangle.stack", value: TabKey.albums) {
                     AlbumsTab()
+                        .id(session.client?.offlineAccountKey)
                 }
-                // the tab bar keeps the library as one entry that lists its
-                // destinations; the ipad sidebar spells them out below
-                // instead, the way photos lays its own sidebar out.
-                Tab("Library", systemImage: "books.vertical", value: TabKey.library) {
-                    LibraryTab()
-                }
-                .defaultVisibility(.hidden, for: .sidebar)
                 Tab("Search", systemImage: "magnifyingglass", value: TabKey.search, role: .search) {
                     SearchTab(query: $searchText, searchScope: $searchScope,
                               submitRequest: searchSubmitRequest, setSearchFocus: setSearchFocus)
@@ -125,12 +120,13 @@ struct MainTabView: View {
             // a plain tab bar on iphone, a tab bar with a sidebar on ipad.
             .tabViewStyle(.sidebarAdaptable)
             .tabViewSearchActivation(.searchTabSelection)
+            .tint(.blue)
         }
         .tabBarMinimizeBehavior(selection == .search ? .never : .onScrollDown)
         .onChange(of: showsLibrarySection) { _, shows in
             // a section tab selected at regular width has nowhere to go once
             // the sidebar folds away, so the library list takes over.
-            if !shows, selection.isLibrarySection { selection = .library }
+            if !shows, selection.isLibrarySection { selection = .albums }
         }
         // leaving the locked folder for another tab locks it, whether or
         // not the folder's own disappearance fires on this tab style.
@@ -151,6 +147,12 @@ struct MainTabView: View {
         }
         .onChange(of: timelineRouter.pendingTarget) { _, target in
             if target != nil { selection = .photos }
+        }
+        .onChange(of: timelineRouter.searchRequested) { _, requested in
+            if requested {
+                selection = .search
+                timelineRouter.searchRequested = false
+            }
         }
     }
 

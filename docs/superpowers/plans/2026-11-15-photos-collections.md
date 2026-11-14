@@ -1,6 +1,6 @@
 # Native Photos and Collections Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Implement the approved native Photos/Albums interaction, preserve all existing functions, verify in Simulator, merge remotely and deploy.
 
@@ -32,9 +32,9 @@
 
 **Interfaces:** `CollectionsLayout` stores normalized ordered/collapsed section IDs and pinned shortcut IDs. `PhotoPeriod` derives year/month IDs, totals and representative bucket IDs from `[TimelineSection]`. `PhotosGridControls` carries grid density/appearance, selection and navigation requests without per-frame Observation invalidations.
 
-- [ ] Write and run failing behavior tests for persisted account isolation, normalized reorder/pinning, unloaded period totals and month drill-down targets.
-- [ ] Implement the types and account-scoped preference storage.
-- [ ] Run the focused tests and commit the coherent state layer.
+- [x] Write and run failing behavior tests for persisted account isolation, normalized reorder/pinning, unloaded period totals and month drill-down targets.
+- [x] Implement the types and account-scoped preference storage.
+- [x] Run the focused tests and commit the coherent state layer.
 
 ### Task 2: Native Photos browsing
 
@@ -42,10 +42,10 @@
 
 **Interfaces:** Reuse `TimelineFilter`, `TimelineModel`, `SearchModel` and `PhotosGridControls` from Task 1. Retain `TimelineNavigationRouter` behavior. A root-only presentation option hides date title bands without affecting other timeline clients.
 
-- [ ] Add a failing UI flow asserting the source menu and absence of the old segmented control, plus focused tests for full index aggregation and filter requests.
-- [ ] Implement native leading title/source/account menu, native filter/selection toolbar groups and edge-to-edge grid.
-- [ ] Implement functional sorting, local/cloud filtering, grid density/aspect presentation, period drill-down and remembered source/viewport state.
-- [ ] Verify selection, selected-items sheet, context menus, repeated viewer return and device access behavior in Simulator; commit.
+- [x] Add a failing UI flow asserting the source menu and absence of the old segmented control, plus focused tests for full index aggregation and filter requests.
+- [x] Implement native leading title/source/account menu, native filter/selection toolbar groups and edge-to-edge grid.
+- [x] Implement functional sorting, local/cloud filtering, grid density/aspect presentation, period drill-down and remembered source/viewport state.
+- [x] Verify selection, selected-items sheet, context menus, repeated viewer return and device access behavior in Simulator; commit.
 
 ### Task 3: Albums as Collections
 
@@ -53,10 +53,10 @@
 
 **Interfaces:** `CollectionsLayout` from Task 1; existing `Album`, `Person`, `LibraryDestination`, `AlbumDetailScreen`, `NotificationRouter`. Only the Albums tab owns album mutation state and its navigation path.
 
-- [ ] Add a failing UI flow for three bottom destinations, migrated utilities and absence of duplicate cloud entry.
-- [ ] Build the native collections home, previews, independent loading/error states and List-based editors.
-- [ ] Preserve all/mine/shared filtering and search on the full album list, creation, details/cover/member/link/activity operations, rollback and deep links.
-- [ ] Verify pin/collapse/reorder persistence and account/capability boundaries; commit.
+- [x] Add a failing UI flow for three bottom destinations, migrated utilities and absence of duplicate cloud entry.
+- [x] Build the native collections home, previews, independent loading/error states and List-based editors.
+- [x] Preserve all/mine/shared filtering and search on the full album list, creation, details/cover/member/link/activity operations, rollback and deep links.
+- [x] Verify pin/collapse/reorder persistence and account/capability boundaries; commit.
 
 ### Task 4: Verification, native visual pass and deployment
 

@@ -162,6 +162,7 @@ nonisolated struct SearchRequest: Encodable, Sendable {
         }
 
         if filter.isFavorite { try container.encode(true, forKey: Key("isFavorite")) }
+        if filter.isMotion { try container.encode(true, forKey: Key("isMotion")) }
         if filter.notInAlbum { try container.encode(true, forKey: Key("isNotInAlbum")) }
 
         if !filter.people.isEmpty {
@@ -249,6 +250,7 @@ nonisolated struct SearchRequest: Encodable, Sendable {
         }
 
         if filter.isFavorite { tree["isFavorite"] = .eq(.bool(true)) }
+        if filter.isMotion { tree["isMotion"] = .eq(.bool(true)) }
         if filter.notInAlbum { tree["hasAlbums"] = .eq(.bool(false)) }
 
         if !filter.people.isEmpty {

@@ -19,6 +19,31 @@ nonisolated enum CollectionSection: String, CaseIterable, Codable, Identifiable 
     }
 }
 
+nonisolated struct CollectionsAvailability {
+    var people = true
+    var trash = true
+    var duplicates = true
+    var cleanup = true
+
+    func allows(_ id: String) -> Bool {
+        switch id {
+        case "people": people
+        case "trash": trash
+        case "duplicates": duplicates
+        case "cleanup": cleanup
+        default: true
+        }
+    }
+}
+
+extension SessionStore {
+    var collectionsAvailability: CollectionsAvailability {
+        CollectionsAvailability(people: preferences?.peopleEnabled != false,
+            trash: features?.trash != false, duplicates: features?.duplicateDetection != false,
+            cleanup: capabilities.supportsCleanup)
+    }
+}
+
 /// Presentation preferences only; server content and permissions remain authoritative.
 nonisolated struct CollectionsLayout: Codable, Equatable {
     var sectionIDs = CollectionSection.allCases.map(\.rawValue)

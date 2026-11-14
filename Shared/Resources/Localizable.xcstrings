@@ -31192,6 +31192,851 @@
           }
         }
       }
+    },
+    "Account & Settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account & Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "账号与设置"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:32"
+    },
+    "Add Pinned Collections": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Pinned Collections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加置顶精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:109"
+    },
+    "All Albums": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Albums"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部相册"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/AlbumsTab.swift:147"
+    },
+    "All Items": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有项目"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowserState.swift:22\nImora/Features/Timeline/PhotosBrowseMenu.swift:75"
+    },
+    "All Years": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Years"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有年份"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotoPeriodsView.swift:20"
+    },
+    "Backup & Sync": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backup & Sync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "备份与同步"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:35"
+    },
+    "Browse Photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browse Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览照片"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:130"
+    },
+    "Cloud Photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端照片"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:25"
+    },
+    "Collapse %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "折叠%@"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:80"
+    },
+    "Collections": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayoutEditors.swift:37"
+    },
+    "Couldn't load albums. Retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load albums. Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载相册。重试"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:136"
+    },
+    "Couldn't load memories. Retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load memories. Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载回忆。重试"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/MemoryLane.swift:84"
+    },
+    "Couldn't update this person.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't update this person."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更新此人物。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:274"
+    },
+    "Create Your First Album": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create Your First Album"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建第一个相册"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:140"
+    },
+    "Customize Collections": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Customize Collections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/AlbumsTab.swift:75\nImora/Features/Albums/CollectionsLayoutEditors.swift:20"
+    },
+    "Date Added": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Date Added"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加日期"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:68"
+    },
+    "Date Captured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Date Captured"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拍摄日期"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:70"
+    },
+    "Date Group Headers": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Date Group Headers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日期分组标题"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:99"
+    },
+    "Device Photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机照片"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:19"
+    },
+    "Edit Pinned Collections": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Pinned Collections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑置顶精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/AlbumsTab.swift:74"
+    },
+    "Expand %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开%@"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:80"
+    },
+    "Explore Your Places": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Explore Your Places"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "探索拍摄地点"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:167"
+    },
+    "Filter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filter"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "筛选"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:73\nImora/Features/Timeline/PhotosBrowseMenu.swift:74"
+    },
+    "Live Photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实况照片"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowserState.swift:26"
+    },
+    "Media Types": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Media Types"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "媒体类型"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayout.swift:14\nImora/Features/Timeline/PhotosBrowseMenu.swift:79\nImora/Features/Timeline/PhotosBrowseMenu.swift:80"
+    },
+    "Months": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Months"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "月"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowserState.swift:11"
+    },
+    "More Items": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More Items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更多项目"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayout.swift:16"
+    },
+    "My Albums": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My Albums"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我的相册"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayout.swift:11"
+    },
+    "No Memories Yet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Memories Yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无回忆"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/MemoryLane.swift:86"
+    },
+    "Not Pinned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Pinned"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未置顶"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayoutEditors.swift:66"
+    },
+    "Original Aspect Ratio Grid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original Aspect Ratio Grid"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始宽高比网格"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:98"
+    },
+    "People & Pets": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "People & Pets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "人物与宠物"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayout.swift:12\nImora/Features/Albums/CollectionsHome.swift:374"
+    },
+    "Pin Collection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pin Collection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "置顶精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:127\nImora/Features/Albums/AlbumDetailScreen.swift:182"
+    },
+    "Pinned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已置顶"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayoutEditors.swift:66"
+    },
+    "Pinned Collections": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned Collections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "置顶精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsLayout.swift:10\nImora/Features/Albums/CollectionsLayoutEditors.swift:48"
+    },
+    "Recently Deleted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recently Deleted"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近删除"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:198\nImora/Features/Albums/CollectionsHome.swift:377"
+    },
+    "See All People": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "See All People"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看所有人物"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:148"
+    },
+    "Show Photos and Albums Navigation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Photos and Albums Navigation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示照片和相册导航"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:129"
+    },
+    "Show Selected (%lld)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Selected (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示所选项目（%lld）"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/TimelineSelection.swift:301"
+    },
+    "Sort": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sort"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排序"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:67"
+    },
+    "Sort and Filter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sort and Filter"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "排序与筛选"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:109"
+    },
+    "Unpin Collection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unpin Collection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消置顶精选集"
+          }
+        }
+      },
+      "comment": "Imora/Features/Albums/CollectionsHome.swift:127\nImora/Features/Albums/AlbumDetailScreen.swift:182"
+    },
+    "View Options": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Options"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示选项"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:102"
+    },
+    "Years": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Years"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "年"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowserState.swift:10"
+    },
+    "Zoom In": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom In"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "放大"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:90"
+    },
+    "Zoom Out": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom Out"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缩小"
+          }
+        }
+      },
+      "comment": "Imora/Features/Timeline/PhotosBrowseMenu.swift:94"
+    },
+    "Notifications (%lld)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知（%lld）"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

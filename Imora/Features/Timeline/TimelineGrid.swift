@@ -71,6 +71,7 @@ struct TimelineGridRowContext {
     let columns: Int
     let targetPixelSize: CGFloat
     let showsBackupBadge: Bool
+    let usesOriginalAspectRatio: Bool
     let isSelecting: Bool
     let selection: Set<String>
     let reduceMotion: Bool
@@ -87,6 +88,7 @@ struct TimelineGridRowContext {
         columns == other.columns
             && targetPixelSize == other.targetPixelSize
             && showsBackupBadge == other.showsBackupBadge
+            && usesOriginalAspectRatio == other.usesOriginalAspectRatio
             && isSelecting == other.isSelecting
             && reduceMotion == other.reduceMotion
             && (actions.pick == nil) == (other.actions.pick == nil)
@@ -125,11 +127,23 @@ final class TimelineGridController {
 
     /// distance past the rest position, like ScrollPosition's scrollTo(y:).
     func scrollTo(y: CGFloat) {
-        grid?.scroll(toOffsetY: y)
+        guard let grid else { return }
+        grid.layoutIfNeeded()
+        let end = max(0, grid.contentSize.height - grid.bounds.height
+                      + grid.adjustedContentInset.top + grid.adjustedContentInset.bottom)
+        grid.scroll(toOffsetY: min(max(0, y), end))
     }
 
     func scrollToTop() {
         grid?.scroll(toOffsetY: 0)
+    }
+
+    func scrollToEnd() {
+        guard let grid else { return }
+        grid.layoutIfNeeded()
+        let lastOffset = max(0, grid.contentSize.height - grid.bounds.height
+                             + grid.adjustedContentInset.top + grid.adjustedContentInset.bottom)
+        grid.scroll(toOffsetY: lastOffset)
     }
 
     /// lays the model's rows out right away instead of at the next pass, so
@@ -820,6 +834,7 @@ final class TimelineGridView: UIScrollView {
                     side: side,
                     targetPixelSize: context.targetPixelSize,
                     showsBackupBadge: context.showsBackupBadge,
+                    usesOriginalAspectRatio: context.usesOriginalAspectRatio,
                     isSelecting: context.isSelecting,
                     selection: context.selection,
                     projectedRemovalIDs: removals,

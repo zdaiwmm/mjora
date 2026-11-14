@@ -25,6 +25,7 @@ final class SearchModel {
     @ObservationIgnored private var client: ImoraClient?
     @ObservationIgnored private var search: Search?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var realtimeRefreshTask: Task<Void, Never>?
     /// nil before the first page, then the server's pointer to the next one.
     @ObservationIgnored private var nextToken: SearchPageToken?
     /// bumped on query changes so stale responses and their defers are ignored.
@@ -39,7 +40,8 @@ final class SearchModel {
         self.search = search
     }
 
-    func attach(_ client: ImoraClient) {
+    func attach(_ client: ImoraClient, hub: RealtimeHub? = nil) {
+        hub?.addListener(self)
         guard self.client == nil else { return }
         self.client = client
         search = { filter, token in try await client.search(filter, token: token) }
@@ -228,6 +230,20 @@ final class SearchModel {
         } catch {
             guard requested == generation, !Task.isCancelled else { return }
             loadFailed = true
+        }
+    }
+}
+
+extension SearchModel: RealtimeListener {
+    func realtimeAssetsRemoved(_ ids: Set<String>) { scheduleRealtimeRefresh() }
+    func realtimeAssetUpdated(_ detail: AssetDetail) { scheduleRealtimeRefresh() }
+    func realtimeResync() { scheduleRealtimeRefresh() }
+
+    private func scheduleRealtimeRefresh() {
+        realtimeRefreshTask?.cancel()
+        realtimeRefreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            await self?.refresh()
         }
     }
 }

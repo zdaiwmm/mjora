@@ -5,6 +5,34 @@ import XCTest
 
 @MainActor
 final class OfflineTimelineTests: XCTestCase {
+    func testAwaitingAnAlreadyLoadingMonthWaitsForItsProjectedAssets() async throws {
+        let month = "2026-03-01T00:00:00.000Z"
+        let server = try LocalHTTPServer { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return .init(body: Data("""
+            {"id":["period-cover"],"ownerId":["fixture"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"thumbhash":[null],"fileCreatedAt":["2026-03-02T12:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}
+            """.utf8))
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "period-\(UUID())")
+        defer { client.invalidate() }
+        let filter = TimelineFilter(order: "period-\(UUID())")
+        let account = try XCTUnwrap(client.offlineAccountKey)
+        TimelineCache.store([TimeBucket(timeBucket: month, count: 1)], for: filter, account: account)
+        for _ in 0..<100 where TimelineCache.buckets(for: filter, account: account) == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let model = TimelineModel(filter: filter)
+        model.attach(client)
+        let cover = Task { await model.loadBucket(month, immediateRows: false) }
+        try await Task.sleep(for: .milliseconds(20))
+        await model.loadBucket(month)
+        XCTAssertEqual(model.flatAssets.map(\.id), ["period-cover"])
+        XCTAssertNotNil(model.rowIndex(containingAnyOf: ["period-cover"]))
+        await cover.value
+        XCTAssertEqual(server.received.count, 1)
+    }
+
     func testCatchUpReplacesDeletedAssetWhenMonthlyCountIsUnchanged() async throws {
         let currentID = Mutex("synthetic-deleted")
         let month = "2026-01-01T00:00:00.000Z"

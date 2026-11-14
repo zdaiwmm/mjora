@@ -18,6 +18,11 @@ struct AlbumsTab: View {
         }
     }
 
+    @State private var layout = CollectionsLayout()
+    @State private var showLayoutEditor = false
+    @State private var showPinnedEditor = false
+    @State private var showSettings = false
+    private let layoutStore = CollectionsLayoutStore()
     @State private var albums: [Album] = []
     @State private var filter: Filter = .all
     @State private var searchText = ""
@@ -32,6 +37,7 @@ struct AlbumsTab: View {
     @State private var newAlbumName = ""
     @State private var path = NavigationPath()
     @State private var pendingRemovalIDs = Set<String>()
+    @State private var removalNavigation = AlbumRemovalNavigation()
     @State private var albumLoadGate = LatestAlbumLoadGate()
     @State private var pendingAlbumLoadGate = LatestAlbumLoadGate()
     private var router: NotificationRouter { .shared }
@@ -51,126 +57,125 @@ struct AlbumsTab: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    NavigationLink {
-                        TimelineScreen(title: String(localized: "All Cloud Photos"), filter: TimelineFilter(withPartners: true,
-                            withSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline, withStacked: true))
-                    } label: {
-                        Label("All Cloud Photos", systemImage: "icloud")
-                            .font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 8)
+            CollectionsHome(albums: albums, isLoading: !hasLoaded || isLoading,
+                            loadFailed: loadFailed, layout: $layout,
+                            onRetry: reload, onEditPins: { showPinnedEditor = true })
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Text("Albums").font(.largeTitle.bold()).fixedSize()
+                            .dynamicTypeSize(...DynamicTypeSize.large)
                     }
-                    .accessibilityIdentifier("albums-all-cloud-photos")
-                    filterChips
-
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 14)], spacing: 18) {
-                        ForEach(visibleAlbums) { album in
-                            NavigationLink(value: album) {
-                                AlbumCard(album: album)
-                            }
-                            .buttonStyle(PressableCardStyle())
-                            .disabled(album.isPending)
-                        }
+                    .sharedBackgroundVisibility(.hidden)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button { showCreate = true } label: { Label("New Album", systemImage: "plus") }
+                                .accessibilityIdentifier("albums-create")
+                            Button { showPinnedEditor = true } label: { Label("Edit Pinned Collections", systemImage: "pin") }
+                            Button { showLayoutEditor = true } label: { Label("Customize Collections", systemImage: "arrow.up.arrow.down") }
+                        } label: { Image(systemName: "ellipsis") }
+                        .accessibilityIdentifier("collections-layout-menu")
                     }
-                    .padding(.horizontal, 16)
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showSettings = true } label: { ProfileAvatar(size: 36) }
+                            .accessibilityIdentifier("profile-avatar")
+                    }
+                    .sharedBackgroundVisibility(.hidden)
                 }
-            }
-            .navigationTitle("Albums")
-            .navigationDestination(for: Album.self) { album in
-                AlbumDetailScreen(
-                    album: album,
-                    onAlbumChanged: upsertAlbum,
-                    onAlbumRemoved: removeAlbum,
-                    onAlbumRestored: restoreAlbum,
-                    onAlbumRemovalCommitted: commitAlbumRemoval
-                )
-            }
-            .searchable(text: $searchText, prompt: "Album name")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showCreate = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .disabled(isCreating)
-                    .accessibilityIdentifier("albums-create")
+                .navigationDestination(for: Album.self) { album in
+                    AlbumDetailScreen(album: album, onAlbumChanged: upsertAlbum,
+                        onAlbumRemoved: removeAlbum, onAlbumRestored: restoreAlbum,
+                        onAlbumRemovalCommitted: commitAlbumRemoval,
+                        isPinned: layout.pinnedIDs.contains("album:\(album.id)"),
+                        onTogglePinned: { layout.togglePin("album:\(album.id)") })
                 }
-            }
-            .overlay {
-                if albums.isEmpty {
-                    if !hasLoaded {
-                        ProgressView()
-                    } else if loadFailed {
-                        ContentUnavailableView {
-                            Label("Couldn't load albums", systemImage: "wifi.exclamationmark")
-                        } actions: {
-                            Button("Retry") { reload() }
-                                .buttonStyle(.glass)
-                        }
-                    } else {
-                        ContentUnavailableView("No albums", systemImage: "rectangle.stack")
+                .navigationDestination(for: CollectionsRoute.self) { route in
+                    switch route {
+                    case .albums: allAlbumsPage
+                    case .recent:
+                        TimelineScreen(title: String(localized: "Recently Added"),
+                                       filter: TimelineFilter(orderBy: "createdAt"), showsLargeTitle: false)
+                    case .media(let media): PhotosMediaTimeline(media: media, title: media.title)
+                    case .memories:
+                        ScrollView {
+                            MemoryLane(showsHeading: false, cardWidth: 250, cardHeight: 250,
+                                       cornerRadius: 26, showsEmptyPlaceholder: true)
+                                .padding(.top, 16)
+                        }.navigationTitle("Memories").navigationBarTitleDisplayMode(.inline)
                     }
                 }
-            }
-            .task { await load() }
-            // a notification tap arrives as an id; .task(id:) also covers the
-            // case where this tab is only created by the switch itself.
-            .task(id: router.pendingAlbumID) { await openPendingAlbum() }
-            // reloads after returning from a detail where the album may have
-            // been renamed or deleted. the initial load stays with .task.
-            .onAppear {
-                if !albums.isEmpty {
-                    reload()
+                .navigationDestination(for: LibraryDestination.self) { LibraryDestinationScreen(destination: $0) }
+                .navigationDestination(for: Person.self) { PersonScreen(person: $0) }
+                .navigationDestination(for: PlaceLink.self) { PlaceScreen(city: $0.city, coordinate: $0.coordinate) }
+                .navigationDestination(for: SharedSpace.self) { SpaceScreen(space: $0) }
+                .navigationDestination(for: CleanupRoute.self) { CleanupRouteScreen(route: $0) }
+                .task {
+                    layout = layoutStore.load(account: session.client?.offlineAccountKey)
+                    await load()
                 }
-            }
-            // server-side album changes arrive over the realtime channel.
-            .onChange(of: session.realtime?.albumsGeneration ?? 0) {
-                reload()
-            }
-            .alert("New Album", isPresented: $showCreate) {
-                TextField("Album name", text: $newAlbumName)
-                Button("Create") {
-                    Task { await createAlbum() }
+                .task(id: router.pendingAlbumID) { await openPendingAlbum() }
+                .onAppear { if !albums.isEmpty { reload() } }
+                .onChange(of: session.realtime?.albumsGeneration ?? 0) { reload() }
+                .onChange(of: layout) { _, value in
+                    layoutStore.save(value, account: session.client?.offlineAccountKey)
                 }
-                .disabled(isCreating)
-                Button("Cancel", role: .cancel) { newAlbumName = "" }
-            }
+                .onChange(of: path.count) { _, _ in session.lockedFolder?.lock() }
+                .sheet(isPresented: $showLayoutEditor) { CollectionsLayoutEditor(layout: $layout) }
+                .sheet(isPresented: $showPinnedEditor) { PinnedCollectionsEditor(layout: $layout, albums: albums) }
+                .sheet(isPresented: $showSettings) { SettingsView() }
+        }
+        .alert("New Album", isPresented: $showCreate) {
+            TextField("Album name", text: $newAlbumName)
+            Button("Create") { Task { await createAlbum() } }
+                .disabled(isCreating || newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { newAlbumName = "" }
         }
     }
 
-    @ViewBuilder private var filterChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Filter.allCases, id: \.self) { item in
-                    Button {
-                        // no withAnimation: it would animate the whole grid
-                        // diff of potentially thousands of cards. only the
-                        // chip styling below animates.
-                        filter = item
-                    } label: {
-                        Text(item.title)
-                            .font(.subheadline.weight(.medium))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(
-                        filter == item ? .regular.tint(.accentColor.opacity(0.7)) : .regular,
-                        in: .capsule
-                    )
-                    .foregroundStyle(filter == item ? .white : .primary)
-                    .animation(.smooth(duration: 0.2), value: filter)
+    private var allAlbumsPage: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 14)], spacing: 20) {
+                ForEach(visibleAlbums) { album in
+                    NavigationLink(value: album) { AlbumCard(album: album) }
+                        .buttonStyle(PressableCardStyle())
+                        .disabled(album.isPending)
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 2)
+            }.padding(.horizontal, 16).padding(.vertical, 12)
         }
-        // a finger touch is hit tested with a radius and the frontmost view
-        // inside it wins, so the grid below used to steal chip taps and open
-        // the first album. the simulator taps a single point and never shows it.
-        .zIndex(1)
+        .background(Color(.systemBackground))
+        .navigationTitle("All Albums")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Album name")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Albums", selection: $filter) {
+                        ForEach(Filter.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.pickerStyle(.inline)
+                } label: { Image(systemName: "line.3.horizontal.decrease") }
+                .accessibilityIdentifier("albums-filter")
+            }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showCreate = true } label: { Image(systemName: "plus") }
+                    .disabled(isCreating)
+                    .accessibilityIdentifier("albums-create")
+            }
+        }
+        .overlay {
+            if albums.isEmpty, !hasLoaded { ProgressView() }
+            else if albums.isEmpty, loadFailed {
+                ContentUnavailableView {
+                    Label("Couldn't load albums", systemImage: "wifi.exclamationmark")
+                } actions: { Button("Retry", action: reload) }
+            } else if visibleAlbums.isEmpty {
+                if searchText.isEmpty { ContentUnavailableView("No albums", systemImage: "rectangle.stack") }
+                else { ContentUnavailableView.search(text: searchText) }
+            }
+        }
     }
 
     /// restarts the fetch, cancelling the one in flight: a burst of realtime
@@ -271,6 +276,7 @@ struct AlbumsTab: View {
     }
 
     private func removeAlbum(_ album: Album) {
+        removalNavigation.record(id: album.id, path: path)
         invalidateAlbumLoads()
         pendingRemovalIDs.insert(album.id)
         albums.removeAll { $0.id == album.id }
@@ -282,10 +288,12 @@ struct AlbumsTab: View {
         // Reopen only when the user stayed on the albums root. If they already
         // navigated elsewhere while the request failed, restoring the list row
         // is the least surprising precise rollback.
-        if path.isEmpty { path.append(album) }
+        if removalNavigation.shouldReopen(id: album.id, current: path) { path.append(album) }
     }
 
     private func commitAlbumRemoval(_ albumID: String) {
+        removalNavigation.commit(id: albumID)
+        layout.removeAlbum(albumID)
         invalidateAlbumLoads()
         pendingRemovalIDs.remove(albumID)
     }
@@ -316,6 +324,23 @@ struct AlbumsTab: View {
         path = NavigationPath()
         path.append(album)
     }
+}
+
+struct AlbumRemovalNavigation {
+    private var parents: [String: NavigationPath] = [:]
+
+    mutating func record(id: String, path: NavigationPath) {
+        var parent = path
+        if !parent.isEmpty { parent.removeLast() }
+        parents[id] = parent
+    }
+
+    mutating func shouldReopen(id: String, current: NavigationPath) -> Bool {
+        guard let parent = parents.removeValue(forKey: id) else { return false }
+        return parent == current
+    }
+
+    mutating func commit(id: String) { parents.removeValue(forKey: id) }
 }
 
 struct AlbumCard: View {
