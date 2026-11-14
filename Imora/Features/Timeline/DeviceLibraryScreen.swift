@@ -17,6 +17,13 @@ struct DeviceLibraryScreen: View {
                     }
                     .padding()
                 }
+                if PhotoAccess.shared.isBlocked, let url = URL(string: UIApplication.openSettingsURLString) {
+                    Link("Manage Photo Access", destination: url).padding()
+                        .accessibilityIdentifier("device-manage-photo-access")
+                }
+                Text("\(model.flatAssets.count) items on this device")
+                    .font(.footnote).foregroundStyle(.secondary).padding(.bottom, 6)
+                    .accessibilityIdentifier("device-library-count")
             })
             .task { reload() }
             .onChange(of: session.realtime?.localGeneration) { _, _ in reload() }

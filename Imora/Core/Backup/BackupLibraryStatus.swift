@@ -48,7 +48,7 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
                 pendingMedia.add(asset)
                 continue
             }
-            if entry.isBackedUp { backedUpMedia.add(asset) }
+            if entry.isBackedUp || entry.hasHistoricalBackup { backedUpMedia.add(asset) }
             else if entry.unsupported { unsupportedMedia.add(asset) }
             else { pendingMedia.add(asset) }
         }

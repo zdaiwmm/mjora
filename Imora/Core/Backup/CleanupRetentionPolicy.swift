@@ -15,7 +15,7 @@ nonisolated struct CleanupRetentionPolicy: Codable, Equatable, Sendable {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let cutoff: Date?
-        if let customStartDate { cutoff = customStartDate }
+        if let customStartDate { cutoff = calendar.startOfDay(for: customStartDate) }
         else if let retentionDays {
             // Include today, across daylight-saving changes, using calendar days.
             cutoff = calendar.date(byAdding: .day, value: -(max(1, retentionDays) - 1), to: calendar.startOfDay(for: now))

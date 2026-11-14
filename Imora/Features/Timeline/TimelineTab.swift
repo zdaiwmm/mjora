@@ -21,12 +21,9 @@ struct TimelineTab: View {
                 if source == "local" {
                     DeviceLibraryScreen(navigationTarget: $router.pendingTarget)
                 } else {
-                    TimelineScreen(title: "", filter: filter, showsLargeTitle: false, navigationTarget: $router.pendingTarget, header: {
-                        VStack(spacing: 0) {
-                            BackupStatusBanner { showBackupSettings = true }
-                            MemoryLane()
-                        }
-                    })
+                    CloudPhotosScreen(filter: filter, navigationTarget: $router.pendingTarget) {
+                        showBackupSettings = true
+                    }
                     .id(filter)
                 }
             }
@@ -61,6 +58,35 @@ struct TimelineTab: View {
                 SettingsView()
             }
         }
+    }
+}
+
+private struct CloudPhotosScreen: View {
+    let filter: TimelineFilter
+    @Binding var navigationTarget: TimelineNavigationTarget?
+    let showBackup: () -> Void
+    @State private var model: TimelineModel
+
+    init(filter: TimelineFilter, navigationTarget: Binding<TimelineNavigationTarget?>, showBackup: @escaping () -> Void) {
+        self.filter = filter
+        _navigationTarget = navigationTarget
+        self.showBackup = showBackup
+        _model = State(initialValue: TimelineModel(filter: filter))
+    }
+
+    var body: some View {
+        TimelineScreen(title: "", filter: filter, showsLargeTitle: false, suppliedModel: model,
+            navigationTarget: $navigationTarget, header: {
+                VStack(spacing: 0) {
+                    BackupStatusBanner { showBackup() }
+                    if !model.sections.isEmpty {
+                        Text("\(model.sections.reduce(0) { $0 + $1.count }) cloud items")
+                            .font(.footnote).foregroundStyle(.secondary).padding(.vertical, 6)
+                            .accessibilityIdentifier("cloud-library-count")
+                    }
+                    MemoryLane()
+                }
+            })
     }
 }
 

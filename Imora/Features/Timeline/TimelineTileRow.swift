@@ -434,8 +434,7 @@ final class TimelineTileView: UIView {
     }
 
     func unregister() {
-        loadTask?.cancel()
-        placeholderTask?.cancel()
+        cancelLoads()
         guard let registered = registeredAsset else { return }
         registry?.unregister(self, for: registered.id)
         registeredAsset = nil
@@ -760,6 +759,11 @@ final class TimelineTileView: UIView {
             setUploadOverlay(nil)
             return
         }
+        if let id = asset.localIdentifier, backup.remoteRemovedLocalIDs.contains(id) {
+            setBackupBadge("cloud-deleted")
+            setUploadOverlay(nil)
+            return
+        }
         let uploadState = asset.localIdentifier.flatMap { backup.uploadStates[$0] }
         let hasVerifiedLocalBackup = asset.localIdentifier.map {
             asset.isLocalBackedUp || backup.hasVerifiedBackup(localIdentifier: $0)
@@ -787,7 +791,7 @@ final class TimelineTileView: UIView {
         backupBadge?.removeFromSuperview()
         backupBadge = nil
         guard let name else { return }
-        let badge = TileGlyphBadge(.backup(name))
+        let badge = TileGlyphBadge(name == "cloud-deleted" ? .cloudDeleted : .backup(name))
         badge.accessibilityIdentifier = "badge-\(name)"
         content.addSubview(badge)
         backupBadge = badge
@@ -915,6 +919,9 @@ final class TimelineTileView: UIView {
     private func backupAccessibilitySummary(for asset: Asset) -> String {
         let backup = session?.backup
         let localIdentifier = asset.localIdentifier
+        if let localIdentifier, backup?.remoteRemovedLocalIDs.contains(localIdentifier) == true {
+            return String(localized: "Deleted in Cloud")
+        }
         if let localIdentifier,
            asset.isLocalBackedUp || backup?.hasVerifiedBackup(localIdentifier: localIdentifier) == true {
             return String(localized: "Backed up")
@@ -942,6 +949,7 @@ private final class TileGlyphBadge: UIImageView {
     enum Kind: Hashable {
         case livePhoto
         case favorite
+        case cloudDeleted
         /// backup status, by symbol name.
         case backup(String)
     }
@@ -998,6 +1006,11 @@ private final class TileGlyphBadge: UIImageView {
                 .font(.caption)
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 3)
+        case .cloudDeleted:
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.gray)
+                .shadow(color: .black.opacity(0.6), radius: 2.5)
         case .backup(let name):
             Image(systemName: name)
                 .font(.system(size: 12, weight: .semibold))

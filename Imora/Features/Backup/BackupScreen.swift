@@ -287,6 +287,10 @@ struct BackupScreen: View {
                 Text(statusText(backup))
                     .font(.callout)
                     .accessibilityIdentifier("backup-status")
+                if let message = backup.reconciliationMessage {
+                    Text(message).font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("backup-reconciliation-status")
+                }
                 if let status = backup.libraryStatus {
                     Text(status.countText)
                         .font(.callout)
@@ -387,7 +391,8 @@ struct BackupScreen: View {
     }
 
     private var connectionText: String {
-        switch LocalServerRouter.shared.status {
+        if session.backup?.isConnectionOffline == true { return String(localized: "Offline") }
+        return switch LocalServerRouter.shared.status {
         case .local: String(localized: "Local Network")
         case .held: String(localized: "Local Connection Paused")
         case .checking: String(localized: "Checking...")

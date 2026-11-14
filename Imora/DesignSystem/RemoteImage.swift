@@ -647,6 +647,7 @@ struct AssetTile: View {
     }
 
     private var backupAccessibilitySummary: String {
+        if isCloudDeleted { return String(localized: "Deleted in Cloud") }
         if hasVerifiedLocalBackup { return String(localized: "Backed up") }
         switch uploadState {
         case .uploading(let fraction):
@@ -664,13 +665,18 @@ struct AssetTile: View {
 
     // MARK: - backup status
 
+    private var isCloudDeleted: Bool {
+        guard let id = asset.localIdentifier else { return false }
+        return session.backup?.remoteRemovedLocalIDs.contains(id) == true
+    }
+
     private var uploadState: LocalUploadState? {
-        guard let localId = asset.localIdentifier else { return nil }
+        guard !isCloudDeleted, let localId = asset.localIdentifier else { return nil }
         return session.backup?.uploadStates[localId]
     }
 
     private var hasVerifiedLocalBackup: Bool {
-        guard asset.isLocal, let localId = asset.localIdentifier else { return false }
+        guard !isCloudDeleted, asset.isLocal, let localId = asset.localIdentifier else { return false }
         return asset.isLocalBackedUp
             || session.backup?.hasVerifiedBackup(localIdentifier: localId) == true
     }
@@ -681,7 +687,14 @@ struct AssetTile: View {
     }
 
     @ViewBuilder private var backupBadge: some View {
-        if hasVerifiedLocalBackup {
+        if isCloudDeleted {
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.gray)
+                .shadow(color: .black.opacity(0.6), radius: 2.5)
+                .padding(6)
+                .accessibilityIdentifier("badge-cloud-deleted")
+        } else if hasVerifiedLocalBackup {
             badgeIcon("checkmark.icloud")
         } else if uploadState == nil {
             if asset.isLocal {

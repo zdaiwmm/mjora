@@ -435,6 +435,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     /// Downloads update the persisted pairing asynchronously. Keeping the new
     /// identifier here makes a reopened context menu correct immediately.
     @State private var downloadedLocalIdentifiers: [String: String] = [:]
+    @State private var pendingRebackupLocalID: String?
     @State private var columnCount = 3
     /// Nil follows the width-aware default. Once the user pinches, retain
     /// their choice across window changes and only clamp the rendered value.
@@ -1078,6 +1079,19 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             .animation(.smooth(duration: 0.25), value: isSelecting)
         }
         .deviceCopyRemovalPresentation(deviceCopyRemoval)
+        .confirmationDialog("Back Up Again?", isPresented: Binding(
+            get: { pendingRebackupLocalID != nil }, set: { if !$0 { pendingRebackupLocalID = nil } }
+        ), titleVisibility: .visible, presenting: pendingRebackupLocalID) { localID in
+            Button("Back Up Again") {
+                Task {
+                    do { _ = try await session.backup?.rebackupAfterConfirmation(localIdentifier: localID) }
+                    catch { ErrorToastCenter.shared.show(String(localized: "Couldn't back up"), error: error) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This photo was deleted in the cloud. Backing up again creates a new cloud copy and keeps the original on this device.")
+        }
         .sheet(isPresented: $showsSelectedSheet) {
             SelectedAssetsSheet(assets: selectedSheetAssets, selection: $selection)
         }
@@ -1103,6 +1117,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         .onChange(of: navigationTarget) {
             Task { await revealPendingTimelineTarget() }
+        }
+        .onChange(of: model.rowsContentVersion) {
+            if navigationTarget != nil { Task { await revealPendingTimelineTarget() } }
         }
         .onChange(of: resyncTrigger) {
             model.requestResync()
@@ -1431,6 +1448,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         for asset: Asset,
         localID: String
     ) -> UIMenuElement {
+        if session.backup?.remoteRemovedLocalIDs.contains(localID) == true {
+            return UIAction(title: String(localized: "Back Up Again…"), image: UIImage(systemName: "icloud.and.arrow.up")) { _ in
+                pendingRebackupLocalID = localID
+            }
+        }
         if asset.isLocalBackedUp || session.backup?.hasVerifiedBackup(localIdentifier: localID) == true {
             return UIAction(title: String(localized: "Backed Up"), image: UIImage(systemName: "checkmark.icloud"),
                             attributes: .disabled) { _ in }

@@ -64,8 +64,8 @@ final class LocalizationFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts[chinese ? "App 版本" : "App Version"].waitForExistence(timeout: 10))
         let version = app.descendants(matching: .any)["app-updates-installed-version"].firstMatch
         XCTAssertTrue(version.waitForExistence(timeout: 10))
-        XCTAssertTrue(version.label.contains("1.0.1"), version.label)
-        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("3"))
+        XCTAssertTrue(version.label.contains("1.0.2"), version.label)
+        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("4"))
         XCTAssertTrue(app.staticTexts[chinese ? "未配置无线更新" : "Wireless Updates Not Configured"].exists)
         XCTAssertFalse(app.buttons["app-updates-install"].exists)
         snapshot(app, "\(language)-app-updates")
@@ -103,11 +103,21 @@ final class LocalizationFlowTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app, "settings-backup")
         XCTAssertTrue(app.switches["backup-auto-toggle"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["server-route-use-local"].exists)
+        XCTAssertTrue(app.buttons["backup-advanced"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["backup-cleanup"].exists)
+        snapshot(app, "\(language)-backup-simple")
+        tap(app, "backup-advanced")
+        XCTAssertTrue(app.buttons["server-route-use-local"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.buttons["server-route-use-local"].label, chinese ? "立即使用局域网地址" : "Use Local Now")
         XCTAssertEqual(app.buttons["server-route-use-external"].label, chinese ? "使用外网地址" : "Use External Address")
         XCTAssertTrue(app.staticTexts["server-route-endpoint"].label.contains("127.0.0.1:32283"))
-        snapshot(app, "\(language)-backup")
+        snapshot(app, "\(language)-backup-advanced")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        tap(app, "backup-cleanup")
+        XCTAssertTrue(app.descendants(matching: .any)["cleanup-retention-days"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.switches["cleanup-keep-favorites"].exists)
+        snapshot(app, "\(language)-cleanup-retention")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app, "settings-local-network")
         XCTAssertTrue(app.buttons["server-route-use-local"].waitForExistence(timeout: 10))
@@ -123,4 +133,38 @@ final class LocalizationFlowTests: XCTestCase {
     }
     func testChineseScreensUseShippedResources() throws { try checkFlow(language: "zh-Hans", chinese: true) }
     func testEnglishScreensRemainAvailable() throws { try checkFlow(language: "en", chinese: false) }
+
+    /// Run against a test product enrolled with the existing Mac update host.
+    /// Public source builds have no private host configuration and skip this case.
+    func testManualCurrentVersionCheckShowsChineseToastOnEveryTap() throws {
+        continueAfterFailure = false
+        let fixture = try fixture()
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        let server = app.textFields["auth-server"]
+        if server.waitForExistence(timeout: 5) {
+            enter(fixture.apiURL, in: server, app: app)
+            app.buttons["auth-continue"].tap()
+            enter(fixture.email, in: app.textFields["auth-email"], app: app)
+            enter(fixture.password, in: app.secureTextFields["auth-password"], app: app)
+            app.buttons["auth-sign-in"].tap()
+        }
+        XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
+        app.buttons["profile-avatar"].tap()
+        tap(app, "settings-app-updates")
+        let check = app.buttons["app-updates-check"]
+        XCTAssertTrue(check.waitForExistence(timeout: 10))
+        guard check.isEnabled else { throw XCTSkip("Enroll the private test product with the Mac update host first.") }
+        let toast = app.descendants(matching: .any)["information-toast"].firstMatch
+        XCTAssertFalse(toast.exists, "Opening About must not announce a manual check")
+        for index in 0..<2 {
+            check.tap()
+            XCTAssertTrue(toast.waitForExistence(timeout: 15))
+            XCTAssertTrue(toast.label.contains("当前已是最新版本"), toast.label)
+            snapshot(app, "zh-Hans-current-version-toast-\(index)")
+            XCTAssertTrue(toast.waitForNonExistence(timeout: 8))
+        }
+        app.terminate()
+    }
 }

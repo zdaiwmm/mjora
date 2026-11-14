@@ -2,6 +2,11 @@ import XCTest
 @testable import Imora
 
 final class CleanupRetentionPolicyTests: XCTestCase {
+    func testCustomStartDateKeepsTheWholeSelectedNaturalDay() throws {
+        let selected = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-01T21:30:00Z"))
+        let cutoff = CleanupRetentionPolicy(retentionDays: nil, customStartDate: selected).snapshot(timeZone: TimeZone(secondsFromGMT: 0)!).cutoff
+        XCTAssertEqual(cutoff, ISO8601DateFormatter().date(from: "2026-11-01T00:00:00Z"))
+    }
     func testNaturalDayBoundaryIncludesTodayAndStrictlyPreservesCutoff() throws {
         let zone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-03-09T18:00:00Z"))
@@ -28,9 +33,10 @@ final class CleanupRetentionPolicyTests: XCTestCase {
 
     func testCustomCutoffAndSnapshotDoNotMoveAfterPreview() throws {
         let custom = Date(timeIntervalSince1970: 1_000)
-        let snapshot = CleanupRetentionPolicy(retentionDays: nil, customStartDate: custom, preserveFavorites: false).snapshot()
-        XCTAssertEqual(snapshot.cutoff, custom)
-        XCTAssertEqual(snapshot.reasons(creationDate: custom, isFavorite: true, protectedAlbumMember: false), [.recent])
-        XCTAssertTrue(snapshot.reasons(creationDate: custom.addingTimeInterval(-1), isFavorite: true, protectedAlbumMember: false).isEmpty)
+        let cutoff = Date(timeIntervalSince1970: 0)
+        let snapshot = CleanupRetentionPolicy(retentionDays: nil, customStartDate: custom, preserveFavorites: false).snapshot(timeZone: TimeZone(secondsFromGMT: 0)!)
+        XCTAssertEqual(snapshot.cutoff, cutoff)
+        XCTAssertEqual(snapshot.reasons(creationDate: cutoff, isFavorite: true, protectedAlbumMember: false), [.recent])
+        XCTAssertTrue(snapshot.reasons(creationDate: cutoff.addingTimeInterval(-1), isFavorite: true, protectedAlbumMember: false).isEmpty)
     }
 }

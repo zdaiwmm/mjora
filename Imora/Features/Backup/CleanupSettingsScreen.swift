@@ -133,7 +133,7 @@ struct CleanupSettingsScreen: View {
                 let result = try await backup.performCleanup(report: preview)
                 outcome = String(localized: "Removed \(result.deletedMedia.text). Kept \(result.keptMedia.text).")
             } catch {
-                if !Task.isCancelled { ErrorToastCenter.shared.show(String(localized: "Couldn't clean up this device"), error: error) }
+                if !Task.isCancelled && !PhotoLibraryService.isUserCancelled(error) { ErrorToastCenter.shared.show(String(localized: "Couldn't clean up this device"), error: error) }
             }
         }
     }
