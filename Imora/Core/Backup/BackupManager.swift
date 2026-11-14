@@ -172,6 +172,7 @@ final class BackupManager {
     @ObservationIgnored private var remoteSyncClient: RemoteSyncClient?
     @ObservationIgnored private var cloudSyncTask: Task<Void, Error>?
     private var cloudSyncReady = false
+    private var uploadAuthorityPause: BackupUploadAuthorityPause?
     private var syncInvalidationEpoch: UInt64 = 0
     var syncCredential: RemoteSyncClient.Credential = .session
     private var usesCompatibilityReconciliation = false
@@ -191,6 +192,7 @@ final class BackupManager {
     func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = [], generation: UUID? = nil) {
         guard !isShutDown,
               reconcileCoordinator.request(reason, localIDs: localIDs, remoteIDs: remoteIDs, generation: generation) else { return }
+        uploadAuthorityPause = nil
         if reason == .remoteChange { index.revokeCleanupAuthority() }
         if reason == .remoteChange || reason == .reconnect || reason == .foreground {
             cloudSyncReady = false
@@ -230,6 +232,19 @@ final class BackupManager {
 
     /// All automatic/manual/receipt paths share the same recovery and catch-up barrier.
     private func synchronizeBeforeBackup() async throws {
+        while true {
+            try Task.checkCancellation()
+            do { try await synchronizeCloudRound(); return }
+            catch RemoteSyncError.superseded {
+                // The awaited round no longer covers the newest known event.
+                // Give its owner a chance to retire the shared task, then join
+                // or start the next round instead of dropping this upload.
+                await Task.yield()
+            }
+        }
+    }
+
+    private func synchronizeCloudRound() async throws {
         if let cloudSyncTask { try await cloudSyncTask.value; return }
         if cloudSyncReady { return }
         let (_, sync, scope) = try initializeSync()
@@ -253,8 +268,10 @@ final class BackupManager {
             }
             try Task.checkCancellation()
             guard !self.isShutDown, self.client.context.isActive, try self.syncScope() == scope else { throw BackupVerificationError.stale }
-            guard self.syncInvalidationEpoch == epoch else { throw RemoteSyncError.incompleteStream }
+            guard self.syncInvalidationEpoch == epoch else { throw RemoteSyncError.superseded }
             self.cloudSyncReady = true
+            if self.uploadAuthorityPause != nil, self.runTask != nil { self.rerunRequested = true }
+            self.uploadAuthorityPause = nil
         }
         cloudSyncTask = task
         defer { cloudSyncTask = nil }
@@ -309,7 +326,7 @@ final class BackupManager {
         return try await store.skippableLocalIDs(pairings: pairings, scope: scope)
     }
 
-    private func uploadAuthorization(localID: String) -> @Sendable () async throws -> Void {
+    func uploadAuthorization(localID: String) -> @Sendable () async throws -> Void {
         { [weak self] in
             guard let self else { throw BackupVerificationError.stale }
             try await self.validateSyncForUpload(localID: localID)
@@ -317,15 +334,37 @@ final class BackupManager {
     }
 
     private func validateSyncForUpload(localID: String) async throws {
-        guard !isShutDown, client.context.isActive, cloudSyncReady else { throw RemoteSyncError.incompleteStream }
-        let (store, _, scope) = try initializeSync()
-        guard try await !store.isLocalDeletionProtected(localID, scope: scope) else { throw BackupVerificationError.stale }
-        if !usesCompatibilityReconciliation {
-            guard try await store.isCaughtUp(scope: scope) else { throw RemoteSyncError.incompleteStream }
+        do {
+            if let uploadAuthorityPause { throw uploadAuthorityPause }
+            while true {
+                try Task.checkCancellation()
+                guard !isShutDown, client.context.isActive else { throw BackupVerificationError.stale }
+                try await synchronizeBeforeBackup()
+                let epoch = syncInvalidationEpoch
+                let (store, _, scope) = try initializeSync()
+                guard try await !store.isLocalDeletionProtected(localID, scope: scope) else { throw BackupVerificationError.stale }
+                let caughtUp: Bool
+                if usesCompatibilityReconciliation { caughtUp = true }
+                else { caughtUp = try await store.isCaughtUp(scope: scope) }
+                try Task.checkCancellation()
+                guard !isShutDown, client.context.isActive else { throw BackupVerificationError.stale }
+                // A known event can arrive during the SQLite awaits. Rejoin
+                // catch-up before authorizing any new component/chunk handoff.
+                if !cloudSyncReady || syncInvalidationEpoch != epoch { continue }
+                guard caughtUp else { cloudSyncReady = false; continue }
+                return
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch BackupVerificationError.stale {
+            throw BackupVerificationError.stale
+        } catch {
+            let pause = (error as? BackupUploadAuthorityPause) ?? BackupUploadAuthorityPause(underlying: error)
+            uploadAuthorityPause = pause
+            syncStatusMessage = Self.safeSyncFailureMessage(pause.underlying)
+            throw pause
         }
-        guard cloudSyncReady, !isShutDown else { throw RemoteSyncError.incompleteStream }
     }
-
 
     func requestFullReconciliation() {
         request(.manualFullCheck)
@@ -634,8 +673,9 @@ final class BackupManager {
         FileManager.default.temporaryDirectory.appending(path: "backup")
     }
 
-    init(client: ImoraClient) {
+    init(client: ImoraClient, index: BackupIndex = BackupIndex(), syncStore: SyncStateStore? = nil) {
         self.client = client
+        self.syncStore = syncStore
         self.autoBackup = UserDefaults.standard.bool(forKey: Self.autoBackupKey)
         self.backUpOnCellular = UserDefaults.standard.bool(forKey: Self.cellularBackupKey)
         self.excludeScreenshots = UserDefaults.standard.bool(forKey: Self.excludeScreenshotsKey)
@@ -650,7 +690,7 @@ final class BackupManager {
         let storedMaxUploadMB = UserDefaults.standard.object(forKey: Self.maxUploadSizeMBKey) as? Int
         self.maxUploadSizeMB = UploadSizeLimit.bytes(forMegabytes: storedMaxUploadMB) == nil
             ? nil : storedMaxUploadMB
-        self.index = BackupIndex()
+        self.index = index
         self.dateOrder = BackupDateOrder(rawValue: UserDefaults.standard.string(forKey: Self.dateOrderKey) ?? "") ?? .newestFirst
         self.mediaPriority = BackupMediaPriority(rawValue: UserDefaults.standard.string(forKey: Self.mediaPriorityKey) ?? "") ?? .together
         if repeatedFailureLedger.removeLegacySizeLimitFailures() {
@@ -1027,7 +1067,7 @@ final class BackupManager {
                 return true
             }
             for asset in candidates {
-                guard !Task.isCancelled, automaticRecentUploadsPermitted,
+                guard !Task.isCancelled, automaticRecentUploadsPermitted, uploadAuthorityPause == nil,
                       activeBacklogCheckpoint != nil else { break }
                 guard includesInBackup(asset) else { continue }
                 // the viewer may already own this asset. its result goes to
@@ -1035,6 +1075,11 @@ final class BackupManager {
                 if case .uploading = uploadStates[asset.localIdentifier] { continue }
                 recentAttempted[asset.localIdentifier] = asset
                 await backUpRecentAsset(asset)
+                if uploadAuthorityPause != nil {
+                    recentAttempted[asset.localIdentifier] = nil
+                    recentRescanRequested = false
+                    break
+                }
                 if recentRescanRequested { break }
             }
             await index.flush()
@@ -1042,7 +1087,7 @@ final class BackupManager {
     }
 
     private func backUpRecentAsset(_ asset: DeviceAsset) async {
-        do { try await synchronizeBeforeBackup(); try await validateSyncForUpload(localID: asset.localIdentifier) }
+        do { try await validateSyncForUpload(localID: asset.localIdentifier) }
         catch { syncStatusMessage = Self.safeSyncFailureMessage(error); return }
         let localId = asset.localIdentifier
         let transfer = beginActiveTransfer(localIdentifier: localId)
@@ -1113,6 +1158,11 @@ final class BackupManager {
                 markUploadFailed(asset, reason: reason, kind: kind)
             case .skipped:
                 if !Task.isCancelled { summary.skippedMedia.add(asset) }
+            case .paused(let pause):
+                uploadAuthorityPause = pause
+                syncStatusMessage = Self.safeSyncFailureMessage(pause.underlying)
+                recentAttempted[localId] = nil
+                return
             case .quota(let message):
                 recentQuotaReached = true
                 throw ImoraError.http(400, message)
@@ -1556,7 +1606,7 @@ final class BackupManager {
                 diagnosticFailure = .init(category: category, code: failure.code)
             }
             recentRescanRequested = false
-            recentTask?.cancel()
+            if !(error is BackupUploadAuthorityPause) { recentTask?.cancel() }
             await finishRecentBackups()
             await index.flush()
             if error is CancellationError || Task.isCancelled {
@@ -1568,6 +1618,10 @@ final class BackupManager {
                 // while its in-flight PhotoKit work drains.
                 rerunRequested = !isStopping
                     && (rerunRequested || (policyInterruptedRun && conditionsAllowWork))
+            } else if let pause = error as? BackupUploadAuthorityPause {
+                syncStatusMessage = Self.safeSyncFailureMessage(pause.underlying)
+                phase = .error(Self.safeSyncFailureMessage(pause.underlying))
+                reportsOutcome = false
             } else if runAllowsUploads {
                 phase = .error(error.localizedDescription)
                 // the backup screen still shows the error; the banner is
@@ -1961,19 +2015,11 @@ final class BackupManager {
             Task { @MainActor in self.noteUploadProgress(localId, fraction) }
         }
 
-        await withTaskGroup(of: (DeviceAsset, UploadOutcome).self) { group in
-            var next = 0
-            var done = 0
-            @MainActor func addNext() {
-                // once cancelled, queueing the rest would only race the counter
-                // to the end as each new transfer dies on arrival. the network
-                // rule is read here too, so walking out of wifi mid-run stops
-                // the queue rather than emptying the data plan behind the user.
-                guard next < queue.count, quotaMessage == nil, !Task.isCancelled,
-                      conditionsAllowWork
-                else { return }
-                let asset = queue[next]
-                next += 1
+        var authorityPause: BackupUploadAuthorityPause?
+        var done = 0
+        await BackupUploadScheduler.run(queue, workers: Self.uploadWorkers,
+            canSchedule: { self.conditionsAllowWork && self.uploadAuthorityPause == nil },
+            operation: { asset in
                 uploadStates[asset.localIdentifier] = .uploading(0)
                 measuredUploadFractions[asset.localIdentifier] = 0
                 let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
@@ -1982,30 +2028,21 @@ final class BackupManager {
                 let requestLimit = maximumRequestBytes
                 let chunking = chunking
                 let authorization = uploadAuthorization(localID: asset.localIdentifier)
-                group.addTask {
-                    let outcome = await Self.uploadOne(
+                return {
+                    await Self.uploadOne(
                         asset: asset, client: client, index: index,
                         deviceId: deviceId, account: account,
-                        maximumRequestBytes: requestLimit,
-                        chunking: chunking,
-                        lifetime: lifetime,
-                        progressReporter: transfer.reporter,
-                        authorization: authorization,
-                        onProgress: progress
+                        maximumRequestBytes: requestLimit, chunking: chunking,
+                        lifetime: lifetime, progressReporter: transfer.reporter,
+                        authorization: authorization, onProgress: progress
                     )
-                    return (asset, outcome)
                 }
-            }
-            for _ in 0..<Self.uploadWorkers { addNext() }
-            while let (asset, outcome) = await group.next() {
+            }, didFinish: { asset, outcome in
                 let localId = asset.localIdentifier
-                // Keep the per-callback system snapshot bounded to live workers.
                 measuredUploadFractions[localId] = nil
                 if let attempt = attempts.removeValue(forKey: localId) {
                     activeTransfers.finish(localIdentifier: localId, attempt: attempt)
                 }
-                done += 1
-                phaseMediaCompleted.add(asset)
                 switch outcome {
                 case .uploaded:
                     summary.uploadedMedia.add(asset)
@@ -2023,20 +2060,23 @@ final class BackupManager {
                 case .skipped:
                     summary.skippedMedia.add(asset)
                     uploadStates[localId] = nil
+                case .paused(let pause):
+                    authorityPause = pause
+                    uploadStates[localId] = nil
+                    localChanged()
+                    return .pause
                 case .quota(let message):
-                    // nothing else can succeed once the account is full.
                     quotaMessage = message
                     uploadStates[localId] = nil
-                    group.cancelAll()
+                    return .cancel
                 }
+                done += 1
+                phaseMediaCompleted.add(asset)
                 localChanged()
-                // the in-flight leftovers of a cancelled run are not progress.
-                if !Task.isCancelled {
-                    phase = .uploading(done: done, total: queue.count)
-                }
-                addNext()
-            }
-        }
+                if !Task.isCancelled { phase = .uploading(done: done, total: queue.count) }
+                return .proceed
+            })
+        if let pause = authorityPause ?? uploadAuthorityPause { throw pause }
         try Task.checkCancellation()
         if let quotaMessage {
             throw ImoraError.http(400, quotaMessage)
@@ -2084,6 +2124,7 @@ final class BackupManager {
         case sizeExcluded(actualBytes: Int64, maximumBytes: Int64)
         case failed(String, kind: RepeatedBackupFailureKind = .other)
         case skipped
+        case paused(BackupUploadAuthorityPause)
         case quota(String)
     }
 
@@ -2116,7 +2157,11 @@ final class BackupManager {
         guard let current = await PhotoLibraryService.assetInfo(localIdentifier: asset.localIdentifier) else {
             return .skipped
         }
-        do { try await authorization() } catch { return .skipped }
+        do { try await authorization() }
+        catch let pause as BackupUploadAuthorityPause { return .paused(pause) }
+        catch is CancellationError { return .skipped }
+        catch BackupVerificationError.stale { return .skipped }
+        catch { return .paused(BackupUploadAuthorityPause(underlying: error)) }
         var entry = await index.entry(for: asset.localIdentifier)
         if entry?.isUploadBlockedByRemoteRemoval == true { return .skipped }
         if entry == nil || current.modificationDate == nil || entry?.isLivePhoto != current.isLivePhoto || entry?.matches(modificationDate: current.modificationDate) != true {
@@ -2216,8 +2261,10 @@ final class BackupManager {
             return uploadedSomething ? .uploaded : .duplicate
         } catch is CancellationError {
             return .skipped
-        } catch is RemoteSyncError {
-            return .skipped
+        } catch let pause as BackupUploadAuthorityPause {
+            return .paused(pause)
+        } catch let error as RemoteSyncError {
+            return .paused(BackupUploadAuthorityPause(underlying: error))
         } catch BackupVerificationError.stale {
             return .skipped
         } catch let error as BackupVerificationError {
@@ -2409,6 +2456,9 @@ final class BackupManager {
         case .skipped:
             uploadStates[localIdentifier] = nil
             throw SingleAssetBackupError.missing
+        case .paused(let pause):
+            uploadStates[localIdentifier] = nil
+            throw pause
         case .quota(let message):
             uploadStates[localIdentifier] = nil
             throw ImoraError.http(400, message)
@@ -2524,33 +2574,26 @@ final class BackupManager {
             Task { @MainActor in self.noteUploadProgress(localId, fraction) }
         }
 
-        await withTaskGroup(of: (DeviceAsset, UploadOutcome).self) { group in
-            var next = 0
-            @MainActor func addNext() {
-                guard next < queue.count, quotaMessage == nil, !Task.isCancelled else { return }
-                let asset = queue[next]
-                next += 1
+        var authorityPause: BackupUploadAuthorityPause?
+        await BackupUploadScheduler.run(queue, workers: Self.uploadWorkers,
+            canSchedule: { self.uploadAuthorityPause == nil },
+            operation: { asset in
                 uploadStates[asset.localIdentifier] = .uploading(0)
                 let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
                 attempts[asset.localIdentifier] = transfer.attempt
                 let requestLimit = maximumRequestBytes
                 let chunking = chunking
                 let authorization = uploadAuthorization(localID: asset.localIdentifier)
-                group.addTask {
-                    let result = await Self.uploadOne(
+                return {
+                    await Self.uploadOne(
                         asset: asset, client: client, index: index,
                         deviceId: deviceId, account: account,
-                        maximumRequestBytes: requestLimit,
-                        chunking: chunking,
+                        maximumRequestBytes: requestLimit, chunking: chunking,
                         progressReporter: transfer.reporter,
-                        authorization: authorization,
-                        onProgress: progress
+                        authorization: authorization, onProgress: progress
                     )
-                    return (asset, result)
                 }
-            }
-            for _ in 0..<Self.uploadWorkers { addNext() }
-            while let (asset, result) = await group.next() {
+            }, didFinish: { asset, result in
                 let localId = asset.localIdentifier
                 if let attempt = attempts.removeValue(forKey: localId) {
                     activeTransfers.finish(localIdentifier: localId, attempt: attempt)
@@ -2572,19 +2615,23 @@ final class BackupManager {
                 case .skipped:
                     outcome.skipped += 1
                     uploadStates[localId] = nil
+                case .paused(let pause):
+                    authorityPause = pause
+                    uploadStates[localId] = nil
+                    localChanged()
+                    return .pause
                 case .quota(let message):
-                    // nothing else can succeed once the account is full.
                     quotaMessage = message
                     uploadStates[localId] = nil
-                    group.cancelAll()
+                    return .cancel
                 }
                 localChanged()
-                addNext()
-            }
-        }
+                return .proceed
+            })
         await stackEditedRevisions()
         await index.flush()
         await refreshLocalSnapshots()
+        if let pause = authorityPause ?? uploadAuthorityPause { throw pause }
         if let quotaMessage {
             throw ImoraError.http(400, quotaMessage)
         }

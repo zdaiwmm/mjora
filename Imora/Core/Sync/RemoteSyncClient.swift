@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated enum RemoteSyncError: Error, Equatable {
     case invalidRecord, recordTooLarge, incompleteStream, indexFlushFailed, compatibilityRequired
-    case foreignAsset, overlappingCatchUp, unsafeHistory
+    case foreignAsset, overlappingCatchUp, unsafeHistory, superseded
 }
 
 /// Stable server identity survives LAN/WAN routing changes; session key survives launches only.

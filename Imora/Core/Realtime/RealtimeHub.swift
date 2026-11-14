@@ -119,7 +119,9 @@ final class RealtimeHub {
             resyncDebounce?.cancel()
             resyncDebounce = nil
             isConnected = false
-            onBackupConnectionGap?()
+            // Deliberate background suspension is not a transport failure.
+            // Foreground activation already requests catch-up; uploads keep
+            // their existing authority while the socket is intentionally off.
         }
     }
 
@@ -217,6 +219,10 @@ final class RealtimeHub {
                 } catch {
                     realtimeLog.info("socket dropped: \((error as NSError).code)")
                 }
+                // URLSession can report deliberate cancellation as URLError,
+                // not CancellationError. Do not turn background teardown into
+                // a transport gap after the owner has stopped this socket.
+                guard self.active, !Task.isCancelled else { return }
                 // a dropped or refused socket means missed events; the next
                 // successful connect catches up immediately instead of
                 // waiting out the safety tick. this is also what turns an
@@ -225,7 +231,6 @@ final class RealtimeHub {
                 self.resyncOnConnect = true
                 self.isConnected = false
                 self.onBackupConnectionGap?()
-                guard self.active, !Task.isCancelled else { return }
                 let jitter = Double.random(in: 0...0.4) * backoff
                 try? await Task.sleep(for: .seconds(backoff + jitter))
                 backoff = min(backoff * 2, 30)
