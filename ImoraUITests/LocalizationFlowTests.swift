@@ -65,7 +65,7 @@ final class LocalizationFlowTests: XCTestCase {
         let version = app.descendants(matching: .any)["app-updates-installed-version"].firstMatch
         XCTAssertTrue(version.waitForExistence(timeout: 10))
         XCTAssertTrue(version.label.contains("1.0.1"), version.label)
-        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("2"))
+        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("3"))
         XCTAssertTrue(app.staticTexts[chinese ? "未配置无线更新" : "Wireless Updates Not Configured"].exists)
         XCTAssertFalse(app.buttons["app-updates-install"].exists)
         snapshot(app, "\(language)-app-updates")
