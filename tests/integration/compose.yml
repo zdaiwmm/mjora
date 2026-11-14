@@ -1,0 +1,34 @@
+name: imora-341-fixture
+services:
+  server:
+    image: ghcr.io/immich-app/immich-server:v3.4.1@sha256:7c489add298fc2f92cda4c777de6462aa206877e04087b815f62c7664af0b53b
+    platform: linux/amd64
+    ports:
+      - '127.0.0.1:32283:2283'
+    volumes:
+      - fixture-media:/data
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: fixture
+      DB_PASSWORD: imora-fixture-only
+      DB_DATABASE_NAME: imora_fixture
+      REDIS_HOSTNAME: redis
+      IMMICH_CONFIG_FILE: /tmp/imora-immich.json
+    depends_on:
+      - database
+      - redis
+  redis:
+    image: docker.io/valkey/valkey:9@sha256:418652cfb58ef879d4978c33553735d7147016032d5aefaa14c828e611eb9dfd
+  database:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_USER: fixture
+      POSTGRES_PASSWORD: imora-fixture-only
+      POSTGRES_DB: imora_fixture
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      - fixture-db:/var/lib/postgresql/data
+    shm_size: 128mb
+volumes:
+  fixture-media:
+  fixture-db:

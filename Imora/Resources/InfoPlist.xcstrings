@@ -1,0 +1,74 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSFaceIDUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora uses Face ID to open your locked folder without typing the PIN."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora 使用面容 ID 打开锁定文件夹，无需输入 PIN 码。"
+          }
+        }
+      }
+    },
+    "NSLocalNetworkUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora connects to your Imora server, which is often a machine on your own network."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora 需要连接你配置在本地网络中的照片服务器。"
+          }
+        }
+      }
+    },
+    "NSLocationWhenInUseUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora can show your position on the map and read the Wi-Fi name to use your configured local server. Enabled map and place searches may contact Apple."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora 可在地图中显示你的位置，并读取 Wi-Fi 名称以使用你配置的本地服务器。启用地图和地点搜索后，这些服务可能会联系 Apple。"
+          }
+        }
+      }
+    },
+    "NSPhotoLibraryUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora backs up your photo library to your Imora server and removes device copies only when you ask it to."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora 将照片图库备份到你配置的服务器，并且仅在你明确请求时移除设备上的副本。"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

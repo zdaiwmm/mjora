@@ -1,0 +1,113 @@
+import SwiftUI
+
+struct TimelineTab: View {
+    @Environment(SessionStore.self) private var session
+    @Bindable private var router = TimelineNavigationRouter.shared
+    @State private var showSettings = false
+    @State private var showBackupSettings = false
+
+    private var filter: TimelineFilter {
+        TimelineFilter(
+            withPartners: true,
+            withSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline,
+            withStacked: true
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            // no title: the tab bar already says Photos, and a large title
+            // snaps between expanded and collapsed as you scroll near the top,
+            // which jumps the grid by the height of that collapse.
+            TimelineScreen(
+                title: "",
+                filter: filter,
+                showsLargeTitle: false,
+                mergesLocalPhotos: true,
+                navigationTarget: $router.pendingTarget,
+                trailingItems: {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            NotificationRouter.shared.openInbox()
+                        } label: {
+                            Image(systemName: "bell")
+                        }
+                        // ios 26 renders toolbar badges; zero draws nothing.
+                        .badge(session.notifications?.unreadCount ?? 0)
+                        .accessibilityIdentifier("notifications-open")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showSettings = true
+                        } label: {
+                            ProfileAvatar(size: 30)
+                        }
+                        .accessibilityIdentifier("profile-avatar")
+                    }
+                },
+                header: {
+                    VStack(spacing: 0) {
+                        BackupStatusBanner { showBackupSettings = true }
+                        if session.backup?.showsBackupReminder != true && session.backup?.syncHoldMessage == nil {
+                            LocalPhotosBanner()
+                        }
+                        MemoryLane()
+                    }
+                }
+            )
+            // the model keeps the filter it was built with, so a product
+            // detected after launch rebuilds the grid once.
+            .id(filter)
+            .navigationDestination(isPresented: $showBackupSettings) {
+                BackupScreen()
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
+        }
+    }
+}
+
+/// small circular avatar for the signed-in user.
+struct ProfileAvatar: View {
+    @Environment(SessionStore.self) private var session
+    var size: CGFloat = 30
+
+    var body: some View {
+        Group {
+            if let image = session.optimisticProfileImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if let user = session.user, let client = session.client,
+               user.profileImagePath?.isEmpty == false {
+                RemoteImage(url: profileImageURL(client: client, userID: user.id), targetPixelSize: 120)
+            } else {
+                Circle()
+                    .fill(.indigo.gradient)
+                    .overlay {
+                        Text(initials)
+                            .font(.system(size: size * 0.42, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(.circle)
+    }
+
+    private var initials: String {
+        let name = session.user?.name ?? ""
+        let parts = name.split(separator: " ")
+        let letters = parts.prefix(2).compactMap(\.first)
+        return letters.isEmpty ? "?" : String(letters)
+    }
+
+    private func profileImageURL(client: ImoraClient, userID: String) -> URL {
+        guard let key = session.profileImageCacheKey else {
+            return client.profileImageURL(userID: userID)
+        }
+        return client.profileImageURL(userID: userID)
+            .appending(queryItems: [URLQueryItem(name: "c", value: key)])
+    }
+}

@@ -1,0 +1,1100 @@
+import Foundation
+import SwiftUI
+import UIKit
+
+/// what a tile row hands back to its screen. one set per row, each taking the
+/// asset, rather than a fresh set of closures copied into every tile.
+struct TimelineTileActions {
+    /// one-shot picker: a tap hands the photo back, nothing else responds.
+    var pick: ((Asset) -> Void)?
+    var toggleSelection: (Asset) -> Void
+    var menu: (Asset) -> UIMenu
+    var makeViewer: (_ asset: Asset, _ startsAsContextPreview: Bool, _ bounds: CGSize) -> AssetViewerHostingController?
+}
+
+/// everything one row of tiles is drawn from. tiles are plain views placed
+/// by column arithmetic, and the row owns the one tap recognizer and menu
+/// interaction, finding the tile under the finger by its frame.
+struct TimelineTileRowConfiguration {
+    let session: SessionStore
+    let runs: [TileRun]
+    let rowIndex: Int
+    let side: CGFloat
+    let targetPixelSize: CGFloat
+    let showsBackupBadge: Bool
+    let isSelecting: Bool
+    let selection: Set<String>
+    let projectedRemovalIDs: Set<String>
+    let isSelectable: (Asset) -> Bool
+    let reduceMotion: Bool
+    let registry: AssetTileRegistry
+    let motion: GridMotion
+    let actions: TimelineTileActions
+}
+
+final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
+    private var row: TimelineTileRowConfiguration?
+    private var tiles: [TimelineTileView] = []
+    /// the column of each tile, in the same order.
+    private var columns: [Int] = []
+    private var side: CGFloat = 0
+    private let tap = UITapGestureRecognizer()
+    private weak var pinch: UIGestureRecognizer?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        tap.addTarget(self, action: #selector(tapped(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delaysTouchesEnded = false
+        addGestureRecognizer(tap)
+        addInteraction(UIContextMenuInteraction(delegate: self))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// two fingers of a pinch can land on two rows, and each row would read
+    /// its one finger as a tap.
+    func waitForPinch(_ pinch: UIGestureRecognizer) {
+        guard self.pinch !== pinch else { return }
+        self.pinch = pinch
+        tap.require(toFail: pinch)
+    }
+
+    func apply(_ row: TimelineTileRowConfiguration, animated: Bool) {
+        self.row = row
+        side = row.side
+
+        var leftovers = tiles
+        var nextTiles: [TimelineTileView] = []
+        var nextColumns: [Int] = []
+        var inserted: [TimelineTileView] = []
+        for run in row.runs {
+            for (offset, asset) in run.assets.enumerated() {
+                let column = run.colStart + offset
+                let tile: TimelineTileView
+                if let index = leftovers.firstIndex(where: { $0.asset?.id == asset.id }) {
+                    tile = leftovers.remove(at: index)
+                } else if !animated, !leftovers.isEmpty {
+                    // a row reused for other photos, e.g. a bucket landing
+                    // above: repaint in place instead of building views.
+                    tile = leftovers.removeFirst()
+                } else {
+                    tile = TimelineTileView.dequeue()
+                    UIView.performWithoutAnimation {
+                        addSubview(tile)
+                        tile.frame = frame(forColumn: column)
+                        // plain crossfade: an uploaded photo swaps its local
+                        // tile for the server twin with identical pixels.
+                        if animated { tile.alpha = 0 }
+                    }
+                    inserted.append(tile)
+                }
+                tile.configure(
+                    asset: asset,
+                    session: row.session,
+                    motion: row.motion,
+                    showsBackupBadge: row.showsBackupBadge,
+                    targetPixelSize: row.targetPixelSize,
+                    registry: row.registry
+                )
+                tile.isSelectable = row.isSelectable(asset)
+                tile.isSelected = row.selection.contains(asset.id)
+                tile.selectionPosition = SelectionGridPosition(row: row.rowIndex, column: column)
+                tile.updateSelectionAppearance(isSelecting: row.isSelecting && row.actions.pick == nil)
+                tile.setProjectedRemoved(
+                    row.projectedRemovalIDs.contains(asset.id),
+                    animated: !row.reduceMotion
+                )
+                nextTiles.append(tile)
+                nextColumns.append(column)
+            }
+        }
+
+        for tile in leftovers {
+            tile.unregister()
+            if animated {
+                UIView.animate(withDuration: 0.2, animations: {
+                    tile.alpha = 0
+                }, completion: { _ in
+                    tile.recycle()
+                })
+            } else {
+                tile.recycle()
+            }
+        }
+        tiles = nextTiles
+        columns = nextColumns
+
+        setNeedsLayout()
+        if animated {
+            layoutIfNeeded()
+            for tile in inserted { tile.alpha = 1 }
+        }
+    }
+
+    /// the row is leaving the window, its tiles go back to the pool.
+    func unregisterTiles() {
+        for tile in tiles {
+            tile.unregister()
+            tile.recycle()
+        }
+        tiles = []
+        columns = []
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for (tile, column) in zip(tiles, columns) {
+            tile.frame = frame(forColumn: column)
+        }
+    }
+
+    /// leading padding in the swiftui grid, so right to left mirrors it.
+    private func frame(forColumn column: Int) -> CGRect {
+        var x = CGFloat(column) * (side + 2)
+        if effectiveUserInterfaceLayoutDirection == .rightToLeft {
+            x = bounds.width - x - side
+        }
+        return CGRect(x: x, y: 0, width: side, height: side)
+    }
+
+    private func tile(at point: CGPoint) -> TimelineTileView? {
+        tiles.first { $0.frame.contains(point) && !$0.isProjectedRemoved }
+    }
+
+    private func tile(withAssetID id: String) -> TimelineTileView? {
+        tiles.first { $0.asset?.id == id }
+    }
+
+    // MARK: - interaction
+
+    @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
+        guard let row,
+              let tile = tile(at: recognizer.location(in: self)),
+              tile.isUserInteractionEnabled,
+              let asset = tile.asset
+        else { return }
+        if let pick = row.actions.pick {
+            pick(asset)
+            return
+        }
+        if row.isSelecting {
+            if tile.isSelectable { row.actions.toggleSelection(asset) }
+            return
+        }
+        guard let bounds = window?.bounds.size,
+              let presenter = presentationAnchor(),
+              let viewer = row.actions.makeViewer(asset, false, bounds)
+        else { return }
+        viewer.presentDirectly(from: presenter)
+    }
+
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        configurationForMenuAtLocation location: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let row,
+              row.actions.pick == nil,
+              let tile = tile(at: location),
+              tile.isUserInteractionEnabled,
+              let asset = tile.asset,
+              let bounds = window?.bounds.size
+        else { return nil }
+        let viewer = row.actions.makeViewer(asset, true, bounds)
+        let menu = row.actions.menu
+        return UIContextMenuConfiguration(
+            identifier: asset.id as NSString,
+            previewProvider: { viewer },
+            actionProvider: { _ in menu(asset) }
+        )
+    }
+
+    /// the interaction sits on the row, so the lift is pointed at the tile.
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        configuration: UIContextMenuConfiguration,
+        highlightPreviewForItemWithIdentifier identifier: any NSCopying
+    ) -> UITargetedPreview? {
+        targetedPreview(for: identifier)
+    }
+
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        configuration: UIContextMenuConfiguration,
+        dismissalPreviewForItemWithIdentifier identifier: any NSCopying
+    ) -> UITargetedPreview? {
+        targetedPreview(for: identifier)
+    }
+
+    private func targetedPreview(for identifier: any NSCopying) -> UITargetedPreview? {
+        guard let id = identifier as? NSString,
+              let tile = tile(withAssetID: id as String),
+              tile.window != nil
+        else { return nil }
+        return UITargetedPreview(view: tile)
+    }
+
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        willPerformPreviewActionForMenuWith configuration: UIContextMenuConfiguration,
+        animator: UIContextMenuInteractionCommitAnimating
+    ) {
+        guard let row,
+              let id = configuration.identifier as? NSString,
+              let asset = tile(withAssetID: id as String)?.asset,
+              let bounds = window?.bounds.size,
+              let presenter = presentationAnchor(),
+              let viewer = row.actions.makeViewer(asset, false, bounds)
+        else { return }
+
+        // `.pop` owns the visual expansion. its disposable preview is
+        // replaced by a prepared full viewer only after uikit releases it.
+        viewer.prepareViewerContentForContextCommit()
+        animator.preferredCommitStyle = .pop
+        animator.addCompletion {
+            viewer.presentAfterContextCommit(from: presenter)
+        }
+    }
+
+    /// Presents from the stable container above SwiftUI's hosting child.
+    /// The context-menu presentation itself is transient and has completed
+    /// by the time the captured controller is asked to attach the viewer.
+    private func presentationAnchor() -> UIViewController? {
+        var responder: UIResponder? = self
+        var controller: UIViewController?
+        while let current = responder {
+            if let current = current as? UIViewController {
+                controller = current
+                break
+            }
+            responder = current.next
+        }
+        guard var controller else { return nil }
+        while let parent = controller.parent {
+            controller = parent
+        }
+        return controller
+    }
+}
+
+/// one grid tile in plain uikit: the image, the corner badges, the backup
+/// state and the selection mark. backup state and load recovery are read in
+/// `updateProperties`, where uikit tracks observable reads, so a change in
+/// either reaches only the tiles that read it.
+final class TimelineTileView: UIView {
+    /// read by the selection slide's hit test.
+    var isSelected = false
+    var isSelectable = false
+    var selectionPosition = SelectionGridPosition(row: 0, column: 0)
+
+    private(set) var asset: Asset?
+    private weak var session: SessionStore?
+    private weak var motion: GridMotion?
+    private weak var registry: AssetTileRegistry?
+    private var showsBackupBadge = false
+    private var targetPixelSize: CGFloat = 0
+    private var registeredAsset: Asset?
+    private var registeredTargetPixelSize: CGFloat?
+
+    private let content = UIView()
+    private let imageView = UIImageView()
+    private var topTrailingBadge: UIView?
+    private var topLeadingBadge: UIView?
+    private var favoriteBadge: UIView?
+    private var backupBadge: TileGlyphBadge?
+    private var backupBadgeName: String?
+    private var uploadOverlay: TileUploadOverlayView?
+    private var selectionIndicator: UIImageView?
+    private var selectionAppearance: (isSelecting: Bool, isSelected: Bool, isSelectable: Bool)?
+    private(set) var isProjectedRemoved = false
+
+    /// the request the image on screen answers, and the one in flight.
+    private var loadKey: String?
+    private var loadGeneration = -1
+    private var loadedKey: String?
+    private var loadTask: Task<Void, Never>?
+    private var placeholderTask: Task<Void, Never>?
+    /// a picture of the same photo is on screen, so the sharp render lands in
+    /// place: fading one rendition into another reads as a pulse.
+    private var showsPicture = false
+    /// photokit could not serve the paired device copy, so the tile renders
+    /// the server thumbnail instead until the next recovery.
+    private var unavailableLocalIdentifier: String?
+    private var unavailableGeneration = -1
+
+    /// tiles of rows that left the window, handed to the rows coming in so a
+    /// fling moves views around instead of building and freeing them.
+    private static var pool: [TimelineTileView] = []
+    private static let poolLimit = 96
+
+    static func dequeue() -> TimelineTileView {
+        pool.popLast() ?? TimelineTileView()
+    }
+
+    func recycle() {
+        removeFromSuperview()
+        cancelLoads()
+        // a pooled tile must not keep a bitmap alive outside nuke's budget.
+        imageView.image = nil
+        loadKey = nil
+        loadedKey = nil
+        showsPicture = false
+        // forgets the photo too, so a tile handed it back loads it again.
+        asset = nil
+        guard Self.pool.count < Self.poolLimit else { return }
+        alpha = 1
+        isUserInteractionEnabled = true
+        setProjectedRemoved(false, animated: false)
+        Self.pool.append(self)
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        // pointer feedback on ipad, the same highlight photos gives its grid.
+        hoverStyle = UIHoverStyle(effect: .highlight)
+        content.isUserInteractionEnabled = false
+        content.clipsToBounds = true
+        addSubview(content)
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        imageView.backgroundColor = .secondarySystemFill
+        content.addSubview(imageView)
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityIdentifier = "asset-tile"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(
+        asset: Asset,
+        session: SessionStore,
+        motion: GridMotion,
+        showsBackupBadge: Bool,
+        targetPixelSize: CGFloat,
+        registry: AssetTileRegistry
+    ) {
+        self.session = session
+        self.motion = motion
+        let changed = self.asset != asset
+            || self.showsBackupBadge != showsBackupBadge
+            || self.targetPixelSize != targetPixelSize
+        if self.asset?.id != asset.id {
+            unavailableLocalIdentifier = nil
+        }
+        self.asset = asset
+        self.showsBackupBadge = showsBackupBadge
+        self.targetPixelSize = targetPixelSize
+        if changed {
+            updateAssetBadges(for: asset)
+            setNeedsUpdateProperties()
+        }
+        register(in: registry)
+    }
+
+    // MARK: - registry
+
+    private func register(in registry: AssetTileRegistry) {
+        guard let asset, let session else { return }
+        if let registered = registeredAsset,
+           self.registry !== registry || registered.id != asset.id {
+            self.registry?.unregister(self, for: registered.id)
+        }
+        guard self.registry !== registry
+                || registeredAsset != asset
+                || registeredTargetPixelSize != targetPixelSize
+        else { return }
+        self.registry = registry
+        registeredAsset = asset
+        registeredTargetPixelSize = targetPixelSize
+        registry.register(self, asset: asset, session: session, targetPixelSize: targetPixelSize)
+    }
+
+    func unregister() {
+        loadTask?.cancel()
+        placeholderTask?.cancel()
+        guard let registered = registeredAsset else { return }
+        registry?.unregister(self, for: registered.id)
+        registeredAsset = nil
+        registeredTargetPixelSize = nil
+    }
+
+    // MARK: - observed state
+
+    override func updateProperties() {
+        super.updateProperties()
+        guard let asset, let session else { return }
+        let generation = ImageLoadRecovery.shared.generation
+        let backup = session.backup
+        // the device copy is free, already decoded by photokit and needs no
+        // network, so it wins whenever the backup index pairs one with this
+        // asset. edited server copies are excluded from that map.
+        let source = AssetThumbnailSource(
+            assetID: asset.id,
+            localIdentifier: asset.localIdentifier,
+            pairedLocalIdentifier: backup?.localIdentifierByRemoteId[asset.id],
+            pairedRemoteIdentifier: asset.localIdentifier.flatMap {
+                backup?.remoteIdentifierByLocalId[$0]
+            },
+            unavailableLocalIdentifier: unavailableGeneration == generation ? unavailableLocalIdentifier : nil
+        )
+        updateImage(asset: asset, source: source, client: session.client, generation: generation)
+        updateBackupState(asset: asset, backup: showsBackupBadge ? backup : nil)
+    }
+
+    // MARK: - image
+
+    private func updateImage(
+        asset: Asset,
+        source: AssetThumbnailSource,
+        client: ImoraClient?,
+        generation: Int
+    ) {
+        if let localIdentifier = source.preferredLocalIdentifier {
+            // a device-only photo has nowhere else to come from; a paired one
+            // falls back to the server thumbnail rather than downloading its
+            // original from icloud.
+            let allowsNetwork = source.remoteIdentifier == nil
+            let key = "local|\(localIdentifier)#\(Int(targetPixelSize))|\(allowsNetwork)"
+            guard needsLoad(key: key, generation: generation) else { return }
+            let serverThumbnail = client.flatMap { client in
+                source.remoteIdentifier.flatMap { remoteIdentifier in
+                    ImageLoader.shared.cachedImage(
+                        for: client.thumbnailURL(assetID: remoteIdentifier, cacheKey: asset.thumbhash),
+                        targetPixelSize: targetPixelSize
+                    )
+                }
+            }
+            loadLocal(
+                localIdentifier,
+                key: key,
+                generation: generation,
+                allowsNetwork: allowsNetwork,
+                placeholder: serverThumbnail
+            )
+        } else if let client, let remoteIdentifier = source.remoteIdentifier {
+            let url = client.thumbnailURL(assetID: remoteIdentifier, cacheKey: asset.thumbhash)
+            let key = ImageLoader.shared.requestKey(for: url, targetPixelSize: targetPixelSize)
+            guard needsLoad(key: key, generation: generation) else { return }
+            loadRemote(
+                url,
+                key: key,
+                generation: generation,
+                thumbhash: asset.thumbhash,
+                placeholder: source.localIdentifier.flatMap {
+                    LocalImageLoader.shared.cachedPreview(localIdentifier: $0)
+                }
+            )
+        } else {
+            cancelLoads()
+            loadKey = nil
+            loadedKey = nil
+            imageView.image = nil
+            showsPicture = false
+        }
+    }
+
+    /// a new source loads; a recovery retries only what never arrived.
+    private func needsLoad(key: String, generation: Int) -> Bool {
+        if key != loadKey { return true }
+        return generation != loadGeneration && loadedKey != key
+    }
+
+    private func cancelLoads() {
+        loadTask?.cancel()
+        loadTask = nil
+        placeholderTask?.cancel()
+        placeholderTask = nil
+    }
+
+    private func begin(key: String, generation: Int) {
+        cancelLoads()
+        if loadKey != key {
+            loadedKey = nil
+        }
+        loadKey = key
+        loadGeneration = generation
+    }
+
+    private func show(_ image: UIImage, key: String, fading: Bool) {
+        placeholderTask?.cancel()
+        loadedKey = key
+        showsPicture = true
+        guard fading else {
+            imageView.image = image
+            return
+        }
+        UIView.transition(
+            with: imageView,
+            duration: 0.15,
+            options: [.transitionCrossDissolve, .curveEaseIn, .allowUserInteraction]
+        ) {
+            self.imageView.image = image
+        }
+    }
+
+    /// a fade only earns its place over a flat placeholder, while the grid is
+    /// slow enough for fades to read, and when the load was not instant.
+    private func fades(since start: ContinuousClock.Instant) -> Bool {
+        motion?.isFast != true && !showsPicture && ContinuousClock.now - start >= .milliseconds(120)
+    }
+
+    private func loadRemote(
+        _ url: URL,
+        key: String,
+        generation: Int,
+        thumbhash: String?,
+        placeholder: UIImage?
+    ) {
+        begin(key: key, generation: generation)
+        let size = targetPixelSize
+        if let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: size) {
+            show(cached, key: key, fading: false)
+            return
+        }
+        imageView.image = placeholder
+        showsPicture = placeholder != nil
+
+        loadTask = Task { [weak self] in
+            let start = ContinuousClock.now
+            let loaded = try? await ImageLoader.shared.image(for: url, targetPixelSize: size)
+            guard let tile = self, !Task.isCancelled, tile.loadKey == key, let loaded else { return }
+            tile.show(loaded, key: key, fading: tile.fades(since: start))
+        }
+
+        guard motion?.isFast != true, let thumbhash, placeholder == nil else { return }
+        placeholderTask = Task { [weak self] in
+            // disk hits normally finish before this delay, avoiding
+            // placeholder work for images that would never display it.
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled,
+                  let tile = self, tile.loadKey == key, tile.loadedKey != key,
+                  ImageLoader.shared.cachedImage(for: url, targetPixelSize: size) == nil
+            else { return }
+            let decoded = await Task.detached(priority: .utility) {
+                Thumbhash.image(fromBase64: thumbhash)
+            }.value
+            guard !Task.isCancelled,
+                  let tile = self, tile.loadKey == key, tile.loadedKey != key,
+                  let decoded
+            else { return }
+            tile.imageView.image = decoded
+        }
+    }
+
+    private func loadLocal(
+        _ localIdentifier: String,
+        key: String,
+        generation: Int,
+        allowsNetwork: Bool,
+        placeholder: UIImage?
+    ) {
+        begin(key: key, generation: generation)
+        let size = targetPixelSize
+        if let cached = LocalImageLoader.shared.cachedImage(
+            localIdentifier: localIdentifier,
+            targetPixelSize: size,
+            contentMode: DeviceTileRender.contentMode,
+            coversTarget: DeviceTileRender.coversTile
+        ) {
+            show(cached, key: key, fading: false)
+            return
+        }
+        // the server thumbnail a tile painted before the backup index paired
+        // it stays up while photokit answers, then the library's preview.
+        let shown = placeholder ?? LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier)
+        imageView.image = shown
+        showsPicture = shown != nil
+
+        loadTask = Task { [weak self] in
+            let start = ContinuousClock.now
+            var receivedFinal = false
+            var triesAlternateSource = false
+            let deliveries = LocalImageLoader.shared.deliveries(
+                localIdentifier: localIdentifier,
+                targetPixelSize: size,
+                contentMode: DeviceTileRender.contentMode,
+                coversTarget: DeviceTileRender.coversTile,
+                allowsNetwork: allowsNetwork
+            )
+            for await delivery in deliveries {
+                guard !Task.isCancelled, let tile = self, tile.loadKey == key else { return }
+                switch delivery {
+                case .terminal(let outcome):
+                    triesAlternateSource = outcome.shouldTryAlternateSource
+                case .preview(let preview):
+                    // the library's own thumbnail paints at once, no fade.
+                    if placeholder == nil, tile.loadedKey != key {
+                        tile.imageView.image = preview
+                        tile.showsPicture = true
+                    }
+                case .final(let image):
+                    receivedFinal = true
+                    tile.show(image, key: key, fading: tile.fades(since: start))
+                }
+            }
+            guard !Task.isCancelled, let tile = self, tile.loadKey == key,
+                  !receivedFinal, triesAlternateSource
+            else { return }
+            tile.unavailableLocalIdentifier = localIdentifier
+            tile.unavailableGeneration = generation
+            tile.setNeedsUpdateProperties()
+        }
+    }
+
+    // MARK: - badges
+
+    private func updateAssetBadges(for asset: Asset) {
+        topTrailingBadge?.removeFromSuperview()
+        topTrailingBadge = nil
+        if let duration = asset.durationLabel {
+            topTrailingBadge = TileCapsuleBadge(symbol: "play.fill", text: duration)
+        } else if asset.isLivePhoto {
+            topTrailingBadge = TileGlyphBadge(.livePhoto)
+        }
+
+        topLeadingBadge?.removeFromSuperview()
+        topLeadingBadge = nil
+        if asset.isStacked, let count = asset.stackCount {
+            topLeadingBadge = TileCapsuleBadge(symbol: "square.stack.fill", text: "\(count)")
+        }
+
+        favoriteBadge?.removeFromSuperview()
+        favoriteBadge = nil
+        if asset.isFavorite {
+            favoriteBadge = TileGlyphBadge(.favorite)
+        }
+
+        for badge in [topTrailingBadge, topLeadingBadge, favoriteBadge].compactMap({ $0 }) {
+            content.addSubview(badge)
+        }
+        setNeedsLayout()
+    }
+
+    private func updateBackupState(asset: Asset, backup: BackupManager?) {
+        guard let backup else {
+            setBackupBadge(nil)
+            setUploadOverlay(nil)
+            return
+        }
+        let uploadState = asset.localIdentifier.flatMap { backup.uploadStates[$0] }
+        let hasVerifiedLocalBackup = asset.localIdentifier.map {
+            asset.isLocalBackedUp || backup.hasVerifiedBackup(localIdentifier: $0)
+        } ?? false
+
+        if hasVerifiedLocalBackup {
+            setBackupBadge("checkmark.icloud")
+        } else if uploadState == nil {
+            if let localIdentifier = asset.localIdentifier {
+                setBackupBadge(
+                    backup.sizeExcludedLocalIdentifiers.contains(localIdentifier) ? "minus.circle" : "icloud.slash"
+                )
+            } else {
+                setBackupBadge(backup.backedUpRemoteIds.contains(asset.id) ? "checkmark.icloud" : "icloud")
+            }
+        } else {
+            setBackupBadge(nil)
+        }
+        setUploadOverlay(hasVerifiedLocalBackup ? nil : uploadState)
+    }
+
+    private func setBackupBadge(_ name: String?) {
+        guard name != backupBadgeName else { return }
+        backupBadgeName = name
+        backupBadge?.removeFromSuperview()
+        backupBadge = nil
+        guard let name else { return }
+        let badge = TileGlyphBadge(.backup(name))
+        badge.accessibilityIdentifier = "badge-\(name)"
+        content.addSubview(badge)
+        backupBadge = badge
+        setNeedsLayout()
+    }
+
+    private func setUploadOverlay(_ state: LocalUploadState?) {
+        guard let state else {
+            uploadOverlay?.removeFromSuperview()
+            uploadOverlay = nil
+            return
+        }
+        if uploadOverlay == nil {
+            let overlay = TileUploadOverlayView()
+            content.addSubview(overlay)
+            uploadOverlay = overlay
+            setNeedsLayout()
+        }
+        uploadOverlay?.state = state
+    }
+
+    // MARK: - selection and removal
+
+    func updateSelectionAppearance(isSelecting: Bool) {
+        let appearance = (isSelecting: isSelecting, isSelected: isSelected, isSelectable: isSelectable)
+        if let current = selectionAppearance, current == appearance { return }
+        selectionAppearance = appearance
+        guard isSelecting, isSelectable else {
+            selectionIndicator?.isHidden = true
+            return
+        }
+        let indicator = selectionIndicator ?? {
+            let view = UIImageView()
+            view.contentMode = .scaleAspectFit
+            view.isUserInteractionEnabled = false
+            addSubview(view)
+            selectionIndicator = view
+            setNeedsLayout()
+            return view
+        }()
+        indicator.isHidden = false
+        let name = isSelected ? "checkmark.circle.fill" : "circle"
+        // uikit does not inherit the asset catalog accent, resolve the brand tint directly.
+        let secondary = isSelected
+            ? UIColor(resource: .brandTint)
+            : UIColor.black.withAlphaComponent(0.25)
+        let configuration = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+            .applying(UIImage.SymbolConfiguration(paletteColors: [.white, secondary]))
+        indicator.image = UIImage(systemName: name, withConfiguration: configuration)
+    }
+
+    /// projected removals hide in place until the server confirms them. the
+    /// content fades rather than the tile, whose alpha the viewer's zoom owns
+    /// while it is open.
+    func setProjectedRemoved(_ removed: Bool, animated: Bool) {
+        guard removed != isProjectedRemoved else { return }
+        isProjectedRemoved = removed
+        selectionIndicator?.alpha = removed ? 0 : 1
+        let apply = { self.content.alpha = removed ? 0 : 1 }
+        if animated {
+            UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isProjectedRemoved else { return nil }
+        return super.hitTest(point, with: event)
+    }
+
+    // MARK: - layout
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        content.frame = bounds
+        imageView.frame = bounds
+        uploadOverlay?.frame = bounds
+        let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
+
+        func place(_ view: UIView?, leading: Bool, top: Bool, inset: CGFloat) {
+            guard let view else { return }
+            // glyph art carries room for its shadow around the glyph itself.
+            let bleed = (view as? TileGlyphBadge)?.bleed ?? 0
+            let size = view.sizeThatFits(bounds.size)
+            let isLeft = leading != rightToLeft
+            view.frame = CGRect(
+                x: isLeft ? inset - bleed : bounds.width - inset - size.width + bleed,
+                y: top ? inset - bleed : bounds.height - inset - size.height + bleed,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        place(topTrailingBadge, leading: false, top: true, inset: topTrailingBadge is TileCapsuleBadge ? 5 : 7)
+        place(topLeadingBadge, leading: true, top: true, inset: 5)
+        place(favoriteBadge, leading: true, top: false, inset: 6)
+        place(backupBadge, leading: false, top: false, inset: 6)
+        if let selectionIndicator {
+            let x = rightToLeft ? bounds.width - 6 - 24 : 6
+            selectionIndicator.frame = CGRect(x: x, y: 6, width: 24, height: 24)
+        }
+    }
+
+    // MARK: - accessibility
+
+    /// built when asked rather than on every update of every tile.
+    override var accessibilityLabel: String? {
+        get {
+            guard let asset else { return nil }
+            var parts = [
+                asset.isVideo ? String(localized: "Video") : (asset.isLivePhoto ? String(localized: "Live Photo") : String(localized: "Photo")),
+                asset.localDate.formatted(date: .long, time: .shortened),
+            ]
+            if let duration = asset.durationLabel { parts.append(duration) }
+            if asset.isStacked, let count = asset.stackCount { parts.append(String(localized: "Stack of \(count)")) }
+            if asset.isFavorite { parts.append(String(localized: "Favorite")) }
+            if showsBackupBadge { parts.append(backupAccessibilitySummary(for: asset)) }
+            return parts.joined(separator: ", ")
+        }
+        set {}
+    }
+
+    private func backupAccessibilitySummary(for asset: Asset) -> String {
+        let backup = session?.backup
+        let localIdentifier = asset.localIdentifier
+        if let localIdentifier,
+           asset.isLocalBackedUp || backup?.hasVerifiedBackup(localIdentifier: localIdentifier) == true {
+            return String(localized: "Backed up")
+        }
+        switch localIdentifier.flatMap({ backup?.uploadStates[$0] }) {
+        case .uploading(let fraction):
+            return String(localized: "Backing up, \(Int(fraction * 100)) percent")
+        case .failed:
+            return String(localized: "Backup failed")
+        case nil:
+            if let localIdentifier {
+                return backup?.sizeExcludedLocalIdentifiers.contains(localIdentifier) == true
+                    ? String(localized: "Excluded from backup by the upload size limit") : String(localized: "Not backed up")
+            }
+            return backup?.backedUpRemoteIds.contains(asset.id) == true ? String(localized: "Backed up") : String(localized: "Stored in cloud")
+        }
+    }
+}
+
+/// a white glyph with a soft shadow, the corner badges of a tile. each kind is
+/// drawn once by swiftui, shadow included, and every tile shows that one
+/// bitmap: pixel for pixel the swiftui badge, with no symbol lookup, shadow
+/// pass or rasterization per tile.
+private final class TileGlyphBadge: UIImageView {
+    enum Kind: Hashable {
+        case livePhoto
+        case favorite
+        /// backup status, by symbol name.
+        case backup(String)
+    }
+
+    /// transparent margin around the glyph, room for its shadow.
+    static let bleed: CGFloat = 8
+    let bleed = TileGlyphBadge.bleed
+
+    private struct Art {
+        let image: UIImage
+        let sizeCategory: UIContentSizeCategory
+    }
+
+    private static var art: [Kind: Art] = [:]
+
+    init(_ kind: Kind) {
+        super.init(image: Self.image(for: kind))
+        isUserInteractionEnabled = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        image?.size ?? .zero
+    }
+
+    /// redrawn when the text size changes, since two kinds follow it.
+    private static func image(for kind: Kind) -> UIImage? {
+        let category = UITraitCollection.current.preferredContentSizeCategory
+        if let drawn = art[kind], drawn.sizeCategory == category {
+            return drawn.image
+        }
+        let renderer = ImageRenderer(content: glyph(for: kind).padding(bleed))
+        renderer.scale = UITraitCollection.current.displayScale
+        guard let image = renderer.uiImage else { return nil }
+        art[kind] = Art(image: image, sizeCategory: category)
+        return image
+    }
+
+    /// the same views the swiftui tile drew in its corners.
+    @ViewBuilder
+    private static func glyph(for kind: Kind) -> some View {
+        switch kind {
+        case .livePhoto:
+            Image(systemName: "livephoto")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 3)
+        case .favorite:
+            Image(systemName: "heart.fill")
+                .font(.caption)
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 3)
+        case .backup(let name):
+            Image(systemName: name)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 2.5)
+        }
+    }
+}
+
+/// a glyph and a short label on a dark capsule: video length, stack count.
+private final class TileCapsuleBadge: UIView {
+    private let icon = UIImageView()
+    private let label = UILabel()
+    /// measured against swiftui's label at caption2, glyph ink to glyph ink.
+    private static let spacing: CGFloat = 10.2
+    private static let padding = UIEdgeInsets(top: 3, left: 6, bottom: 3, right: 5.67)
+
+    init(symbol: String, text: String) {
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false
+        backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        let font = UIFontMetrics(forTextStyle: .caption2)
+            .scaledFont(for: .systemFont(ofSize: 11, weight: .semibold))
+        icon.image = UIImage(
+            systemName: symbol,
+            withConfiguration: UIImage.SymbolConfiguration(font: font)
+        )
+        icon.tintColor = .white
+        label.text = text
+        label.font = font
+        label.textColor = .white
+        addSubview(icon)
+        addSubview(label)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let iconSize = icon.intrinsicContentSize
+        let labelSize = label.intrinsicContentSize
+        let padding = Self.padding
+        return CGSize(
+            width: (padding.left + iconSize.width + Self.spacing + labelSize.width + padding.right).rounded(.up),
+            height: (padding.top + max(iconSize.height, labelSize.height) + padding.bottom).rounded(.up)
+        )
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.cornerRadius = bounds.height / 2
+        let iconSize = icon.intrinsicContentSize
+        let labelSize = label.intrinsicContentSize
+        let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
+        var iconX = Self.padding.left
+        var labelX = iconX + iconSize.width + Self.spacing
+        if rightToLeft {
+            labelX = Self.padding.left
+            iconX = labelX + labelSize.width + Self.spacing
+        }
+        icon.frame = CGRect(
+            x: iconX,
+            y: (bounds.height - iconSize.height) / 2,
+            width: iconSize.width,
+            height: iconSize.height
+        )
+        label.frame = CGRect(
+            x: labelX,
+            y: (bounds.height - labelSize.height) / 2,
+            width: labelSize.width,
+            height: labelSize.height
+        )
+    }
+}
+
+/// the dimmed upload progress ring, or the failure mark, over a device tile.
+private final class TileUploadOverlayView: UIView {
+    var state: LocalUploadState = .failed {
+        didSet {
+            guard state != oldValue || !hasApplied else { return }
+            apply()
+        }
+    }
+
+    private var hasApplied = false
+    private let track = CAShapeLayer()
+    private let progress = CAShapeLayer()
+    private let label = UILabel()
+    private let failure = UIImageView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        for ring in [track, progress] {
+            ring.fillColor = UIColor.clear.cgColor
+            ring.lineWidth = 3
+            ring.lineCap = .round
+            layer.addSublayer(ring)
+        }
+        track.strokeColor = UIColor.white.withAlphaComponent(0.24).cgColor
+        progress.strokeColor = UIColor.white.cgColor
+        label.textColor = .white
+        label.textAlignment = .center
+        addSubview(label)
+        failure.image = UIImage(
+            systemName: "exclamationmark.circle.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 30)
+                .applying(UIImage.SymbolConfiguration(paletteColors: [.white, .red]))
+        )
+        addSubview(failure)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func apply() {
+        hasApplied = true
+        let bold = UIFontMetrics(forTextStyle: .caption2).scaledFont(for: .systemFont(ofSize: 11, weight: .bold))
+        switch state {
+        case .uploading(let fraction):
+            backgroundColor = UIColor.black.withAlphaComponent(0.54)
+            track.isHidden = false
+            progress.isHidden = false
+            failure.isHidden = true
+            progress.strokeEnd = max(0.03, fraction)
+            label.font = UIFont.monospacedDigitSystemFont(ofSize: bold.pointSize, weight: .bold)
+            label.text = "\(Int(fraction * 100))%"
+        case .failed:
+            backgroundColor = UIColor.black.withAlphaComponent(0.58)
+            track.isHidden = true
+            progress.isHidden = true
+            failure.isHidden = false
+            label.font = bold
+            label.text = String(localized: "Error")
+        }
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let labelSize = label.intrinsicContentSize
+        let markSize: CGSize = failure.isHidden ? CGSize(width: 36, height: 36) : failure.intrinsicContentSize
+        let total = markSize.height + 4 + labelSize.height
+        let top = (bounds.height - total) / 2
+        let markFrame = CGRect(
+            x: (bounds.width - markSize.width) / 2,
+            y: top,
+            width: markSize.width,
+            height: markSize.height
+        )
+        failure.frame = markFrame
+        // starts at twelve o'clock, like the rotated swiftui circle.
+        let path = UIBezierPath(
+            arcCenter: CGPoint(x: markFrame.midX, y: markFrame.midY),
+            radius: 18,
+            startAngle: -.pi / 2,
+            endAngle: .pi * 1.5,
+            clockwise: true
+        ).cgPath
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        track.path = path
+        progress.path = path
+        CATransaction.commit()
+        label.frame = CGRect(
+            x: 0,
+            y: markFrame.maxY + 4,
+            width: bounds.width,
+            height: labelSize.height
+        )
+    }
+}

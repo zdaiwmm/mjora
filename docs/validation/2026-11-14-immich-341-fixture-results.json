@@ -1,0 +1,165 @@
+{
+  "startedAt": "2026-11-13T20:32:11Z",
+  "destination": "http://127.0.0.1:32283/api",
+  "status": "passed",
+  "identity": {
+    "container": "imora-341-fixture-server-1",
+    "imageId": "sha256:7c489add298fc2f92cda4c777de6462aa206877e04087b815f62c7664af0b53b",
+    "imageArchitecture": "amd64",
+    "repoDigests": [
+      "ghcr.io/immich-app/immich-server@sha256:7c489add298fc2f92cda4c777de6462aa206877e04087b815f62c7664af0b53b"
+    ],
+    "manifest": {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:4351dd621899ecc8ed317ae87cdcaeb968ec8ba4f9d8053d913a73eb6f6dd7c2",
+      "size": 5242,
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      }
+    },
+    "runtimeArchitecture": "x86_64",
+    "sourceRevision": "22b95194c80a2f2e6201093916b6c8c3d6d271dd"
+  },
+  "serverVersion": {
+    "major": 3,
+    "minor": 4,
+    "patch": 1,
+    "prerelease": null,
+    "featureLevel": 2
+  },
+  "runId": "3ff9010343724508abd41803a035bd4e",
+  "checks": [
+    {
+      "name": "synthetic-jpeg-mov-live-photo-identifiers",
+      "status": "passed"
+    },
+    {
+      "name": "new-jpeg-upload",
+      "status": "passed",
+      "assetId": "cbdb76d5-7b34-45ba-a062-2d8540d1383b"
+    },
+    {
+      "name": "upload-and-bulk-check-deduplication",
+      "status": "passed",
+      "assetId": "cbdb76d5-7b34-45ba-a062-2d8540d1383b"
+    },
+    {
+      "name": "official-checksum-header-short-circuits-before-upload-form",
+      "status": "passed"
+    },
+    {
+      "name": "duplicate-upload-does-not-repair-existing-still",
+      "status": "passed",
+      "stillId": "cbdb76d5-7b34-45ba-a062-2d8540d1383b",
+      "motionId": "c8fb3faa-02ec-45b7-b5b2-d8227e863bca"
+    },
+    {
+      "name": "existing-still-motion-addition-exact-put-readback",
+      "status": "passed",
+      "stillId": "cbdb76d5-7b34-45ba-a062-2d8540d1383b",
+      "motionId": "c8fb3faa-02ec-45b7-b5b2-d8227e863bca",
+      "motionVisibility": "hidden"
+    },
+    {
+      "name": "original-readback-manual.jpg",
+      "status": "passed",
+      "assetId": "cbdb76d5-7b34-45ba-a062-2d8540d1383b",
+      "httpStatus": 200,
+      "sha1": "9dce2fb180984e45ea4fe7043b3114001ac8fb6d",
+      "bytes": 302,
+      "contentType": "image/jpeg"
+    },
+    {
+      "name": "original-readback-manual.mov",
+      "status": "passed",
+      "assetId": "c8fb3faa-02ec-45b7-b5b2-d8227e863bca",
+      "httpStatus": 200,
+      "sha1": "32a7683ac1493600de2052e97f3b3df546351cd7",
+      "bytes": 1974,
+      "contentType": "video/quicktime"
+    },
+    {
+      "name": "asynchronous-apple-content-id-auto-pair",
+      "status": "passed",
+      "stillId": "1fed2793-5f97-48f4-997f-814703a017da",
+      "motionId": "d4661f18-5119-4c8c-8d07-f0c0ba1ec603",
+      "observedWaitSeconds": 0.532
+    },
+    {
+      "name": "missing-asset-update-permission-is-forbidden",
+      "status": "passed"
+    },
+    {
+      "name": "motion-owned-by-other-account-cannot-be-linked",
+      "status": "passed",
+      "foreignMotionId": "02adb2fd-2226-4d0a-9abb-74a1e53e5c5e"
+    },
+    {
+      "name": "trashed-duplicate-is-not-current-backup",
+      "status": "passed",
+      "assetId": "d91c3372-c53b-4dab-8fc4-f031af084257"
+    },
+    {
+      "name": "restore-clears-trash-state",
+      "status": "passed",
+      "assetId": "d91c3372-c53b-4dab-8fc4-f031af084257"
+    },
+    {
+      "name": "permanently-missing-asset-needs-upload",
+      "status": "passed",
+      "assetId": "b9c9864b-9b1a-4362-8dbc-b2e0c5817c71"
+    },
+    {
+      "name": "database-checksum-cannot-prove-original-integrity",
+      "status": "passed",
+      "assetId": "37b9f0fc-0619-44f4-bf57-79214d6f56ac",
+      "returnedBytes": 26,
+      "databaseStillOnline": true
+    },
+    {
+      "name": "database-online-original-file-missing-is-rejected",
+      "status": "passed",
+      "assetId": "37b9f0fc-0619-44f4-bf57-79214d6f56ac"
+    }
+  ],
+  "syntheticMedia": {
+    "livePhotoContentIdentifier": "A83C5494-87A1-4DD7-9049-ACA431BDF43C",
+    "files": {
+      "auto.jpg": {
+        "sha1": "c3261e5a364646620832171f1827225f30a68f06",
+        "bytes": 383
+      },
+      "auto.mov": {
+        "sha1": "582252bce848b8bd7b6b9a2df448be5161b928fc",
+        "bytes": 2009
+      },
+      "corrupt.jpg": {
+        "sha1": "1e1540de3bcb058788de8db9c2fd663b9c0f9a3d",
+        "bytes": 303
+      },
+      "manual.jpg": {
+        "sha1": "9dce2fb180984e45ea4fe7043b3114001ac8fb6d",
+        "bytes": 302
+      },
+      "manual.mov": {
+        "sha1": "32a7683ac1493600de2052e97f3b3df546351cd7",
+        "bytes": 1974
+      },
+      "missing.jpg": {
+        "sha1": "4664e91533f20ad41296969dd044dc57d256c15d",
+        "bytes": 303
+      },
+      "trash.jpg": {
+        "sha1": "d149a446ee932254af8450e75e873a04fbc80087",
+        "bytes": 301
+      }
+    }
+  },
+  "limitations": [
+    "Exercises official server contract using Python; does not execute the iOS client, PhotoKit, or app generation guards.",
+    "GET-null/PUT/GET is not atomic; 3.4.1 has no conditional pairing update.",
+    "Observed asynchronous automatic pairing is bounded, not a deterministic server-job timing guarantee.",
+    "Synthetic MOV contains matching Apple content identifier; no Apple still-image-time metadata track and no PhotoKit import/export verification."
+  ]
+}

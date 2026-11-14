@@ -1,0 +1,521 @@
+import Foundation
+import SwiftUI
+
+/// full album view: the timeline grid plus editing, sharing and management.
+struct AlbumDetailScreen: View {
+    @Environment(SessionStore.self) private var session
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var album: Album
+    private let onAlbumChanged: (Album) -> Void
+    private let onAlbumRemoved: (Album) -> Void
+    private let onAlbumRestored: (Album) -> Void
+    private let onAlbumRemovalCommitted: (String) -> Void
+    /// bumping recreates the timeline; only the order toggle needs it since
+    /// the filter is captured at init. content changes resync in place.
+    @State private var timelineGeneration = 0
+    @State private var resyncTrigger = 0
+    @State private var activeSheet: AlbumSheet?
+    @State private var showDeleteConfirm = false
+    @State private var showLeaveConfirm = false
+    @State private var feedback: String?
+    @State private var feedbackTask: Task<Void, Never>?
+    @State private var isChangingOrder = false
+    @State private var isRemovingAlbum = false
+    @State private var isAlbumMutationInFlight = false
+    @State private var albumLoadGate = LatestAlbumLoadGate()
+    @State private var activityStatistics: ActivityStatistics?
+
+    init(
+        album: Album,
+        onAlbumChanged: @escaping (Album) -> Void = { _ in },
+        onAlbumRemoved: @escaping (Album) -> Void = { _ in },
+        onAlbumRestored: @escaping (Album) -> Void = { _ in },
+        onAlbumRemovalCommitted: @escaping (String) -> Void = { _ in }
+    ) {
+        _album = State(initialValue: album)
+        self.onAlbumChanged = onAlbumChanged
+        self.onAlbumRemoved = onAlbumRemoved
+        self.onAlbumRestored = onAlbumRestored
+        self.onAlbumRemovalCommitted = onAlbumRemovalCommitted
+    }
+
+    private enum AlbumSheet: String, Identifiable {
+        case edit, addPhotos, invite, options, shareLinks, activity
+        var id: String { rawValue }
+    }
+
+    private var isOwner: Bool { album.owner?.id == session.user?.id }
+    private var myRole: String? { album.role(of: session.user?.id) }
+    private var canAddPhotos: Bool { isOwner || myRole == "editor" }
+    /// every 3.x server lets editors rename and describe an album.
+    private var canEditDetails: Bool { isOwner || myRole == "editor" }
+    private var currentOrder: String { album.order ?? "desc" }
+    /// comments and likes live on shared albums only.
+    private var showsActivity: Bool {
+        (album.shared || !album.sharedUsers.isEmpty) && session.capabilities.supportsActivities
+    }
+
+    var body: some View {
+        TimelineScreen(
+            title: album.albumName,
+            filter: TimelineFilter(visibility: nil, albumId: album.id, order: album.order),
+            emptyIcon: "rectangle.stack",
+            emptyMessage: String(localized: "This album is empty"),
+            showsLargeTitle: false,
+            resyncTrigger: resyncTrigger,
+            albumOwnerID: album.owner?.id,
+            albumActivity: showsActivity ? AlbumActivityScope(album: album) : nil,
+            onAlbumAssetCountDelta: { delta in
+                setAlbum(album.withAssetCountDelta(delta))
+            },
+            onSetAlbumCover: isOwner ? { await setAlbumCover($0) } : nil,
+            trailingItems: {
+                ToolbarItem(placement: .topBarTrailing) {
+                    menu
+                }
+            }
+        ) {
+            AlbumHeader(
+                album: album,
+                activityStatistics: showsActivity ? activityStatistics : nil,
+                onPeopleTap: {
+                    guard !isAlbumMutationInFlight else { return }
+                    activeSheet = .options
+                },
+                onActivityTap: { activeSheet = .activity }
+            )
+        }
+        .id(timelineGeneration)
+        .overlay(alignment: .bottom) {
+            if let feedback {
+                Text(feedback)
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.bottom, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityIdentifier("album-feedback")
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: feedback)
+        .task {
+            await refreshAlbum()
+            await refreshActivityStatistics()
+        }
+        // metadata edits from other clients arrive over the realtime channel;
+        // the grid itself resyncs through the timeline model.
+        .onChange(of: session.realtime?.albumsGeneration ?? 0) {
+            Task {
+                await refreshAlbum()
+                await refreshActivityStatistics()
+            }
+        }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .edit:
+                AlbumEditSheet(
+                    album: album,
+                    isAlbumMutationInFlight: $isAlbumMutationInFlight,
+                    onAlbumChanged: setAlbum
+                )
+            case .addPhotos:
+                AlbumAddAssetsSheet(
+                    album: album,
+                    isAlbumMutationInFlight: $isAlbumMutationInFlight,
+                    onAlbumChanged: setAlbum
+                ) { added, showSuccessFeedback in
+                    if added > 0 {
+                        // in-place animated resync; a generation bump would
+                        // remount and visibly reload the whole grid.
+                        resyncTrigger += 1
+                        if showSuccessFeedback {
+                            showFeedback(added == 1 ? String(localized: "Added 1 photo") : String(localized: "Added \(added) photos"))
+                        } else {
+                            feedbackTask?.cancel()
+                            feedback = nil
+                        }
+                    }
+                }
+            case .invite:
+                AlbumInviteSheet(
+                    album: album,
+                    isAlbumMutationInFlight: $isAlbumMutationInFlight,
+                    onAlbumChanged: setAlbum
+                ) { count in
+                    showFeedback(count == 1 ? String(localized: "Invited 1 person") : String(localized: "Invited \(count) people"))
+                }
+            case .options:
+                AlbumOptionsSheet(
+                    album: album,
+                    isAlbumMutationInFlight: $isAlbumMutationInFlight,
+                    onAlbumChanged: setAlbum,
+                    onLeft: {
+                        onAlbumRemoved(album)
+                        dismiss()
+                    },
+                    onLeaveRolledBack: onAlbumRestored,
+                    onLeaveCommitted: onAlbumRemovalCommitted
+                )
+            case .shareLinks:
+                ShareLinksSheet(target: .album(album)) { await refreshAlbum() }
+            case .activity:
+                AlbumActivitySheet(scope: AlbumActivityScope(album: album)) {
+                    Task { await refreshActivityStatistics() }
+                }
+            }
+        }
+        .onDisappear { feedbackTask?.cancel() }
+    }
+
+    private var menu: some View {
+        Menu {
+            if canEditDetails {
+                Button {
+                    activeSheet = .edit
+                } label: {
+                    Label("Edit Album", systemImage: "pencil")
+                }
+            }
+            if canAddPhotos {
+                Button {
+                    activeSheet = .addPhotos
+                } label: {
+                    Label("Add Photos", systemImage: "photo.badge.plus")
+                }
+            }
+            if isOwner {
+                Button {
+                    activeSheet = .invite
+                } label: {
+                    Label("Invite People", systemImage: "person.badge.plus")
+                }
+                Button {
+                    activeSheet = .shareLinks
+                } label: {
+                    Label("Share Link", systemImage: "link")
+                }
+                Button {
+                    Task { await toggleOrder() }
+                } label: {
+                    Label(
+                        currentOrder == "asc" ? "Show Newest First" : "Show Oldest First",
+                        systemImage: "arrow.up.arrow.down"
+                    )
+                }
+                .disabled(isChangingOrder || isRemovingAlbum)
+            }
+            if showsActivity {
+                Button {
+                    activeSheet = .activity
+                } label: {
+                    Label("Activity", systemImage: "bubble.left.and.bubble.right")
+                }
+                .accessibilityIdentifier("album-activity")
+            }
+            Button {
+                activeSheet = .options
+            } label: {
+                Label("Options", systemImage: "gearshape")
+            }
+            Divider()
+            if isOwner {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete Album", systemImage: "trash")
+                }
+                .disabled(isRemovingAlbum)
+            } else if myRole != nil {
+                Button(role: .destructive) {
+                    showLeaveConfirm = true
+                } label: {
+                    Label("Leave Album", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                .disabled(isRemovingAlbum)
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .disabled(isAlbumMutationInFlight)
+        .accessibilityLabel("More")
+        .accessibilityIdentifier("album-menu")
+        // ios 26 morphs a confirmation out of its source control; the menu item
+        // is gone by then, so the dialogs anchor to the menu button itself.
+        // attached to the screen root they float detached in the middle.
+        .confirmationDialog(
+            "Delete \"\(album.albumName)\"?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Album", role: .destructive) { Task { await deleteAlbum() } }
+        } message: {
+            Text("The album is removed for everyone. Photos stay in your library.")
+        }
+        .confirmationDialog(
+            "Leave \"\(album.albumName)\"?",
+            isPresented: $showLeaveConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Leave Album", role: .destructive) { Task { await leaveAlbum() } }
+        } message: {
+            Text("You will no longer see this album.")
+        }
+    }
+
+    // MARK: - actions
+
+    private func refreshAlbum() async {
+        guard let client = session.client,
+              !isChangingOrder,
+              !isRemovingAlbum,
+              !isAlbumMutationInFlight else { return }
+        let ticket = albumLoadGate.begin()
+        guard let fresh = try? await client.album(id: album.id),
+              albumLoadGate.accepts(ticket),
+              !isChangingOrder,
+              !isRemovingAlbum,
+              !isAlbumMutationInFlight
+        else { return }
+        let reconciled = album.reconcilingServerVersion(fresh)
+        guard reconciled != album else { return }
+        setAlbum(reconciled)
+    }
+
+    private func refreshActivityStatistics() async {
+        guard showsActivity, let client = session.client,
+              let statistics = try? await client.activityStatistics(albumID: album.id)
+        else { return }
+        if statistics != activityStatistics { activityStatistics = statistics }
+    }
+
+    private func toggleOrder() async {
+        guard let client = session.client, !isAlbumMutationInFlight else { return }
+        let next = currentOrder == "asc" ? "desc" : "asc"
+        let original = album
+        let optimistic = original.withOrder(next)
+        isChangingOrder = true
+        isAlbumMutationInFlight = true
+        defer {
+            isChangingOrder = false
+            isAlbumMutationInFlight = false
+        }
+        await OptimisticAction.perform(
+            errorMessage: String(localized: "Couldn't change the album order."),
+            apply: {
+                setAlbum(optimistic)
+                timelineGeneration += 1
+            },
+            rollback: {
+                setAlbum(original)
+                timelineGeneration += 1
+            },
+            request: { try await client.updateAlbum(id: original.id, order: next) }
+        )
+    }
+
+    /// the cover only shows on the albums list, so the projection is what
+    /// flips the card there before the server confirms. the server takes it
+    /// from the owner alone, which is who the grid offers it to.
+    private func setAlbumCover(_ assetID: String) async -> Bool {
+        guard let client = session.client, !isAlbumMutationInFlight else { return false }
+        let original = album
+        isAlbumMutationInFlight = true
+        defer { isAlbumMutationInFlight = false }
+        let updated: Void? = await OptimisticAction.perform(
+            errorMessage: String(localized: "Couldn't set the album cover."),
+            apply: { setAlbum(original.withCover(assetID)) },
+            rollback: { setAlbum(original) },
+            request: { try await client.updateAlbum(id: original.id, thumbnailAssetId: assetID) }
+        )
+        guard updated != nil else { return false }
+        showFeedback(String(localized: "Album cover updated"))
+        return true
+    }
+
+    private func deleteAlbum() async {
+        guard let client = session.client else { return }
+        guard !isRemovingAlbum, !isAlbumMutationInFlight else { return }
+        let original = album
+        albumLoadGate.invalidate()
+        isRemovingAlbum = true
+        isAlbumMutationInFlight = true
+        defer {
+            isRemovingAlbum = false
+            isAlbumMutationInFlight = false
+        }
+        let deleted: Void? = await OptimisticAction.perform(
+            errorMessage: String(localized: "Couldn't delete the album."),
+            apply: {
+                onAlbumRemoved(original)
+                dismiss()
+            },
+            rollback: {
+                setAlbum(original)
+                onAlbumRestored(original)
+            },
+            request: { try await client.deleteAlbum(id: original.id) }
+        )
+        if deleted != nil { onAlbumRemovalCommitted(original.id) }
+    }
+
+    private func leaveAlbum() async {
+        guard let client = session.client, let userID = session.user?.id else { return }
+        guard !isRemovingAlbum, !isAlbumMutationInFlight else { return }
+        let original = album
+        albumLoadGate.invalidate()
+        isRemovingAlbum = true
+        isAlbumMutationInFlight = true
+        defer {
+            isRemovingAlbum = false
+            isAlbumMutationInFlight = false
+        }
+        let left: Void? = await OptimisticAction.perform(
+            errorMessage: String(localized: "Couldn't leave the album."),
+            apply: {
+                onAlbumRemoved(original)
+                dismiss()
+            },
+            rollback: {
+                setAlbum(original)
+                onAlbumRestored(original)
+            },
+            request: {
+                try await client.removeAlbumUser(albumID: original.id, userID: userID)
+            }
+        )
+        if left != nil { onAlbumRemovalCommitted(original.id) }
+    }
+
+    private func setAlbum(_ replacement: Album) {
+        albumLoadGate.invalidate()
+        album = replacement
+        onAlbumChanged(replacement)
+    }
+
+    private func showFeedback(_ text: String) {
+        feedbackTask?.cancel()
+        feedback = text
+        feedbackTask = Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            feedback = nil
+        }
+    }
+}
+
+// MARK: - header
+
+/// description, counts and the shared-people strip above the grid.
+private struct AlbumHeader: View {
+    let album: Album
+    /// set on shared albums once the counts are in.
+    let activityStatistics: ActivityStatistics?
+    let onPeopleTap: () -> Void
+    let onActivityTap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !album.description.isEmpty {
+                Text(album.description)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(metaLine)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if album.shared {
+                HStack(spacing: 12) {
+                    people
+                    Spacer(minLength: 0)
+                    if let activityStatistics {
+                        activityButton(activityStatistics)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
+    }
+
+    private func activityButton(_ statistics: ActivityStatistics) -> some View {
+        Button(action: onActivityTap) {
+            HStack(spacing: 10) {
+                Label("\(statistics.comments)", systemImage: "bubble.left")
+                if let likes = statistics.likes {
+                    Label("\(likes)", systemImage: "hand.thumbsup")
+                }
+            }
+            .font(.footnote.weight(.medium).monospacedDigit())
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .glassEffect(.regular.interactive(), in: .capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Activity")
+        .accessibilityValue(activityAccessibilityValue(statistics))
+        .accessibilityIdentifier("album-activity-button")
+    }
+
+    private func activityAccessibilityValue(_ statistics: ActivityStatistics) -> String {
+        var parts = [statistics.comments == 1 ? String(localized: "1 comment") : String(localized: "\(statistics.comments) comments")]
+        if let likes = statistics.likes { parts.append(likes == 1 ? String(localized: "1 like") : String(localized: "\(likes) likes")) }
+        return parts.joined(separator: ", ")
+    }
+
+    private var people: some View {
+        Button(action: onPeopleTap) {
+            HStack(spacing: -8) {
+                ForEach(displayedUsers, id: \.id) { user in
+                    UserAvatar(user: user, size: 32)
+                        .overlay { Circle().stroke(Color(.systemBackground), lineWidth: 2) }
+                }
+                if extraCount > 0 {
+                    Circle()
+                        .fill(Color(.secondarySystemFill))
+                        .frame(width: 32, height: 32)
+                        .overlay {
+                            Text("+\(extraCount)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .overlay { Circle().stroke(Color(.systemBackground), lineWidth: 2) }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("album-people")
+    }
+
+    private var allUsers: [User] {
+        var users: [User] = []
+        if let owner = album.owner { users.append(owner) }
+        users.append(contentsOf: album.sharedUsers.map(\.user))
+        return users
+    }
+
+    private var displayedUsers: [User] { Array(allUsers.prefix(5)) }
+    private var extraCount: Int { max(0, allUsers.count - 5) }
+
+    private var metaLine: String {
+        var parts = [album.assetCount == 1 ? String(localized: "1 item") : String(localized: "\(album.assetCount) items")]
+        if let range = dateRangeLabel { parts.append(range) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var dateRangeLabel: String? {
+        guard let startRaw = album.startDate, let start = APIDate.parse(startRaw) else { return nil }
+        let style = Date.FormatStyle.dateTime.month(.abbreviated).year().utc()
+        let startLabel = start.formatted(style)
+        guard let endRaw = album.endDate, let end = APIDate.parse(endRaw) else { return startLabel }
+        let endLabel = end.formatted(style)
+        return startLabel == endLabel ? startLabel : "\(startLabel) – \(endLabel)"
+    }
+}

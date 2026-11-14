@@ -1,0 +1,72 @@
+[
+  {
+    "file": "zh-Hans-backup.png",
+    "language": "zh-Hans",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605352.774,
+    "test": "LocalizationFlowTests/testChineseScreensUseShippedResources()"
+  },
+  {
+    "file": "zh-Hans-privacy.png",
+    "language": "zh-Hans",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605343.262,
+    "test": "LocalizationFlowTests/testChineseScreensUseShippedResources()"
+  },
+  {
+    "file": "zh-Hans-settings.png",
+    "language": "zh-Hans",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605338.419,
+    "test": "LocalizationFlowTests/testChineseScreensUseShippedResources()"
+  },
+  {
+    "file": "zh-Hans-photos.png",
+    "language": "zh-Hans",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605335.262,
+    "test": "LocalizationFlowTests/testChineseScreensUseShippedResources()"
+  },
+  {
+    "file": "zh-Hans-login.png",
+    "language": "zh-Hans",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605325.301,
+    "test": "LocalizationFlowTests/testChineseScreensUseShippedResources()"
+  },
+  {
+    "file": "en-backup.png",
+    "language": "en",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605390.623,
+    "test": "LocalizationFlowTests/testEnglishScreensRemainAvailable()"
+  },
+  {
+    "file": "en-privacy.png",
+    "language": "en",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605381.018,
+    "test": "LocalizationFlowTests/testEnglishScreensRemainAvailable()"
+  },
+  {
+    "file": "en-settings.png",
+    "language": "en",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605376.354,
+    "test": "LocalizationFlowTests/testEnglishScreensRemainAvailable()"
+  },
+  {
+    "file": "en-photos.png",
+    "language": "en",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605373.845,
+    "test": "LocalizationFlowTests/testEnglishScreensRemainAvailable()"
+  },
+  {
+    "file": "en-login.png",
+    "language": "en",
+    "device": "Immich Native Audit iOS 27.2",
+    "timestamp": 1794605365.166,
+    "test": "LocalizationFlowTests/testEnglishScreensRemainAvailable()"
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSLocalNetworkUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora connects to your Imora server, which is often a machine on your own network."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imora 需要连接你配置在本地网络中的照片服务器。"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}
