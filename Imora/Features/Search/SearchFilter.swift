@@ -188,6 +188,7 @@ nonisolated struct SearchFilter: Equatable {
     var notInAlbum = false
     var isArchive = false
     var isFavorite = false
+    var isMotion = false
     var mediaType: MediaType = .all
     var sortOrder: SortOrder = .relevance
 
@@ -218,7 +219,7 @@ nonisolated struct SearchFilter: Equatable {
             || make != nil || model != nil || lensModel != nil
             || takenAfter != nil || takenBefore != nil
             || rating != .any
-            || notInAlbum || isArchive || isFavorite
+            || notInAlbum || isArchive || isFavorite || isMotion
             || mediaType != .all
     }
 

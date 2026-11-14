@@ -4,59 +4,59 @@ struct TimelineTab: View {
     @Environment(SessionStore.self) private var session
     @Bindable private var router = TimelineNavigationRouter.shared
     @AppStorage("imora.photos.source") private var source = "cloud"
+    @State private var cloudControls = PhotosGridControls()
+    @State private var deviceControls = PhotosGridControls()
     @State private var showSettings = false
     @State private var showBackupSettings = false
 
+    private var controls: PhotosGridControls { source == "local" ? deviceControls : cloudControls }
     private var filter: TimelineFilter {
-        TimelineFilter(
-            withPartners: true,
-            withSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline,
-            withStacked: true
-        )
+        TimelineFilter(withPartners: true,
+                       withSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline,
+                       withStacked: true,
+                       isFavorite: cloudControls.mediaFilter == .favorites ? true : nil,
+                       order: "asc", orderBy: cloudControls.sortByAdded ? "createdAt" : nil)
+    }
+    private var configuration: PhotosToolbarConfiguration {
+        PhotosToolbarConfiguration(source: $source, controls: controls,
+            completePeriodIndex: source == "local" || [.all, .favorites].contains(controls.mediaFilter),
+            supportsDateAdded: source != "local" && [.all, .favorites].contains(controls.mediaFilter),
+            onAccount: { showSettings = true }, onBackup: { showBackupSettings = true },
+            onNotifications: { NotificationRouter.shared.openInbox() },
+            onSearch: { router.searchRequested = true })
     }
 
     var body: some View {
         NavigationStack {
             Group {
                 if source == "local" {
-                    DeviceLibraryScreen(navigationTarget: $router.pendingTarget)
+                    DeviceLibraryScreen(navigationTarget: $router.pendingTarget,
+                                        photosConfiguration: configuration)
+                } else if [.all, .favorites].contains(cloudControls.mediaFilter) {
+                    CloudPhotosScreen(filter: filter, navigationTarget: $router.pendingTarget,
+                                      configuration: configuration)
+                        .id(filter)
                 } else {
-                    CloudPhotosScreen(filter: filter, navigationTarget: $router.pendingTarget) {
-                        showBackupSettings = true
-                    }
-                    .id(filter)
+                    PhotosMediaTimeline(media: cloudControls.mediaFilter, configuration: configuration)
+                        .id(cloudControls.mediaFilter)
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Picker("Photo Source", selection: $source) {
-                    Text("Cloud").tag("cloud")
-                    Text("On Device").tag("local")
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal).padding(.vertical, 8)
-                .background(.bar)
-                .accessibilityIdentifier("photos-source-picker")
+            .onChange(of: controls.mediaFilter) { _, _ in
+                controls.mode = .all
+                controls.browsingPast = false
+                controls.scrollOffset = nil
+                if ![.all, .favorites].contains(controls.mediaFilter) { controls.sortByAdded = false }
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { NotificationRouter.shared.openInbox() } label: { Image(systemName: "bell") }
-                        .badge(session.notifications?.unreadCount ?? 0)
-                        .accessibilityIdentifier("notifications-open")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { ProfileAvatar(size: 30) }
-                        .accessibilityIdentifier("profile-avatar")
-                }
-            }
+            .onChange(of: controls.sortByAdded) { controls.scrollOffset = nil }
             .onChange(of: router.pendingTarget, initial: true) { _, target in
-                if let target { source = target.assetID.hasPrefix("local-") ? "local" : "cloud" }
+                if let target {
+                    source = target.assetID.hasPrefix("local-") ? "local" : "cloud"
+                    controls.mediaFilter = .all
+                    controls.mode = .all
+                }
             }
-            .navigationDestination(isPresented: $showBackupSettings) {
-                BackupScreen()
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-            }
+            .navigationDestination(isPresented: $showBackupSettings) { BackupScreen() }
+            .sheet(isPresented: $showSettings) { SettingsView() }
         }
     }
 }
@@ -64,29 +64,21 @@ struct TimelineTab: View {
 private struct CloudPhotosScreen: View {
     let filter: TimelineFilter
     @Binding var navigationTarget: TimelineNavigationTarget?
-    let showBackup: () -> Void
+    let configuration: PhotosToolbarConfiguration
     @State private var model: TimelineModel
 
-    init(filter: TimelineFilter, navigationTarget: Binding<TimelineNavigationTarget?>, showBackup: @escaping () -> Void) {
+    init(filter: TimelineFilter, navigationTarget: Binding<TimelineNavigationTarget?>,
+         configuration: PhotosToolbarConfiguration) {
         self.filter = filter
         _navigationTarget = navigationTarget
-        self.showBackup = showBackup
+        self.configuration = configuration
         _model = State(initialValue: TimelineModel(filter: filter))
     }
 
     var body: some View {
-        TimelineScreen(title: "", filter: filter, showsLargeTitle: false, suppliedModel: model,
-            navigationTarget: $navigationTarget, header: {
-                VStack(spacing: 0) {
-                    BackupStatusBanner { showBackup() }
-                    if !model.sections.isEmpty {
-                        Text("\(model.sections.reduce(0) { $0 + $1.count }) cloud items")
-                            .font(.footnote).foregroundStyle(.secondary).padding(.vertical, 6)
-                            .accessibilityIdentifier("cloud-library-count")
-                    }
-                    MemoryLane()
-                }
-            })
+        TimelineScreen(title: "", filter: filter, showsLargeTitle: false,
+                       photosConfiguration: configuration, suppliedModel: model,
+                       navigationTarget: $navigationTarget)
     }
 }
 

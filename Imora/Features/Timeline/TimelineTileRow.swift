@@ -22,6 +22,7 @@ struct TimelineTileRowConfiguration {
     let side: CGFloat
     let targetPixelSize: CGFloat
     let showsBackupBadge: Bool
+    let usesOriginalAspectRatio: Bool
     let isSelecting: Bool
     let selection: Set<String>
     let projectedRemovalIDs: Set<String>
@@ -99,7 +100,8 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
                     motion: row.motion,
                     showsBackupBadge: row.showsBackupBadge,
                     targetPixelSize: row.targetPixelSize,
-                    registry: row.registry
+                    registry: row.registry,
+                    usesOriginalAspectRatio: row.usesOriginalAspectRatio
                 )
                 tile.isSelectable = row.isSelectable(asset)
                 tile.isSelected = row.selection.contains(asset.id)
@@ -394,8 +396,10 @@ final class TimelineTileView: UIView {
         motion: GridMotion,
         showsBackupBadge: Bool,
         targetPixelSize: CGFloat,
-        registry: AssetTileRegistry
+        registry: AssetTileRegistry,
+        usesOriginalAspectRatio: Bool = false
     ) {
+        imageView.contentMode = usesOriginalAspectRatio ? .scaleAspectFit : .scaleAspectFill
         let accountChanged = self.session !== session
         self.session = session
         self.motion = motion
@@ -819,6 +823,7 @@ final class TimelineTileView: UIView {
         let appearance = (isSelecting: isSelecting, isSelected: isSelected, isSelectable: isSelectable)
         if let current = selectionAppearance, current == appearance { return }
         selectionAppearance = appearance
+        setNeedsLayout()
         guard isSelecting, isSelectable else {
             selectionIndicator?.isHidden = true
             return
@@ -834,9 +839,9 @@ final class TimelineTileView: UIView {
         }()
         indicator.isHidden = false
         let name = isSelected ? "checkmark.circle.fill" : "circle"
-        // uikit does not inherit the asset catalog accent, resolve the brand tint directly.
+        // Match the system Photos selection control used by the native shell.
         let secondary = isSelected
-            ? UIColor(resource: .brandTint)
+            ? UIColor.systemBlue
             : UIColor.black.withAlphaComponent(0.25)
         let configuration = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
             .applying(UIImage.SymbolConfiguration(paletteColors: [.white, secondary]))
@@ -891,9 +896,12 @@ final class TimelineTileView: UIView {
         place(topLeadingBadge, leading: true, top: true, inset: 5)
         place(favoriteBadge, leading: true, top: false, inset: 6)
         place(backupBadge, leading: false, top: false, inset: 6)
+        if selectionAppearance?.isSelecting == true, let backupBadge {
+            backupBadge.frame.origin.x += rightToLeft ? 30 : -30
+        }
         if let selectionIndicator {
-            let x = rightToLeft ? bounds.width - 6 - 24 : 6
-            selectionIndicator.frame = CGRect(x: x, y: 6, width: 24, height: 24)
+            let x = rightToLeft ? 6 : bounds.width - 6 - 24
+            selectionIndicator.frame = CGRect(x: x, y: bounds.height - 6 - 24, width: 24, height: 24)
         }
     }
 

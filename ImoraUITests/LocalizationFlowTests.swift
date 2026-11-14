@@ -17,11 +17,11 @@ final class LocalizationFlowTests: XCTestCase {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
-    private func dismissSyntheticPasswordPrompt(_ app: XCUIApplication) {
+    private func dismissSyntheticPasswordPrompt(_ app: XCUIApplication, wait: TimeInterval = 0) {
         // The entitlement-signed simulator can offer to save the synthetic login.
         // Decline this system prompt; it must not intercept settings gestures.
         let later = app.buttons.matching(NSPredicate(format: "label IN %@", ["以后", "Not Now", "Later"])).firstMatch
-        if later.exists && later.isHittable { later.tap() }
+        if (wait > 0 ? later.waitForExistence(timeout: wait) : later.exists), later.isHittable { later.tap() }
     }
     private func tap(_ app: XCUIApplication, _ id: String) {
         dismissSyntheticPasswordPrompt(app)
@@ -62,6 +62,15 @@ final class LocalizationFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", chinese ? "zh_CN" : "en_US"]
         app.launch()
+        if app.buttons["photos-source-menu"].waitForExistence(timeout: 3) {
+            dismissSyntheticPasswordPrompt(app)
+            app.buttons["photos-source-menu"].tap()
+            app.buttons[chinese ? "账号与设置" : "Account & Settings"].tap()
+            tap(app, "settings-sign-out")
+            let confirmation = app.buttons.matching(identifier: "settings-confirm-sign-out").allElementsBoundByIndex.first(where: \.isHittable)
+            XCTAssertNotNil(confirmation)
+            confirmation?.tap()
+        }
         let server = app.textFields["auth-server"]
         XCTAssertTrue(server.waitForExistence(timeout: 20), "A fresh signed-out fixture session is required")
         XCTAssertTrue(app.staticTexts[chinese ? "连接到您的 Imora 服务器" : "Connect to your Imora server"].exists)
@@ -74,15 +83,20 @@ final class LocalizationFlowTests: XCTestCase {
         let password = app.secureTextFields["auth-password"]
         enter(fixture.password, in: password, app: app)
         app.buttons["auth-sign-in"].tap()
-        XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
+        dismissSyntheticPasswordPrompt(app, wait: 3)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25), "The localized session must survive a cold launch")
         snapshot(app, "\(language)-photos")
-        app.buttons["profile-avatar"].tap()
+        app.buttons["photos-source-menu"].tap()
+        app.buttons[chinese ? "账号与设置" : "Account & Settings"].tap()
         tap(app, "settings-app-updates")
         XCTAssertTrue(app.staticTexts[chinese ? "App 版本" : "App Version"].waitForExistence(timeout: 10))
         let version = app.descendants(matching: .any)["app-updates-installed-version"].firstMatch
         XCTAssertTrue(version.waitForExistence(timeout: 10))
-        XCTAssertTrue(version.label.contains("1.0.2"), version.label)
-        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("4"))
+        XCTAssertTrue(version.label.contains("1.0.3"), version.label)
+        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("5"))
         XCTAssertTrue(app.staticTexts[chinese ? "未配置无线更新" : "Wireless Updates Not Configured"].exists)
         XCTAssertFalse(app.buttons["app-updates-install"].exists)
         snapshot(app, "\(language)-app-updates")
@@ -90,9 +104,16 @@ final class LocalizationFlowTests: XCTestCase {
         app.buttons["settings-close"].tap()
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
-        XCTAssertGreaterThanOrEqual(tiles.count, 2)
+        func visibleTiles() -> [XCUIElement] {
+            tiles.allElementsBoundByIndex.filter {
+                $0.isHittable && $0.frame.midY > 150 && $0.frame.midY < app.frame.height - 120
+            }
+        }
+        XCTAssertGreaterThanOrEqual(visibleTiles().count, 2)
         for (step, index) in [0, 1, 0, 1, 0].enumerated() {
-            tiles.element(boundBy: index).tap()
+            let visible = visibleTiles()
+            XCTAssertGreaterThan(visible.count, index)
+            visible[index].tap()
             let close = app.buttons.matching(identifier: "viewer-close").firstMatch
             XCTAssertTrue(close.waitForExistence(timeout: 8), "A different asset must open after returning from the viewer")
             if step == 2 {
@@ -107,10 +128,11 @@ final class LocalizationFlowTests: XCTestCase {
                 tapViewerClose(app)
             }
             XCTAssertTrue(close.waitForNonExistence(timeout: 8), "Returning must actually detach the fullscreen viewer")
-            XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 8))
-            XCTAssertTrue(tiles.element(boundBy: (index + 1) % 2).isHittable)
+            XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 8))
+            XCTAssertGreaterThanOrEqual(visibleTiles().count, 2)
         }
-        app.buttons["profile-avatar"].tap()
+        app.buttons["photos-source-menu"].tap()
+        app.buttons[chinese ? "账号与设置" : "Account & Settings"].tap()
         XCTAssertTrue(app.navigationBars[chinese ? "设置" : "Settings"].waitForExistence(timeout: 10))
         snapshot(app, "\(language)-settings")
         tap(app, "settings-privacy")
@@ -167,13 +189,17 @@ final class LocalizationFlowTests: XCTestCase {
             enter(fixture.password, in: app.secureTextFields["auth-password"], app: app)
             app.buttons["auth-sign-in"].tap()
         }
-        XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
-        dismissSyntheticPasswordPrompt(app)
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
+        dismissSyntheticPasswordPrompt(app, wait: 3)
         app.terminate()
         app.launch()
-        XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25), "The entitlement-signed fixture session must survive a cold launch")
-        app.buttons["profile-avatar"].tap()
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25), "The entitlement-signed fixture session must survive a cold launch")
+        app.buttons["photos-source-menu"].tap()
+        app.buttons["账号与设置"].tap()
         tap(app, "settings-app-updates")
+        if app.staticTexts["app-updates-unconfigured"].waitForExistence(timeout: 2) {
+            throw XCTSkip("The public simulator product intentionally has no private update host enrollment.")
+        }
         let check = app.buttons["app-updates-check"]
         XCTAssertTrue(check.waitForExistence(timeout: 10))
         guard check.isEnabled else { throw XCTSkip("Enroll the private test product with the Mac update host first.") }

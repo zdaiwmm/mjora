@@ -11,6 +11,8 @@ struct AlbumDetailScreen: View {
     private let onAlbumRemoved: (Album) -> Void
     private let onAlbumRestored: (Album) -> Void
     private let onAlbumRemovalCommitted: (String) -> Void
+    private var isPinned: Bool
+    private var onTogglePinned: (() -> Void)?
     /// bumping recreates the timeline; only the order toggle needs it since
     /// the filter is captured at init. content changes resync in place.
     @State private var timelineGeneration = 0
@@ -31,13 +33,17 @@ struct AlbumDetailScreen: View {
         onAlbumChanged: @escaping (Album) -> Void = { _ in },
         onAlbumRemoved: @escaping (Album) -> Void = { _ in },
         onAlbumRestored: @escaping (Album) -> Void = { _ in },
-        onAlbumRemovalCommitted: @escaping (String) -> Void = { _ in }
+        onAlbumRemovalCommitted: @escaping (String) -> Void = { _ in },
+        isPinned: Bool = false,
+        onTogglePinned: (() -> Void)? = nil
     ) {
         _album = State(initialValue: album)
         self.onAlbumChanged = onAlbumChanged
         self.onAlbumRemoved = onAlbumRemoved
         self.onAlbumRestored = onAlbumRestored
         self.onAlbumRemovalCommitted = onAlbumRemovalCommitted
+        self.isPinned = isPinned
+        self.onTogglePinned = onTogglePinned
     }
 
     private enum AlbumSheet: String, Identifiable {
@@ -171,6 +177,11 @@ struct AlbumDetailScreen: View {
 
     private var menu: some View {
         Menu {
+            if let onTogglePinned {
+                Button(action: onTogglePinned) {
+                    Label(isPinned ? "Unpin Collection" : "Pin Collection", systemImage: "pin")
+                }
+            }
             if canEditDetails {
                 Button {
                     activeSheet = .edit

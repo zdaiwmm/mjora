@@ -24,6 +24,7 @@ final class TimelineNavigationRouter {
     static let shared = TimelineNavigationRouter()
 
     var pendingTarget: TimelineNavigationTarget?
+    var searchRequested = false
 
     private init() {}
 

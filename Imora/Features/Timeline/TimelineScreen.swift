@@ -366,6 +366,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     var emptyIcon = "photo.on.rectangle"
     var emptyMessage = String(localized: "No photos yet")
     var showsLargeTitle = true
+    var photosConfiguration: PhotosToolbarConfiguration?
     var showsEmptyState = true
     var hidesScrollEdgeEffect = false
     var scrollResetTrigger = 0
@@ -451,6 +452,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     @State private var tileRegistry = AssetTileRegistry()
     @State private var selectionSlideController = TimelineSelectionSlideController()
     @State private var isRunningServerCommand = false
+    @State private var restoredPhotosPosition = false
+    @State private var completedPhotosRestoration = false
 
     init(
         title: String,
@@ -458,6 +461,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         emptyIcon: String = "photo.on.rectangle",
         emptyMessage: String = String(localized: "No photos yet"),
         showsLargeTitle: Bool = true,
+        photosConfiguration: PhotosToolbarConfiguration? = nil,
         showsEmptyState: Bool = true,
         hidesScrollEdgeEffect: Bool = false,
         scrollResetTrigger: Int = 0,
@@ -484,6 +488,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         self.emptyIcon = emptyIcon
         self.emptyMessage = emptyMessage
         self.showsLargeTitle = showsLargeTitle
+        self.photosConfiguration = photosConfiguration
         self.showsEmptyState = showsEmptyState
         self.hidesScrollEdgeEffect = hidesScrollEdgeEffect
         self.scrollResetTrigger = scrollResetTrigger
@@ -564,6 +569,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             if recordsUserPreference { preferredColumnCount = target }
+            if recordsUserPreference { photosConfiguration?.controls.columns = target }
             columnCount = target
             model.columns = target
         }
@@ -710,7 +716,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     /// nothing and compresses the mapping instead - see maxScrollPercent - so
     /// the end of the track is simply the end of the scroll.
     private func bottomPadding() -> CGFloat {
-        isSelecting ? 90 : 0
+        if isSelecting { return 90 }
+        return extendsPhotosBehindBars ? 100 : 0
     }
 
     private var selectionMoreMenu: some View {
@@ -762,10 +769,23 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     @ToolbarContentBuilder
     private var timelineToolbar: some ToolbarContent {
+        if let configuration = photosConfiguration {
+            ToolbarItem(placement: .topBarLeading) {
+                PhotosSourceMenu(configuration: configuration,
+                                 count: model.sections.reduce(0) { $0 + $1.count })
+            }
+            .sharedBackgroundVisibility(.hidden)
+        }
         if isSelecting, !isPicking {
+            if let configuration = photosConfiguration {
+                ToolbarItem(placement: .topBarTrailing) {
+                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded)
+                }
+            }
             if filter.isTrashed != true {
                 ToolbarItem(placement: .topBarTrailing) { selectionMoreMenu }
             }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     exitSelection()
@@ -777,12 +797,19 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 .accessibilityIdentifier("selection-cancel")
             }
         } else {
-            if !isPicking, !model.isEmpty {
+            if let configuration = photosConfiguration {
+                ToolbarItem(placement: .topBarTrailing) {
+                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded)
+                }
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            }
+            if !isPicking, !model.isEmpty, (photosConfiguration?.controls.mode ?? .all) == .all {
                 // leads the host's items as a pill of its own: the fixed
                 // spacer splits the glass so it never merges into their
                 // group.
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Select") { enterSelection() }
+                        .tint(photosConfiguration == nil ? .accentColor : .primary)
                         .accessibilityIdentifier("timeline-select")
                 }
                 if hasTrailingItems {
@@ -809,7 +836,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             side: side,
             tailPadding: tailPadding,
             rowContext: rowContext(side: side),
-            hidesEdgeEffects: hidesScrollEdgeEffect,
+            hidesEdgeEffects: photosConfiguration != nil || hidesScrollEdgeEffect,
             refresh: refresh,
             events: gridEvents(viewportWidth: viewportWidth, viewportHeight: viewportHeight),
             header: header,
@@ -823,6 +850,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             columns: columnCount,
             targetPixelSize: thumbnailPixelSize(for: side),
             showsBackupBadge: mergesLocalPhotos,
+            usesOriginalAspectRatio: photosConfiguration?.controls.usesOriginalAspectRatio ?? false,
             isSelecting: isSelecting,
             selection: selection,
             reduceMotion: reduceMotion,
@@ -865,6 +893,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             },
             onPinchEnded: { pinchEnded() },
             configureScrollView: { scrollView in
+                if photosConfiguration != nil {
+                    scrollView.contentInsetAdjustmentBehavior = extendsPhotosBehindBars ? .never : .always
+                }
                 selectionSlideController.attach(to: scrollView)
                 selectionSlideController.configure(
                     isEnabled: isSelecting && !isPicking,
@@ -881,6 +912,14 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     }
 
     private func handleScroll(_ scroll: TimelineGridScroll) {
+        if let controls = photosConfiguration?.controls, completedPhotosRestoration, !controls.isRestoring {
+            let previous = controls.scrollOffset
+            controls.scrollOffset = scroll.offsetY
+            if photosConfiguration?.completePeriodIndex == true, !scrollContext.isIdle,
+               let previous, scroll.offsetY < previous - 5 {
+                controls.browsingPast = true
+            }
+        }
         // the indicator is rounded to suppress sub point drawing noise,
         // while the visible rows keep the precise offset.
         scrub.update(with: TimelineScrollState(
@@ -983,6 +1022,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     viewportHeight: geometry.size.height
                 )
                 .ignoresSafeArea()
+                .accessibilityHidden(photosConfiguration?.controls.mode != nil && photosConfiguration?.controls.mode != .all)
+                .allowsHitTesting((photosConfiguration?.controls.mode ?? .all) == .all)
                 // the scrollbar is the app's own everywhere, so anything
                 // that scrolls at all gets one. gating it on a row count left
                 // short albums with no indicator of any kind.
@@ -997,6 +1038,26 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
             .onChange(of: geometry.size.width, initial: true) { _, width in
                 applyViewportWidth(width, viewportHeight: geometry.size.height)
+                photosConfiguration?.controls.viewportWidth = width
+                if let controls = photosConfiguration?.controls, columnCount != controls.columns {
+                    applyColumnCount(controls.columns, viewportWidth: width, viewportHeight: geometry.size.height,
+                                     preservedFraction: scrub.fraction, recordsUserPreference: true)
+                }
+            }
+            .onChange(of: photosConfiguration?.controls.columns) { _, columns in
+                guard let columns, columns != columnCount else { return }
+                applyColumnCount(columns, viewportWidth: geometry.size.width, viewportHeight: geometry.size.height,
+                                 preservedFraction: scrub.fraction, recordsUserPreference: true)
+            }
+            .onChange(of: photosConfiguration?.controls.groupsByDate, initial: true) { _, grouped in
+                if let grouped { model.showsDateHeaders = grouped }
+            }
+            .onChange(of: photosConfiguration?.controls.scrollRequest) { _, request in
+                guard let request else { return }
+                Task { await revealPhotoPeriod(request) }
+            }
+            .onChange(of: model.rowsLayoutVersion) {
+                Task { await restorePhotosPositionIfNeeded() }
             }
             // the window is otherwise only recomputed while scrolling, so a
             // grid that has just filled in sits with nothing warmed past the
@@ -1033,6 +1094,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 }
             }
             .onChange(of: isSelecting) { _, isSelecting in
+                photosConfiguration?.controls.isSelecting = isSelecting
                 if isSelecting {
                     AssetViewerOpeningChromeCache.shared.cancelPrewarming(
                         owner: openingChromePrewarmOwner
@@ -1054,10 +1116,23 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // where they are instead of sliding away with it. only the tab bar
         // leaves, for the bottom controls, like the photos app.
         .toolbar { timelineToolbar }
-        .toolbarVisibility(isSelecting ? .hidden : .automatic, for: .tabBar)
+        .toolbarVisibility(isSelecting || showsPeriodControls ? .hidden : .automatic, for: .tabBar)
+        .toolbarBackground(photosConfiguration == nil ? .automatic : .hidden, for: .navigationBar)
+        .toolbarColorScheme(extendsPhotosBehindBars ? .dark : nil, for: .navigationBar)
+        .overlay(alignment: .top) {
+            if extendsPhotosBehindBars {
+                LinearGradient(colors: [.black.opacity(0.4), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 150).ignoresSafeArea(edges: .top).allowsHitTesting(false)
+            }
+        }
         .navigationBarBackButtonHidden(isSelecting)
         .overlay {
             if showsEmptyState { overlayState }
+        }
+        .overlay {
+            if let configuration = photosConfiguration, configuration.controls.mode != .all {
+                PhotoPeriodsView(model: model, controls: configuration.controls)
+            }
         }
         .overlay(alignment: .bottom) {
             ZStack {
@@ -1074,6 +1149,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                         trashDisabled: selectionHasForeignAssets
                     )
                     .transition(.opacity)
+                } else if let configuration = photosConfiguration, showsPeriodControls {
+                    PhotoPeriodControls(controls: configuration.controls, onSearch: configuration.onSearch)
                 }
             }
             .animation(.smooth(duration: 0.25), value: isSelecting)
@@ -1114,6 +1191,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 model.onUnauthorized = onUnauthorized
                 await model.load()
                 await revealPendingTimelineTarget()
+                await restorePhotosPositionIfNeeded()
             }
         }
         .onChange(of: navigationTarget) {
@@ -1137,6 +1215,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // the pipeline outlives the screen, so a window left open would keep
         // downloading tiles for a grid nobody is looking at.
         .onDisappear {
+            photosConfiguration?.controls.isSelecting = false
             prefetcher.cancel()
             model.resumeRebuilds()
             ImageLoader.shared.setSweepPaused(false)
@@ -1188,6 +1267,52 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     }
 
     // MARK: - rows
+
+    private var extendsPhotosBehindBars: Bool {
+        photosConfiguration != nil && (photosConfiguration?.controls.mode ?? .all) == .all
+            && model.contentHeight(tileSide: tileSide(for: max(1, scrollContext.viewportWidth))) > scrollContext.viewportHeight
+    }
+
+    private var showsPeriodControls: Bool {
+        guard let c = photosConfiguration, c.completePeriodIndex, !isSelecting else { return false }
+        return c.controls.browsingPast || c.controls.mode != .all
+    }
+
+    private func restorePhotosPositionIfNeeded() async {
+        guard let controls = photosConfiguration?.controls, !restoredPhotosPosition,
+              !model.sections.isEmpty, scrollContext.viewportWidth > 0 else { return }
+        restoredPhotosPosition = true
+        let savedOffset = controls.scrollOffset
+        controls.isRestoring = true
+        defer {
+            controls.isRestoring = false
+            completedPhotosRestoration = true
+        }
+        if savedOffset == nil, filter.order?.lowercased() == "asc", let last = model.sections.last {
+            await model.loadBucket(last.id)
+        }
+        await Task.yield()
+        gridController.reloadRows(animated: false)
+        if let offset = savedOffset { gridController.scrollTo(y: offset) }
+        else if filter.order?.lowercased() == "asc" { gridController.scrollToEnd() }
+    }
+
+    private func revealPhotoPeriod(_ request: PhotoScrollRequest) async {
+        guard let controls = photosConfiguration?.controls else { return }
+        controls.isRestoring = true
+        defer { controls.isRestoring = false }
+        guard let bucketID = request.bucketID else {
+            gridController.scrollToEnd()
+            return
+        }
+        await model.loadBucket(bucketID)
+        guard controls.scrollRequest == request,
+              let assetID = model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,
+              let rowIndex = model.rowIndex(containingAnyOf: [assetID]) else { return }
+        let layout = rowLayout(side: tileSide(for: scrollContext.viewportWidth))
+        guard layout.starts.indices.contains(rowIndex) else { return }
+        gridController.scrollTo(y: scrub.headerHeight + layout.starts[rowIndex])
+    }
 
     private func revealPendingTimelineTarget() async {
         guard let target = navigationTarget,
