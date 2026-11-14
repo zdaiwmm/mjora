@@ -87,37 +87,23 @@ nonisolated enum PhotoLibraryService {
 
     // MARK: - scanning
 
-    /// the last full scan with the library change token it was taken at.
-    /// a launch asks for the scan from several places within a second - the
-    /// reconcile run, the timeline merge, a library change notice - and each
-    /// walk of a large library is hundreds of milliseconds of photokit time
-    /// the grid's own thumbnail requests then queue behind.
-    private struct ScanMemo: @unchecked Sendable {
-        let token: PHPersistentChangeToken
-        let assets: [DeviceAsset]
-    }
-
-    private static let scanMemo = OSAllocatedUnfairLock<ScanMemo?>(initialState: nil)
-
+    /// All backup/timeline consumers share the persistent token scanner. Failure keeps the
+    /// last committed metadata snapshot; callers still enforce the full-access gate.
     @concurrent
     static func scan() async -> [DeviceAsset] {
-        let token = PHPhotoLibrary.shared().currentChangeToken
-        if let memo = scanMemo.withLock({ $0 }), memo.token == token {
-            return memo.assets
+        do {
+            _ = try await LocalLibraryDeltaStore.shared.loadChanges()
+            return try await LocalLibraryDeltaStore.shared.snapshot()
+        } catch {
+            return (try? await LocalLibraryDeltaStore.shared.snapshot()) ?? []
         }
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let result = PHAsset.fetchAssets(with: options)
-        // the enumeration is serial and synchronous without the concurrent
-        // option; the block's sendable signature just cannot say so.
-        nonisolated(unsafe) var assets: [DeviceAsset] = []
-        assets.reserveCapacity(result.count)
-        result.enumerateObjects { asset, _, _ in
-            guard asset.mediaType == .image || asset.mediaType == .video else { return }
-            assets.append(snapshot(of: asset))
-        }
-        scanMemo.withLock { $0 = ScanMemo(token: token, assets: assets) }
-        return assets
+    }
+
+    /// Backup and cleanup must stop on a failed scan, never interpret a cache failure as an empty library.
+    @concurrent
+    static func scanForBackup() async throws -> [DeviceAsset] {
+        _ = try await LocalLibraryDeltaStore.shared.loadChanges()
+        return try await LocalLibraryDeltaStore.shared.snapshot()
     }
 
     @concurrent

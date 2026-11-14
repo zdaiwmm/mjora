@@ -663,4 +663,45 @@ actor BackupIndex {
             sizeExcludedRequestBytesByLocal: sizeExcludedRequestBytesByLocal
         )
     }
+    func syncHistory(scope: SyncScope, generation: UUID) throws -> [SyncHistoricalPairing] {
+        guard loaded, self.generation == generation, serverHost == scope.serverIdentity, userId == scope.accountID else {
+            throw RemoteSyncError.unsafeHistory
+        }
+        return entries.compactMap { localID, entry in
+            guard entry.primaryRemoteId != nil || entry.motionRemoteId != nil || entry.isUploadBlockedByRemoteRemoval else { return nil }
+            return SyncHistoricalPairing(localID: localID, primaryRemoteID: entry.primaryRemoteId,
+                motionRemoteID: entry.motionRemoteId, primaryChecksum: entry.primaryChecksum,
+                motionChecksum: entry.motionChecksum, isLivePhoto: entry.isLivePhoto,
+                remoteDeleted: entry.isUploadBlockedByRemoteRemoval)
+        }
+    }
+
+    func applySyncOperations(_ operations: [RemoteIndexOperation], scope: SyncScope, generation: UUID) throws {
+        _ = try syncHistory(scope: scope, generation: generation)
+        for operation in operations {
+            switch operation {
+            case .invalidate(let remoteID):
+                for localID in Array(entries.keys) {
+                    guard let entry = entries[localID],
+                          entry.primaryRemoteId == remoteID || entry.motionRemoteId == remoteID,
+                          entry.proof != nil || entry.verificationState == .verified else { continue }
+                    entries[localID]?.proof = nil
+                    entries[localID]?.verificationState = .pending
+                    entries[localID]?.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
+                    markDirty()
+                }
+            case .removed(let remoteID):
+                noteRemoteChange(ids: [remoteID], change: .deleted, generation: generation)
+            case .protectLocal(let localID):
+                guard let entry = entries[localID], !entry.isUploadBlockedByRemoteRemoval else { continue }
+                entries[localID]?.remoteDeletionDetected = true
+                entries[localID]?.proof = nil
+                entries[localID]?.verificationState = .missing
+                entries[localID]?.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
+                markDirty()
+            }
+        }
+        guard flush() else { throw RemoteSyncError.indexFlushFailed }
+    }
+
 }
