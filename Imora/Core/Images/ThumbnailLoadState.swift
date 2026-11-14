@@ -22,7 +22,7 @@ nonisolated struct ThumbnailLoadState: Sendable {
     private var acceptsResults: Bool { phase != .ready && phase != .cancelled }
 
     mutating func localPreview() {
-        guard acceptsResults else { return }
+        guard acceptsResults, phase != .retry else { return }
         phase = .preview
     }
 
@@ -43,7 +43,7 @@ nonisolated struct ThumbnailLoadState: Sendable {
             phase = .ready
             return .finished
         }
-        phase = .preview
+        if phase != .retry { phase = .preview }
         return localUnavailable()
     }
 

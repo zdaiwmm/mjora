@@ -139,6 +139,7 @@ struct AssetViewerOpeningChromePresentation: Hashable {
         session: SessionStore
     ) -> String? {
         if let localID = asset.localIdentifier {
+            if session.backup?.remoteRemovedLocalIDs.contains(localID) == true { return "icloud.slash" }
             if asset.isLocalBackedUp || session.backup?.hasVerifiedBackup(localIdentifier: localID) == true {
                 return "checkmark.icloud"
             }

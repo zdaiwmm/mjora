@@ -51,7 +51,8 @@ final class RealtimeHub {
     private var resyncOnConnect = false
     /// wired by sessionstore to the backup manager, which retires the device
     /// twins of assets the server has repainted.
-    @ObservationIgnored var onBackupReconciliationNeeded: (() -> Void)?
+    @ObservationIgnored var onBackupReconciliationNeeded: ((UUID?) -> Void)?
+    @ObservationIgnored var onBackupConnectionGap: (() -> Void)?
     @ObservationIgnored var onRemoteBackupChange: ((Set<String>, BackupRemoteChange) -> Void)?
     @ObservationIgnored var onRemoteEdit: ((Set<String>) -> Void)?
     /// the server version sent on every connect, so api shapes can follow an
@@ -108,7 +109,7 @@ final class RealtimeHub {
             startConnection()
             // the resync doubles as the missed-while-backgrounded catch-up.
             broadcast { $0.realtimeCatchUp() }
-            onBackupReconciliationNeeded?()
+            onBackupReconciliationNeeded?(nil)
             startSafetyTick()
         } else {
             connectionTask?.cancel()
@@ -118,6 +119,7 @@ final class RealtimeHub {
             resyncDebounce?.cancel()
             resyncDebounce = nil
             isConnected = false
+            onBackupConnectionGap?()
         }
     }
 
@@ -222,6 +224,7 @@ final class RealtimeHub {
                 // returns.
                 self.resyncOnConnect = true
                 self.isConnected = false
+                self.onBackupConnectionGap?()
                 guard self.active, !Task.isCancelled else { return }
                 let jitter = Double.random(in: 0...0.4) * backoff
                 try? await Task.sleep(for: .seconds(backoff + jitter))
@@ -253,6 +256,7 @@ final class RealtimeHub {
         // grace before the first server frame, then a rolling deadline based
         // on the server ping cadence so half-open sockets get torn down.
         var deadline: Duration = .seconds(15)
+        let connectionGeneration = UUID()
 
         while !Task.isCancelled {
             let message = try await SocketConnection.receive(from: task, timeout: deadline)
@@ -266,7 +270,7 @@ final class RealtimeHub {
             case .ping:
                 try await task.send(.string("3"))
             case .connected:
-                await noteConnected()
+                await noteConnected(generation: connectionGeneration)
             case .connectError(let detail):
                 throw ImoraError.http(401, detail)
             case .event(let event):
@@ -279,12 +283,12 @@ final class RealtimeHub {
         }
     }
 
-    private func noteConnected() {
+    private func noteConnected(generation: UUID) {
         guard client.context.isActive, active else { return }
         realtimeLog.info("socket connected")
         isConnected = true
         if resyncOnConnect {
-            onBackupReconciliationNeeded?()
+            onBackupReconciliationNeeded?(generation)
             resyncOnConnect = false
             broadcast { $0.realtimeCatchUp() }
         }
@@ -320,7 +324,7 @@ final class RealtimeHub {
             scheduleResync()
 
         case "AssetUploadReadyV1", "AssetUploadReadyV2", "on_upload_success", "on_asset_stack_update":
-            onBackupReconciliationNeeded?()
+            onBackupReconciliationNeeded?(nil)
             scheduleResync()
 
         case "on_asset_delete", "on_asset_trash", "on_asset_hidden":

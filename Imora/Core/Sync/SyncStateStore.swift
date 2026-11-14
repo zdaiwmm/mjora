@@ -105,6 +105,10 @@ actor SyncStateStore {
         do { return try get(SyncSessionState.self, scope.sessionKey, "session", "state") ?? SyncSessionState() }
         catch is DecodingError { return SyncSessionState() }
     }
+    func lastSuccessfulSync(scope: SyncScope) throws -> Date? {
+        try get(Date.self, scope.accountKey, "observation", "lastSuccessfulSync")
+    }
+
     func hasBaseline(scope: SyncScope) throws -> Bool { try session(scope).baseline }
     func isCaughtUp(scope: SyncScope) throws -> Bool { let state = try session(scope); return state.baseline && state.caughtUp && !state.rebuilding }
     func markIncomplete(scope: SyncScope) throws {
@@ -202,11 +206,9 @@ actor SyncStateStore {
     func clearDeletionProtectionForRebackup(localID: String, scope: SyncScope) throws {
         try database.transaction {
             try remove(scope.accountKey, "protectedLocal", localID)
-            if let old = try historicalPairing(localID: localID, scope: scope) {
-                try put(SyncHistoricalPairing(localID: localID, primaryRemoteID: nil, motionRemoteID: nil,
-                    primaryChecksum: old.primaryChecksum, motionChecksum: old.motionChecksum,
-                    isLivePhoto: old.isLivePhoto, remoteDeleted: false), scope.accountKey, "history", localID)
-            }
+            // A retired pairing is no longer evidence of an expected remote resource.
+            // Keeping a nil-ID row makes the next complete baseline protect it again.
+            try remove(scope.accountKey, "history", localID)
         }
     }
 
@@ -342,7 +344,11 @@ actor SyncStateStore {
     func markAcknowledged(_ id: String, scope: SyncScope) throws {
         try database.transaction {
             guard let pending = try get(SyncPendingBatch.self, scope.sessionKey, "pending", id), pending.indexFlushed else { throw RemoteSyncError.indexFlushFailed }
-            if pending.completes { var state = try session(scope); state.caughtUp = true; try put(state, scope.sessionKey, "session", "state") }
+            if pending.completes {
+                var state = try session(scope); state.caughtUp = true
+                try put(state, scope.sessionKey, "session", "state")
+                try put(Date(), scope.accountKey, "observation", "lastSuccessfulSync")
+            }
             try remove(scope.sessionKey, "pending", id)
         }
     }

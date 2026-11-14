@@ -12,6 +12,7 @@ extension MediaCounts {
 
 /// a Live Photo only counts as backed up when both resources are confirmed.
 nonisolated struct BackupLibraryStatus: Equatable, Sendable {
+    var lastSuccessfulCloudSync: Date? = nil
     private(set) var totalMedia = MediaCounts()
     private(set) var backedUpMedia = MediaCounts()
     private(set) var unindexedMedia = MediaCounts()

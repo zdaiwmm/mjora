@@ -96,3 +96,27 @@ extension BackupHistoricalStateTests {
         XCTAssertThrowsError(try SyncStateStore(fileURL: sqlite))
     }
 }
+
+extension BackupHistoricalStateTests {
+    func testFailedJSONRebackupWriteRestoresInMemoryRemovalProtection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appending(path: "index.json"), generation = UUID()
+        let index = BackupIndex(fileURL: file)
+        _ = await index.load(serverHost: "server", userId: "owner", generation: generation)
+        await index.setHashed(localId: "local", isLivePhoto: false, primaryChecksum: "checksum", motionChecksum: nil, modificationDate: nil)
+        await index.setPrimaryRemoteId(localId: "local", "retired")
+        await index.noteRemoteChange(ids: ["retired"], change: .trashed, generation: generation)
+        let flushed = await index.flush(); XCTAssertTrue(flushed)
+        let saved = try Data(contentsOf: file)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        do { try await index.prepareForExplicitRebackup(localID: "local", generation: generation); XCTFail() }
+        catch RemoteSyncError.indexFlushFailed {}
+        let protected = await index.entry(for: "local")
+        XCTAssertEqual(protected?.isUploadBlockedByRemoteRemoval, true)
+        XCTAssertEqual(protected?.primaryRemoteId, "retired")
+        try FileManager.default.removeItem(at: file)
+        try saved.write(to: file)
+    }
+}

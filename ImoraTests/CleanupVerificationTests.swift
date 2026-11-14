@@ -13,6 +13,7 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
     let mode: DeletionMode
     var invalidHash = false
     var onHash: (@Sendable () -> Void)?
+    var beforeDelete: (@Sendable () async -> Void)?
     var protectedIDs: Set<String> = []
     private(set) var deleted: [String] = []
     private(set) var hashCount = 0
@@ -30,6 +31,7 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
         return LocalResourceHashes(primaryDigest: invalidHash ? motionDigest : stillDigest, motionDigest: asset.isLivePhoto ? motionDigest : nil)
     }
     func delete(_ assets: [DeviceAsset], permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
+        await beforeDelete?()
         guard permission, permitted() else { throw CleanupVerificationError.changed }
         switch mode {
         case .cancel: throw CancellationError()
@@ -39,6 +41,7 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
         }
         return deleted
     }
+    func beforePermission(_ operation: @escaping @Sendable () async -> Void) { beforeDelete = operation }
     func changeAssets(_ value: [DeviceAsset]) { values = value }
     func denyPermission() { permission = false }
     func useInvalidHash() { invalidHash = true }

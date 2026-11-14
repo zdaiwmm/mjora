@@ -433,7 +433,8 @@ final class SessionStore {
             LocalNotifications.shared.deliverBackupFailure(message)
         }
         ContinuedProcessing.backup.workload = backup
-        hub.onBackupReconciliationNeeded = { [weak backup] in backup?.requestRemoteReconciliation() }
+        hub.onBackupReconciliationNeeded = { [weak backup] generation in backup?.requestRemoteReconciliation(generation: generation) }
+        hub.onBackupConnectionGap = { [weak backup] in backup?.noteRemoteConnectionGap() }
         hub.onRemoteBackupChange = { [weak backup] ids, change in backup?.noteRemoteChange(ids, change: change) }
         hub.onRemoteEdit = { [weak backup] ids in backup?.noteRemoteEdits(ids) }
         hub.onServerVersion = { [weak self, weak client] version in

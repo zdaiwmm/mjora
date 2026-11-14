@@ -188,10 +188,21 @@ final class BackupManager {
         await self?.reconcile(request)
     }
 
-    func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = []) {
+    func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = [], generation: UUID? = nil) {
+        guard !isShutDown,
+              reconcileCoordinator.request(reason, localIDs: localIDs, remoteIDs: remoteIDs, generation: generation) else { return }
+        if reason == .remoteChange { index.revokeCleanupAuthority() }
+        if reason == .remoteChange || reason == .reconnect || reason == .foreground {
+            cloudSyncReady = false
+            syncInvalidationEpoch &+= 1
+        }
+    }
+
+    func noteRemoteConnectionGap() {
         guard !isShutDown else { return }
-        if reason == .remoteChange { cloudSyncReady = false; syncInvalidationEpoch &+= 1 }
-        reconcileCoordinator.request(reason, localIDs: localIDs, remoteIDs: remoteIDs)
+        cloudSyncReady = false
+        syncInvalidationEpoch &+= 1
+        index.revokeCleanupAuthority()
     }
 
     private func syncScope() throws -> SyncScope {
@@ -260,10 +271,14 @@ final class BackupManager {
             if !request.localIDs.isEmpty { await index.invalidateProofs(localIds: request.localIDs) }
             cloudSyncReady = false
             try await synchronizeBeforeBackup()
-            if request.requiresFullCheck, !usesCompatibilityReconciliation { forceFullReconciliation = true }
+            if request.requiresFullCheck, !usesCompatibilityReconciliation {
+                forceFullReconciliation = true
+                if runTask != nil { rerunRequested = true }
+            }
             await refreshLocalSnapshots()
+            // Reconciliation owns only catch-up. Uploads keep their own lifetime,
+            // allowing a reconnect delta to protect removed items during a long run.
             startReconciledRun()
-            while let task = runTask { await task.value }
         } catch {
             guard !isShutDown, !(error is CancellationError) else { return }
             cloudSyncReady = false
@@ -1189,7 +1204,10 @@ final class BackupManager {
         }
         let assets = await PhotoLibraryService.scan()
         guard !isShutDown, !Task.isCancelled, PhotoLibraryService.hasFullAccess else { return }
-        let status = await index.libraryStatus(for: assets, excludeScreenshots: excludeScreenshots)
+        var status = await index.libraryStatus(for: assets, excludeScreenshots: excludeScreenshots)
+        if let (store, _, scope) = try? initializeSync() {
+            status.lastSuccessfulCloudSync = try? await store.lastSuccessfulSync(scope: scope)
+        }
         guard generation == libraryStatusGeneration, !isShutDown, PhotoLibraryService.hasFullAccess else { return }
         if repeatedFailureLedger.entries.contains(where: { $0.account == accountKey }) {
             let before = repeatedFailureLedger.entries.count
@@ -1205,12 +1223,13 @@ final class BackupManager {
     /// the server repainted these assets, so their device twins are stale
     /// pixels. the pairing itself survives - deletes still cascade - but grids
     /// and the viewer go back to the server render for them.
-    func requestRemoteReconciliation() {
-        request(.reconnect)
+    func requestRemoteReconciliation(generation: UUID? = nil) {
+        request(.reconnect, generation: generation)
     }
 
     func noteRemoteChange(_ remoteIDs: Set<String>, change: BackupRemoteChange) {
         guard change != .hidden, !isShutDown else { return }
+        index.revokeCleanupAuthority()
         cloudSyncReady = false
         syncInvalidationEpoch &+= 1
         Task { [weak self] in
@@ -1231,7 +1250,8 @@ final class BackupManager {
     }
 
     func noteRemoteEdits(_ remoteIds: Set<String>) {
-        guard !remoteIds.isEmpty else { return }
+        guard !remoteIds.isEmpty, !isShutDown else { return }
+        index.revokeCleanupAuthority()
         cloudSyncReady = false
         request(.remoteChange, remoteIDs: remoteIds)
         for id in remoteIds { localIdentifierByRemoteId[id] = nil }
@@ -2343,7 +2363,7 @@ final class BackupManager {
             try await waitForUpload(localIdentifier: localIdentifier)
         }
         if await index.entry(for: localIdentifier)?.isUploadBlockedByRemoteRemoval == true {
-            throw SingleAssetBackupError.failed(String(localized: "The cloud copy was removed. Confirm Back Up Again to create a new copy."))
+            throw SingleAssetBackupError.failed(String(localized: "The cloud copy was removed. Confirm Back Up Again to restore or recreate it."))
         }
         if let entry = await index.entry(for: localIdentifier),
            entry.isBackedUp,
@@ -2403,18 +2423,45 @@ final class BackupManager {
         return remoteID
     }
 
-    /// Call only after the photo detail confirmation explains that this creates a new cloud copy.
-    func rebackupAfterConfirmation(localIdentifier: String) async throws -> String {
+    func rebackupConfirmation(localIdentifier: String) -> RebackupConfirmation {
+        RebackupConfirmation(localIdentifier: localIdentifier, accountGeneration: client.context.id)
+    }
+
+    /// Consent is bound to the displayed local item and login generation, across paging and relogin.
+    func rebackupAfterConfirmation(_ confirmation: RebackupConfirmation) async throws -> String {
+        guard confirmation.accountGeneration == client.context.id, client.context.isActive, !isShutDown else {
+            throw BackupVerificationError.stale
+        }
+        let localIdentifier = confirmation.localIdentifier
         guard let userId, await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { throw RemoteSyncError.unsafeHistory }
         cloudSyncReady = false
         try await synchronizeBeforeBackup()
-        // Recover old work and consume obsolete receipts while removal protection is still present.
+        // Recover old work and consume obsolete receipts while protection remains present.
         adoptBackgroundUploads()
         await BackgroundUploader.shared.replayReceipts()
         let (store, sync, scope) = try initializeSync()
         try await sync.recoverPending(scope: scope)
-        try await index.prepareForExplicitRebackup(localID: localIdentifier, generation: client.context.id)
-        try await store.clearDeletionProtectionForRebackup(localID: localIdentifier, scope: scope)
+        guard var retired = await index.entry(for: localIdentifier) else { throw RemoteSyncError.unsafeHistory }
+        if let history = try await store.historicalPairing(localID: localIdentifier, scope: scope) {
+            guard history.primaryChecksum == retired.primaryChecksum, history.motionChecksum == retired.motionChecksum,
+                  history.isLivePhoto == retired.isLivePhoto else { throw BackupVerificationError.stale }
+            retired.primaryRemoteId = retired.primaryRemoteId ?? history.primaryRemoteID
+            retired.motionRemoteId = retired.motionRemoteId ?? history.motionRemoteID
+        }
+        let client = client
+        let restored = try await ExplicitRebackupRecovery.restoreIfPresent(entry: retired, ownerID: userId, remote: client,
+            current: { client.context.isActive && client.context.id == confirmation.accountGeneration })
+        guard client.context.isActive, !isShutDown, try syncScope() == scope else { throw BackupVerificationError.stale }
+        if restored {
+            // Keep the pairing and protection until an authoritative complete round recognizes the restore.
+            cloudSyncReady = false
+            syncInvalidationEpoch &+= 1
+            try await synchronizeBeforeBackup()
+        } else {
+            // JSON first: a failed SQLite write keeps the durable guard in place.
+            try await index.prepareForExplicitRebackup(localID: localIdentifier, generation: client.context.id)
+            try await store.clearDeletionProtectionForRebackup(localID: localIdentifier, scope: scope)
+        }
         repeatedFailureLedger.clear(account: accountKey, localIdentifier: localIdentifier)
         saveRepeatedFailures()
         await refreshLocalSnapshots()
@@ -2714,18 +2761,23 @@ final class BackupManager {
         return report
     }
 
+    /// Shared by async verification and the synchronous final PhotoKit submission.
+    func cleanupPermission(for report: CleanupReport) -> @Sendable () -> Bool {
+        let client = client, index = index, evidenceVersion = index.evidenceVersion
+        return {
+            client.context.isActive && ServerRoute.resolve(client.apiURL) == report.route
+                && index.evidenceVersion == evidenceVersion
+        }
+    }
+
     func performCleanup(report: CleanupReport) async throws -> CleanupOutcome {
         guard activeCleanupReportID == report.id, report.account == accountKey,
               report.generation == client.context.id, !isShutDown else { throw CleanupVerificationError.changed }
         activeCleanupReportID = nil // confirmation is single-use, including cancellation
         let client = client, index = index
-        let evidenceVersion = index.evidenceVersion
+        let permitted = cleanupPermission(for: report)
         let result = try await CleanupVerifier.perform(report: report, account: accountKey, generation: client.context.id,
-            library: PhotosCleanupLibrary(), remote: client, isCurrent: {
-                client.context.isActive && ServerRoute.resolve(client.apiURL) == report.route && index.evidenceVersion == evidenceVersion
-            }, canCommit: {
-                client.context.isActive && ServerRoute.resolve(client.apiURL) == report.route && index.evidenceVersion == evidenceVersion
-            }, evidenceCurrent: { candidate in
+            library: PhotosCleanupLibrary(), remote: client, isCurrent: { permitted() }, canCommit: permitted, evidenceCurrent: { candidate in
                 guard client.context.isActive, let entry = await index.entry(for: candidate.asset.localIdentifier) else { return false }
                 return entry.hasSameResources(as: candidate.source) && entry.verificationRevision == candidate.source.verificationRevision
             })

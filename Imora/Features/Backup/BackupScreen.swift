@@ -296,6 +296,17 @@ struct BackupScreen: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("backup-library-count")
+                    if backup.isConnectionOffline {
+                        if let observed = status.lastSuccessfulCloudSync {
+                            Text("Last successful cloud sync: \(observed.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("backup-history-as-of")
+                        } else {
+                            Text("Last successful cloud sync time is unknown.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("backup-history-as-of-unknown")
+                        }
+                    }
                     LabeledContent("Pending Backup", value: status.pendingMedia.text)
                     if status.cloudDeleted > 0 {
                         LabeledContent("Deleted in Cloud", value: status.cloudDeletedMedia.text)

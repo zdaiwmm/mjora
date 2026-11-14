@@ -122,6 +122,8 @@ actor BackupIndex {
 
     private nonisolated let evidenceEpoch = Mutex<UInt64>(0)
     nonisolated var evidenceVersion: UInt64 { evidenceEpoch.withLock { $0 } }
+    /// Known events revoke in-flight PhotoKit authority before any actor/SQLite work.
+    nonisolated func revokeCleanupAuthority() { evidenceEpoch.withLock { $0 &+= 1 } }
 
     private var fileURL: URL
     private let usesAccountFiles: Bool

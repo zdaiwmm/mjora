@@ -17,35 +17,37 @@ final class BackupReconcileCoordinator {
     private let reconcile: @MainActor (BackupReconcileRequest) async -> Void
     private var pending = BackupReconcileRequest()
     private var worker: Task<Void, Never>?
-    private var isRunning = false
+    private var lastGenerations: [ReconcileReason: UUID] = [:]
     private var isShutDown = false
 
     init(reconcile: @escaping @MainActor (BackupReconcileRequest) async -> Void) {
         self.reconcile = reconcile
     }
 
-    func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = []) {
-        guard !isShutDown else { return }
-        // A routine wake already covered by the running catch-up is redundant.
-        // Real changes and explicit full checks always survive that boundary.
-        if isRunning, localIDs.isEmpty, remoteIDs.isEmpty,
-           reason == .foreground || reason == .reconnect || reason == .recovery { return }
+    @discardableResult
+    func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = [], generation: UUID? = nil) -> Bool {
+        guard !isShutDown else { return false }
+        if let generation {
+            guard lastGenerations[reason] != generation else { return false }
+            lastGenerations[reason] = generation
+        }
+        // A newer connection may have missed events even while a catch-up is finishing.
+        // Keep one pending round; generation-tagged duplicate callbacks coalesce.
         pending.reasons.insert(reason)
         pending.localIDs.formUnion(localIDs)
         pending.remoteIDs.formUnion(remoteIDs)
-        guard worker == nil else { return }
+        guard worker == nil else { return true }
         worker = Task { [weak self] in
             await Task.yield()
             guard let self else { return }
             while !self.isShutDown, !Task.isCancelled, !self.pending.reasons.isEmpty {
                 let request = self.pending
                 self.pending = BackupReconcileRequest()
-                self.isRunning = true
                 await self.reconcile(request)
-                self.isRunning = false
             }
             self.worker = nil
         }
+        return true
     }
 
     func waitUntilIdle() async { while let worker { await worker.value } }

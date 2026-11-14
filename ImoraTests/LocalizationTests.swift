@@ -40,4 +40,21 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(String(localized: "\(two) photos", bundle: bundle, locale: Locale(identifier: "en")), "2 photos")
         XCTAssertEqual(String(localized: "\(one) videos", bundle: bundle, locale: Locale(identifier: "en")), "1 video")
     }
+    func testRebackupAndHistoricalAgeCopyExistsInEnglishAndChinese() throws {
+        let message = "This photo was deleted in the cloud. Back Up Again restores its cloud copy from trash when available, or uploads a new copy if it was permanently deleted. The original stays on this device."
+        for language in ["en", "zh-Hans"] {
+            let bundle = try languageBundle(language)
+            let translated = bundle.localizedString(forKey: message, value: nil, table: nil)
+            let unknown = bundle.localizedString(forKey: "Last successful cloud sync time is unknown.", value: nil, table: nil)
+            if language == "zh-Hans" {
+                XCTAssertNotEqual(translated, message)
+                XCTAssertTrue(translated.contains("恢复"))
+                XCTAssertNotEqual(unknown, "Last successful cloud sync time is unknown.")
+            } else {
+                XCTAssertTrue(translated.contains("restores"))
+                XCTAssertTrue(translated.contains("permanently deleted"))
+            }
+        }
+    }
+
 }
