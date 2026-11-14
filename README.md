@@ -6,7 +6,7 @@ This modified version adds Simplified Chinese, immutable account/request boundar
 
 The repository starts from a reviewed publication snapshot. Local implementation/audit history containing private server settings is not published. The app's display name and original upstream notices are retained.
 
-Latest local validation: **223 tests, 222 passed, 1 physical-device check skipped, 0 failures**, including server-removal protection, reconnect membership refresh, pinned TLS LAN routing, real multipart upload and receipt replay, background continuation policy, local Immich 3.4.1 integration, and English/Chinese UI flows with repeated viewer return checks. See [remote-removal validation](docs/validation/2026-11-14-remote-removal-validation.md), [background investigation](docs/validation/2026-11-14-background-runtime-validation.md), and [publication notes](PUBLICATION.md). Physical background stability and the reported device-specific viewer failure remain unresolved.
+Latest local validation: **223 tests, 222 passed, 1 physical-device check skipped, 0 failures**, including server-removal protection, reconnect membership refresh, pinned TLS LAN routing, real multipart upload and receipt replay, background continuation policy, local Immich 3.4.1 integration, and English/Chinese UI flows with repeated viewer return checks. See [remote-removal validation](docs/validation/2026-11-14-remote-removal-validation.md), [background investigation](docs/validation/2026-11-14-background-runtime-validation.md), and [publication notes](PUBLICATION.md). Physical background stability remains unresolved. The separately reported fullscreen-return interaction issue was clarified as PC Web behavior and requires validation in the server repository.
 
 ## Build and test
 

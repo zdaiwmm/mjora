@@ -13,9 +13,9 @@ A real loopback URLSession test also observed the multipart POST reaching its li
 
 ## Viewer investigation
 
-The reported physical-device interaction failure has not been reproduced. No speculative production viewer change is included. UIKit lifecycle tests open, close and open a different asset, including dismissal during the opening transition. Both language UI flows additionally exercise ordinary close, zoom followed by revealing the toolbar and close, downward dismissal, then further asset taps. They assert the old close button disappears and the next tile is hittable, rather than accepting the still-mounted background grid as evidence of dismissal.
+The user clarified that the reported fullscreen-return interaction failure is in the **PC Web photos page**, using the upper-left back action. The iOS checks below do not validate that issue, which must be investigated in the server web source. No production iOS viewer behavior change or additional viewer tracing is included. UIKit lifecycle tests open, close and open a different asset, including dismissal during the opening transition. Both language UI flows additionally exercise ordinary close, zoom followed by revealing the toolbar and close, downward dismissal, then further asset taps. They assert the old close button disappears and the next tile is hittable, rather than accepting the still-mounted background grid as evidence of dismissal.
 
-An initial zoom test tried to press the close button while zoom had intentionally hidden the toolbar. Its failure was a test interaction error; revealing the toolbar exercises the supported return path. Context-menu-specific and physical-device behavior remain separate from these results.
+An initial zoom test tried to press the close button while zoom had intentionally hidden the toolbar. Its failure was a test interaction error; revealing the toolbar exercises the supported iOS return path. These results make no claim about the PC Web issue.
 
 ## Physical limits and next observation
 
