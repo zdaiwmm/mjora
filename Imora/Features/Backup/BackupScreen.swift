@@ -399,6 +399,9 @@ struct BackupScreen: View {
     }
 
     private func statusText(_ backup: BackupManager) -> String {
+        if backup.requiresExplicitResume {
+            return String(localized: "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.")
+        }
         // the run itself just goes quiet on a metered connection, so the
         // reason has to be said out loud or nothing explains the silence.
         if let message = backup.syncHoldMessage {

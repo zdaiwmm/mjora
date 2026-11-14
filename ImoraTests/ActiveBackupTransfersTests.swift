@@ -3,6 +3,41 @@ import Synchronization
 @testable import Imora
 
 final class ActiveBackupTransfersTests: XCTestCase {
+    func testSmallMeasuredPreparationAndUploadChangesAreReportedWithoutWaitingForOnePercent() throws {
+        let events = Mutex<[BackupTransferEvent]>([])
+        let time = Mutex<TimeInterval>(10)
+        let reporter = BackupTransferProgressReporter(clock: { time.withLock { $0 } }) { event in events.withLock { $0.append(event) } }
+        let component = reporter.component()
+        let resource = UUID()
+        component.resourceProgress(.init(resourceID: resource, filename: "synthetic.mov", stage: .preparing, fraction: nil))
+        component.resourceProgress(.init(resourceID: resource, filename: "synthetic.mov", stage: .preparing, fraction: 0.4))
+        time.withLock { $0 += 0.55 }
+        component.resourceProgress(.init(resourceID: resource, filename: "synthetic.mov", stage: .preparing, fraction: 0.400001))
+        XCTAssertEqual(try XCTUnwrap(events.withLock { $0.last?.fraction }), 0.400001)
+        component.uploading()
+        component.uploadProgress(0.5)
+        time.withLock { $0 += 0.55 }
+        component.uploadProgress(0.500001)
+        XCTAssertEqual(try XCTUnwrap(events.withLock { $0.last?.fraction }), 0.500001)
+    }
+
+    func testMeasuredProgressIsCoalescedByTimeAndFinalFractionIsAlwaysEmitted() throws {
+        let events = Mutex<[BackupTransferEvent]>([])
+        let time = Mutex<TimeInterval>(10)
+        let reporter = BackupTransferProgressReporter(clock: { time.withLock { $0 } }) { event in events.withLock { $0.append(event) } }
+        let component = reporter.component()
+        component.uploading()
+        component.uploadProgress(0.2)
+        let initialCount = events.withLock { $0.count }
+        for index in 1...100 { component.uploadProgress(0.2 + Double(index) / 100_000) }
+        XCTAssertEqual(events.withLock { $0.count }, initialCount)
+        time.withLock { $0 += 0.5 }
+        component.uploadProgress(0.201001)
+        XCTAssertEqual(try XCTUnwrap(events.withLock { $0.last?.fraction }), 0.201001)
+        component.uploadProgress(1)
+        XCTAssertEqual(events.withLock { $0.last?.fraction }, 1)
+    }
+
     func testPreparationHasNoInventedPercentageAndKeepsOriginalFilename() throws {
         var transfers = ActiveBackupTransfers()
         let attempt = transfers.begin(localIdentifier: "video")

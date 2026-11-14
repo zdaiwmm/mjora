@@ -160,6 +160,7 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
         var fraction: Double?
         var meter = UploadTransferMeter()
         var lastMeterEmission: TimeInterval?
+        var lastFractionEmission: TimeInterval?
         mutating func event() -> BackupTransferEvent {
             sequence += 1
             return BackupTransferEvent(sequence: sequence, filename: filename, stage: stage, fraction: fraction,
@@ -168,13 +169,19 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
     }
     private let state = Mutex(State())
     private let onEvent: @Sendable (BackupTransferEvent) -> Void
-    init(_ onEvent: @escaping @Sendable (BackupTransferEvent) -> Void) { self.onEvent = onEvent }
+    private let clock: @Sendable () -> TimeInterval
+    init(clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         _ onEvent: @escaping @Sendable (BackupTransferEvent) -> Void) {
+        self.clock = clock
+        self.onEvent = onEvent
+    }
 
     func component() -> Component {
         let id = UUID()
         let event = state.withLock { value in
             value.component = id; value.resource = nil; value.stage = .preparing; value.fraction = nil
             value.meter = UploadTransferMeter(); value.lastMeterEmission = nil
+            value.lastFractionEmission = nil
             return value.event()
         }
         onEvent(event)
@@ -186,6 +193,7 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
             value.component = nil; value.resource = nil; value.stage = .verifying; value.fraction = nil
             if let filename { value.filename = filename }
             value.meter = UploadTransferMeter(); value.lastMeterEmission = nil
+            value.lastFractionEmission = nil
             return value.event()
         }
         onEvent(event)
@@ -210,9 +218,13 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
             default: return nil
             }
             let fraction = BackupTransferEvent.normalized(progress.fraction)
-            if value.filename == progress.filename, value.stage == progress.stage,
-               Self.unchanged(value.fraction, fraction) { return nil }
+            let boundary = value.filename != progress.filename || value.stage != progress.stage
+            guard boundary || value.fraction != fraction else { return nil }
             value.filename = progress.filename; value.stage = progress.stage; value.fraction = fraction
+            let now = clock()
+            guard boundary || fraction == nil || fraction == 1
+                    || value.lastFractionEmission.map({ now - $0 >= 0.5 }) ?? true else { return nil }
+            value.lastFractionEmission = now
             return value.event()
         }
         if let event { onEvent(event) }
@@ -222,6 +234,7 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
         let event = state.withLock { value -> BackupTransferEvent? in
             guard value.component == component, value.stage != .uploading else { return nil }
             value.stage = .uploading; value.fraction = nil
+            value.lastFractionEmission = nil
             return value.event()
         }
         if let event { onEvent(event) }
@@ -231,8 +244,13 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
         guard let fraction = BackupTransferEvent.normalized(fraction) else { return }
         let event = state.withLock { value -> BackupTransferEvent? in
             guard value.component == component else { return nil }
-            if value.stage == .uploading, Self.unchanged(value.fraction, fraction) { return nil }
+            let boundary = value.stage != .uploading
+            guard boundary || value.fraction != fraction else { return nil }
             value.stage = .uploading; value.fraction = fraction
+            let now = clock()
+            guard boundary || fraction == 1
+                    || value.lastFractionEmission.map({ now - $0 >= 0.5 }) ?? true else { return nil }
+            value.lastFractionEmission = now
             return value.event()
         }
         if let event { onEvent(event) }
@@ -251,11 +269,4 @@ nonisolated final class BackupTransferProgressReporter: Sendable {
         if let event { onEvent(event) }
     }
 
-    private static func unchanged(_ old: Double?, _ new: Double?) -> Bool {
-        switch (old, new) {
-        case (nil, nil): true
-        case (.some(let old), .some(let new)): abs(old - new) < 0.01 && new != 1
-        default: false
-        }
-    }
 }

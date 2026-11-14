@@ -4,10 +4,11 @@ import Foundation
 /// original units matters: reducing a large transfer to 100 percentage points
 /// can leave the scheduler seeing no movement for long enough to expire it.
 nonisolated struct ContinuedProgress: Equatable, Sendable {
-    private static let fractionScale: Int64 = 1_000_000
+    private static let fractionScale: Int64 = 1_000_000_000_000
 
     let completedUnitCount: Int64
     let totalUnitCount: Int64
+    var fractionCompleted: Double { Double(completedUnitCount) / Double(totalUnitCount) }
 
     init(completedUnitCount: Int64, totalUnitCount: Int64) {
         let total = max(1, totalUnitCount)
@@ -32,5 +33,12 @@ nonisolated struct ContinuedProgress: Equatable, Sendable {
         }
         let units = min(Double(total), Double(max(0, completed)) + inFlight)
         return ContinuedProgress(fraction: 0.2 * units / Double(total))
+    }
+
+    /// Server checks own the next tenth. Only completed responses and verified
+    /// or classified assets advance this part; waiting never invents progress.
+    static func checking(completed: Int, total: Int) -> ContinuedProgress {
+        let fraction = total > 0 ? min(1, max(0, Double(completed) / Double(total))) : 0
+        return ContinuedProgress(fraction: 0.2 + 0.1 * fraction)
     }
 }

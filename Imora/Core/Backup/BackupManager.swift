@@ -107,6 +107,10 @@ final class BackupManager {
     private(set) var phase: BackupPhase = .idle {
         didSet { onContinuedProgress?() }
     }
+    @ObservationIgnored private var measuredUploadFractions: [String: Double] = [:]
+    @ObservationIgnored private var checkingCompleted = 0
+    @ObservationIgnored private var checkingTotal = 0
+    @ObservationIgnored private var diagnosticFailure: BackgroundTaskDiagnostics.Failure?
     private(set) var summary = BackupSummary()
     /// first per-asset failure of the current run, for display next to counts.
     private(set) var lastFailure: String?
@@ -1183,12 +1187,14 @@ final class BackupManager {
 
     private func noteUploadProgress(_ localId: String, _ fraction: Double) {
         guard case .uploading(let current) = uploadStates[localId] else { return }
+        guard fraction.isFinite else { return }
+        if backlogUploadIDs.contains(localId) {
+            measuredUploadFractions[localId] = min(1, max(0, fraction))
+        }
+        onContinuedProgress?()
         // quantized so progress redraws stay coarse.
         guard fraction >= 1 || fraction - current >= 0.02 else { return }
         uploadStates[localId] = .uploading(min(fraction, 1))
-        // a single large video can hold the phase still for minutes, and a
-        // continued-processing task that stops reporting gets expired.
-        onContinuedProgress?()
     }
 
     /// how far the current run has come, 0...1, counting the bytes already sent
@@ -1199,20 +1205,20 @@ final class BackupManager {
         case .idle, .scanning, .cancelled:
             0
         case .hashing(let done, let total):
-            Double(continuedPreparationProgress(completed: done, total: total).completedUnitCount) / 1_000_000
+            continuedPreparationProgress(completed: done, total: total).fractionCompleted
         case .checking:
-            0.2
+            ContinuedProgress.checking(completed: checkingCompleted, total: checkingTotal).fractionCompleted
         case .uploading(let done, let total):
-            total > 0 ? 0.2 + 0.8 * min(Double(done) + inFlightFraction, Double(total)) / Double(total) : 0.2
+            total > 0 ? 0.3 + 0.7 * min(Double(done) + inFlightFraction, Double(total)) / Double(total) : 0.3
         case .done, .error:
             1
         }
     }
 
     private var inFlightFraction: Double {
-        uploadStates.reduce(0) { total, item in
-            if backlogUploadIDs.contains(item.key), case .uploading(let fraction) = item.value {
-                return total + fraction
+        measuredUploadFractions.reduce(0) { total, item in
+            if backlogUploadIDs.contains(item.key), case .uploading = uploadStates[item.key] {
+                return total + item.value
             }
             return total
         }
@@ -1236,6 +1242,7 @@ final class BackupManager {
         var reportsOutcome = true
         summary = BackupSummary()
         lastFailure = nil
+        diagnosticFailure = nil
         phase = .scanning
         do {
             if uploadsAllowed {
@@ -1340,6 +1347,16 @@ final class BackupManager {
             }
         } catch {
             activeBacklogCheckpoint = nil
+            if !(error is CancellationError), !Task.isCancelled {
+                let failure = error as NSError
+                let category: BackgroundTaskDiagnostics.FailureCategory = switch failure.domain {
+                case NSURLErrorDomain: .urlSession
+                case PHPhotosErrorDomain: .photoKit
+                case NSCocoaErrorDomain: .cocoa
+                default: .other
+                }
+                diagnosticFailure = .init(category: category, code: failure.code)
+            }
             recentRescanRequested = false
             recentTask?.cancel()
             await finishRecentBackups()
@@ -1535,7 +1552,11 @@ final class BackupManager {
     /// asks the server about every hashed component we cannot prove yet, then
     /// returns the assets that still need uploads.
     private func checkPhase(_ scanned: [DeviceAsset], updatesPhase: Bool = true) async throws -> [DeviceAsset] {
-        if updatesPhase { phase = .checking }
+        if updatesPhase {
+            checkingCompleted = 0
+            checkingTotal = 0
+            phase = .checking
+        }
         guard !isShutDown, client.context.isActive else { throw BackupVerificationError.stale }
         await index.invalidateProofs(localIds: Set(scanned.map(\.localIdentifier)))
         let sources = await index.allEntries()
@@ -1549,10 +1570,17 @@ final class BackupManager {
                 items.append(BulkUploadCheckItem(id: asset.localIdentifier + Self.motionSuffix, checksum: checksum))
             }
         }
+        if updatesPhase { checkingTotal = items.count + scanned.count }
+        func noteCheckedWork() {
+            guard updatesPhase else { return }
+            checkingCompleted += 1
+            onContinuedProgress?()
+        }
         let results = try await Self.bulkUploadCheck(items, client: client)
         let rows = try BackupVerifier.validatedResults(items: items, results: results)
         guard !isShutDown, client.context.isActive else { throw BackupVerificationError.stale }
         for result in rows.values {
+            defer { noteCheckedWork() }
             try Task.checkCancellation()
             let motion = result.id.hasSuffix(Self.motionSuffix)
             let localID = motion ? String(result.id.dropLast(Self.motionSuffix.count)) : result.id
@@ -1564,13 +1592,17 @@ final class BackupManager {
         var queue: [DeviceAsset] = []
         var verify: [(DeviceAsset, BackupEntry)] = []
         for asset in scanned {
-            guard let entry = entries[asset.localIdentifier], entry.matches(modificationDate: asset.modificationDate) else { continue }
+            guard let entry = entries[asset.localIdentifier], entry.matches(modificationDate: asset.modificationDate) else {
+                noteCheckedWork()
+                continue
+            }
             if entry.unsupported { summary.unsupportedMedia.add(asset) }
             else if entry.verificationState == .trashed { summary.failedMedia.add(asset) }
             else if entry.primaryRemoteId == nil || (entry.isLivePhoto && entry.motionRemoteId == nil) {
                 if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes) { summary.skippedMedia.add(asset) }
                 else { queue.append(asset) }
-            } else { verify.append((asset, entry)) }
+            } else { verify.append((asset, entry)); continue }
+            noteCheckedWork()
         }
         let client = client, index = index, account = accountKey
         var attempts: [String: UUID] = [:]
@@ -1598,6 +1630,7 @@ final class BackupManager {
             }
             for _ in 0..<min(Self.verificationWorkers, verify.count) { addNext() }
             while let (asset, source, error) = await group.next() {
+                defer { noteCheckedWork() }
                 if let attempt = attempts.removeValue(forKey: asset.localIdentifier) {
                     activeTransfers.finish(localIdentifier: asset.localIdentifier, attempt: attempt)
                 }
@@ -1679,6 +1712,7 @@ final class BackupManager {
         var attempts: [String: UUID] = [:]
         defer {
             backlogUploadIDs = []
+            measuredUploadFractions = [:]
             for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
         }
         let client = client
@@ -1707,6 +1741,7 @@ final class BackupManager {
                 let asset = queue[next]
                 next += 1
                 uploadStates[asset.localIdentifier] = .uploading(0)
+                measuredUploadFractions[asset.localIdentifier] = 0
                 let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
                 attempts[asset.localIdentifier] = transfer.attempt
                 let lifetime = runLifetime
@@ -1728,6 +1763,8 @@ final class BackupManager {
             for _ in 0..<Self.uploadWorkers { addNext() }
             while let (asset, outcome) = await group.next() {
                 let localId = asset.localIdentifier
+                // Keep the per-callback system snapshot bounded to live workers.
+                measuredUploadFractions[localId] = nil
                 if let attempt = attempts.removeValue(forKey: localId) {
                     activeTransfers.finish(localIdentifier: localId, attempt: attempt)
                 }
@@ -2417,6 +2454,19 @@ final class BackupManager {
 
 extension BackupManager: ContinuedWorkload {
     var continuedOwnerID: UUID { client.context.id }
+    var continuedDiagnosticFailure: BackgroundTaskDiagnostics.Failure? { diagnosticFailure }
+    var continuedDiagnosticPhase: BackgroundTaskDiagnostics.Phase {
+        switch phase {
+        case .idle: .idle
+        case .scanning: .scanning
+        case .hashing: .hashing
+        case .checking: .checking
+        case .uploading: .uploading
+        case .done: .done
+        case .error: .error
+        case .cancelled: .cancelled
+        }
+    }
 
     var continuedTitle: String {
         switch phase {
@@ -2434,7 +2484,10 @@ extension BackupManager: ContinuedWorkload {
     }
 
     var continuedSubtitle: String {
-        switch phase {
+        if requiresExplicitResume {
+            return String(localized: "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.")
+        }
+        return switch phase {
         case .idle, .scanning: String(localized: "Scanning library...")
         case .hashing: String(localized: "Indexing \(phaseMediaCompleted.progressText(of: phaseMediaTotal))")
         case .checking: String(localized: "Checking with your server...")
