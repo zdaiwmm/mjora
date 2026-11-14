@@ -17,9 +17,19 @@ final class LocalizationFlowTests: XCTestCase {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
+    private func dismissSyntheticPasswordPrompt(_ app: XCUIApplication) {
+        // The entitlement-signed simulator can offer to save the synthetic login.
+        // Decline this system prompt; it must not intercept settings gestures.
+        let later = app.buttons.matching(NSPredicate(format: "label IN %@", ["以后", "Not Now", "Later"])).firstMatch
+        if later.exists && later.isHittable { later.tap() }
+    }
     private func tap(_ app: XCUIApplication, _ id: String) {
+        dismissSyntheticPasswordPrompt(app)
         let element = app.descendants(matching: .any)[id].firstMatch
-        for _ in 0..<5 where !element.isHittable { app.swipeUp() }
+        for _ in 0..<5 where !element.isHittable {
+            dismissSyntheticPasswordPrompt(app)
+            app.swipeUp()
+        }
         XCTAssertTrue(element.waitForExistence(timeout: 10), id)
         element.tap()
     }
@@ -158,6 +168,10 @@ final class LocalizationFlowTests: XCTestCase {
             app.buttons["auth-sign-in"].tap()
         }
         XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
+        dismissSyntheticPasswordPrompt(app)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25), "The entitlement-signed fixture session must survive a cold launch")
         app.buttons["profile-avatar"].tap()
         tap(app, "settings-app-updates")
         let check = app.buttons["app-updates-check"]
