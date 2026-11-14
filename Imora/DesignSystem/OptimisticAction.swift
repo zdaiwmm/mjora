@@ -35,11 +35,14 @@ enum OptimisticAction {
 }
 
 struct ErrorToast: Identifiable, Equatable {
+    enum Style { case error, information }
+
     let id = UUID()
     let message: String
+    var style: Style = .error
 }
 
-/// App-wide post-action failure feedback. A separate pass-through window keeps
+/// App-wide post-action feedback. A separate pass-through window keeps
 /// the banner above sheets and full-screen covers without interrupting input.
 @Observable
 @MainActor
@@ -49,14 +52,14 @@ final class ErrorToastCenter {
     private(set) var current: ErrorToast?
     private var pending: [ErrorToast] = []
 
-    func show(_ message: String) {
+    func show(_ message: String, style: ErrorToast.Style = .error) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
-        guard current?.message != normalized,
-              !pending.contains(where: { $0.message == normalized })
+        guard !(current?.message == normalized && current?.style == style),
+              !pending.contains(where: { $0.message == normalized && $0.style == style })
         else { return }
 
-        let toast = ErrorToast(message: normalized)
+        let toast = ErrorToast(message: normalized, style: style)
         if current == nil {
             current = toast
         } else {
@@ -104,7 +107,7 @@ private struct ErrorToastHost: View {
         ZStack(alignment: .top) {
             Color.clear
             if let toast = center.current {
-                ErrorToastBanner(message: toast.message)
+                ErrorToastBanner(message: toast.message, style: toast.style)
                     .id(toast.id)
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
@@ -130,12 +133,13 @@ private struct ErrorToastHost: View {
 
 private struct ErrorToastBanner: View {
     let message: String
+    let style: ErrorToast.Style
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.circle.fill")
+            Image(systemName: style == .error ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(.red)
+                .foregroundStyle(style == .error ? .red : .green)
                 .accessibilityHidden(true)
             Text(message)
                 .font(.subheadline.weight(.medium))
@@ -148,13 +152,13 @@ private struct ErrorToastBanner: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(.red.opacity(0.18), lineWidth: 0.5)
+                .stroke((style == .error ? Color.red : Color.green).opacity(0.18), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.12), radius: 14, y: 6)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Error")
+        .accessibilityLabel(style == .error ? String(localized: "Error") : String(localized: "Information"))
         .accessibilityValue(message)
-        .accessibilityIdentifier("error-toast")
+        .accessibilityIdentifier(style == .error ? "error-toast" : "information-toast")
     }
 }
 

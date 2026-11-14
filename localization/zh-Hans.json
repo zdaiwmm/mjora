@@ -1691,5 +1691,6 @@
   "Install version %@ (build %@) using your Mac? Keep your Mac awake and logged in, and this phone reachable. Apple sign-in or unlocking the phone may be required.": "要通过 Mac 安装版本 %1$@（构建号 %2$@）吗？请保持 Mac 唤醒并已登录，同时确保此手机可以连接。可能需要登录 Apple 账户或解锁手机。",
   "Couldn't check for updates. Make sure your Mac is awake and reachable, then try again.": "无法检查更新。请确保 Mac 已唤醒且可以连接，然后重试。",
   "The prepared update changed or is no longer available. Check for updates again.": "已准备的更新发生了变化或已不可用。请重新检查更新。",
-  "Couldn't confirm the installation request. Check the update status before trying again.": "无法确认安装请求。请先检查更新状态，然后重试。"
+  "Couldn't confirm the installation request. Check the update status before trying again.": "无法确认安装请求。请先检查更新状态，然后重试。",
+  "You're up to date.": "当前已是最新版本"
 }

@@ -29077,6 +29077,23 @@
       },
       "comment": "Imora/Features/Spaces/SpacesScreen.swift:273"
     },
+    "You're up to date.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You're up to date."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前已是最新版本"
+          }
+        }
+      }
+    },
     "Your %@ largest files take up %@.": {
       "extractionState": "manual",
       "localizations": {

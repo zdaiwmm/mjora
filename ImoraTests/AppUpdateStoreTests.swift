@@ -4,6 +4,97 @@ import XCTest
 
 @MainActor
 final class AppUpdateStoreTests: XCTestCase {
+    func testManualCurrentVersionCheckRequestsFeedbackOnEveryTap() async throws {
+        let service = UpdateServiceFixture(status: try status())
+        for (version, build) in [("1.0.1", "2"), ("1.0.1", "3"), ("1.1.0", "1")] {
+            let store = AppUpdateStore(service: service, installedVersion: version, installedBuild: build)
+            for _ in 0..<2 {
+                let result = await store.checkForUpdates()
+                XCTAssertEqual(result, true, "A successful explicit check must acknowledge the current version")
+                XCTAssertNil(store.availableRelease)
+            }
+        }
+    }
+
+    func testAutomaticCurrentVersionCheckDoesNotRequestFeedback() async throws {
+        let service = UpdateServiceFixture(status: try status())
+        let store = AppUpdateStore(service: service, installedVersion: "1.0.1", installedBuild: "2")
+        let result = await store.checkForUpdates(automatically: true)
+        XCTAssertEqual(result, false)
+    }
+
+    func testNewerPreparedVersionDoesNotRequestCurrentVersionFeedback() async throws {
+        let service = UpdateServiceFixture(status: try status())
+        let store = AppUpdateStore(service: service, installedVersion: "1.0", installedBuild: "1")
+        let result = await store.checkForUpdates()
+        XCTAssertEqual(result, false)
+        XCTAssertNotNil(store.availableRelease)
+    }
+
+    func testFailedCheckDoesNotReusePreviousCurrentVersionResult() async throws {
+        let service = UpdateServiceFixture(status: try status())
+        let store = AppUpdateStore(service: service, installedVersion: "1.0.1", installedBuild: "2")
+        _ = await store.checkForUpdates()
+        await service.setFailure(true)
+        let result = await store.checkForUpdates()
+        XCTAssertEqual(result, false)
+        XCTAssertNotNil(store.failureMessage)
+        XCTAssertNil(store.status)
+    }
+
+    func testBusyFailedAndInvalidInstallationsDoNotRequestCurrentVersionFeedback() async throws {
+        for installation in [
+            AppUpdateInstallation(state: .queued, releaseId: "release-2", messageCode: nil),
+            .init(state: .installing, releaseId: "release-2", messageCode: nil),
+            .init(state: .failed, releaseId: "release-2", messageCode: .invalidPackage),
+            .init(state: .failed, releaseId: "release-2", messageCode: .needsPhone),
+            .init(state: .idle, releaseId: nil, messageCode: .busy),
+            .init(state: .succeeded, releaseId: nil, messageCode: nil)
+        ] {
+            let value = try status()
+            let service = UpdateServiceFixture(status: AppUpdateStatus(schemaVersion: 1, hostId: value.hostId,
+                latest: value.latest, installation: installation))
+            let store = AppUpdateStore(service: service, installedVersion: "1.0.1", installedBuild: "2")
+            let result = await store.checkForUpdates()
+            XCTAssertEqual(result, false, "\(installation)")
+        }
+    }
+
+    func testMissingAndInvalidMetadataDoNotRequestCurrentVersionFeedback() async throws {
+        let invalidReleases: [AppUpdateRelease?] = [nil,
+            .init(releaseId: "release-2", version: "latest", build: "2", notes: ""),
+            .init(releaseId: "../release", version: "1.0.1", build: "2", notes: "")]
+        for release in invalidReleases {
+            let service = UpdateServiceFixture(status: .init(schemaVersion: 1, hostId: "fixture-mac",
+                latest: release, installation: nil))
+            let store = AppUpdateStore(service: service, installedVersion: "1.0.1", installedBuild: "2")
+            let result = await store.checkForUpdates()
+            XCTAssertEqual(result, false)
+        }
+        let service = UpdateServiceFixture(status: try status())
+        let store = AppUpdateStore(service: service, installedVersion: "unknown", installedBuild: "2")
+        let result = await store.checkForUpdates()
+        XCTAssertEqual(result, false)
+    }
+
+    func testCompletedInstallationRequiresInstalledVersionToBeCurrent() async throws {
+        let value = try status()
+        let service = UpdateServiceFixture(status: .init(schemaVersion: 1, hostId: value.hostId,
+            latest: value.latest, installation: .init(state: .succeeded, releaseId: "release-2", messageCode: nil)))
+        let old = AppUpdateStore(service: service, installedVersion: "1.0", installedBuild: "1")
+        let oldResult = await old.checkForUpdates()
+        XCTAssertEqual(oldResult, false)
+        let current = AppUpdateStore(service: service, installedVersion: "1.0.1", installedBuild: "2")
+        let currentResult = await current.checkForUpdates()
+        XCTAssertEqual(currentResult, true)
+    }
+
+    func testUnconfiguredCheckDoesNotRequestCurrentVersionFeedback() async {
+        let store = AppUpdateStore(service: nil, installedVersion: "1.0.1", installedBuild: "2")
+        let result = await store.checkForUpdates()
+        XCTAssertEqual(result, false)
+    }
+
     func testUnconfiguredSourceBuildHasNoInstallOffer() async {
         let store = AppUpdateStore(service: nil, installedVersion: "1.0", installedBuild: "1")
         await store.checkForUpdates()

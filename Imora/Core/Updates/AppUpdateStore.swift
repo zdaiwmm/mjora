@@ -54,10 +54,14 @@ final class AppUpdateStore {
 
     /// Automatic failures only update the About screen; they never interrupt
     /// the foreground with an error. Manual checks always bypass the cooldown.
-    func checkForUpdates(automatically: Bool = false, now: Date = Date()) async {
-        guard let service, !isChecking, !isRequestingInstallation else { return }
+    /// Returns true only when a completed manual check can confirm that this
+    /// installed version is current. Callers may use it for tap feedback;
+    /// unavailable offers (for example an installation in progress) aren't proof.
+    @discardableResult
+    func checkForUpdates(automatically: Bool = false, now: Date = Date()) async -> Bool {
+        guard let service, !isChecking, !isRequestingInstallation else { return false }
         if automatically {
-            if let lastAutomaticCheck, now.timeIntervalSince(lastAutomaticCheck) < 900 { return }
+            if let lastAutomaticCheck, now.timeIntervalSince(lastAutomaticCheck) < 900 { return false }
             lastAutomaticCheck = now
         }
         isChecking = true
@@ -81,12 +85,23 @@ final class AppUpdateStore {
             } else if availableRelease == nil {
                 alertRelease = nil
             }
+            guard !automatically, checked.schemaVersion == 1,
+                  let release = checked.latest, release.isValid,
+                  let installed = AppUpdateVersion(version: installedVersion, build: installedBuild),
+                  let prepared = AppUpdateVersion(version: release.version, build: release.build),
+                  installed >= prepared else { return false }
+            if let installation = checked.installation {
+                guard installation.isValid, installation.messageCode == nil,
+                      installation.state == .idle || installation.state == .succeeded else { return false }
+            }
+            return true
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             status = nil
             alertRelease = nil
             hasChecked = true
             failureMessage = String(localized: "Couldn't check for updates. Make sure your Mac is awake and reachable, then try again.")
+            return false
         }
     }
 

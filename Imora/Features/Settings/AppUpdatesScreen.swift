@@ -65,7 +65,11 @@ struct AppUpdatesScreen: View {
                     }
 
                     Button {
-                        Task { await updates.checkForUpdates() }
+                        Task {
+                            if await updates.checkForUpdates() {
+                                ErrorToastCenter.shared.show(String(localized: "You're up to date."), style: .information)
+                            }
+                        }
                     } label: {
                         if updates.isChecking {
                             HStack {
