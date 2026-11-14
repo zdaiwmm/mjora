@@ -832,6 +832,7 @@ struct AssetViewerFittedMedia<Content: View>: View {
 }
 
 struct AssetViewerScreen: View {
+    @State private var pendingRebackup: RebackupConfirmation?
     /// pages either side of the current one kept warm. the pager mounts a page
     /// as it scrolls in, which on a quick swipe leaves no time for a download,
     /// so the neighbours are fetched while the current one is being looked at.
@@ -1230,6 +1231,17 @@ struct AssetViewerScreen: View {
     private var core: some View {
         AnyView(viewerSurface)
             .deviceCopyRemovalPresentation(deviceCopyRemoval)
+            .confirmationDialog("Back Up Again?", isPresented: Binding(
+                get: { pendingRebackup != nil }, set: { if !$0 { pendingRebackup = nil } }
+            ), titleVisibility: .visible, presenting: pendingRebackup) { confirmation in
+                Button("Back Up Again") {
+                    let backup = session.backup
+                    Task { await confirmRebackup(confirmation, backup: backup) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This photo was deleted in the cloud. Back Up Again restores its cloud copy from trash when available, or uploads a new copy if it was permanently deleted. The original stays on this device.")
+            }
             .sheet(isPresented: regularInformationPresented, onDismiss: openPendingInformationDestination) {
                 if let current {
                     AssetInformationSheet(
@@ -3056,7 +3068,19 @@ struct AssetViewerScreen: View {
 
     @ViewBuilder private func backupStatusControl(_ current: Asset) -> some View {
         if let localID = current.localIdentifier {
-            if current.isLocalBackedUp
+            if session.backup?.remoteRemovedLocalIDs.contains(localID) == true {
+                Menu {
+                    Label("Deleted in Cloud", systemImage: "icloud.slash")
+                    Button("Back Up Again…") {
+                        pendingRebackup = session.backup?.rebackupConfirmation(localIdentifier: localID)
+                    }
+                    .accessibilityIdentifier("viewer-rebackup-confirmation")
+                } label: {
+                    Image(systemName: "icloud.slash")
+                }
+                .accessibilityLabel("Deleted in Cloud")
+                .accessibilityIdentifier("viewer-cloud-deleted")
+            } else if current.isLocalBackedUp
                 || session.backup?.hasVerifiedBackup(localIdentifier: localID) == true {
                 Menu {
                     Button {} label: {
@@ -3706,6 +3730,20 @@ struct AssetViewerScreen: View {
             toast = String(localized: "Saved to your photo library")
         } catch {
             ErrorToastCenter.shared.show(String(localized: "Couldn't download this photo"), error: error)
+        }
+    }
+
+    private func confirmRebackup(_ confirmation: RebackupConfirmation, backup: BackupManager?) async {
+        guard let backup else { return }
+        do {
+            let remoteID = try await backup.rebackupAfterConfirmation(confirmation)
+            guard session.backup === backup, current?.localIdentifier == confirmation.localIdentifier else { return }
+            backedUpRemoteID = remoteID
+            assets[currentIndex].isLocalBackedUp = true
+            toast = String(localized: "Backed up")
+        } catch {
+            guard session.backup === backup else { return }
+            ErrorToastCenter.shared.show(String(localized: "Couldn't back up this photo"), error: error)
         }
     }
 

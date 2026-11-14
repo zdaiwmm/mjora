@@ -58,7 +58,8 @@ nonisolated struct DeviceAsset: Codable, Equatable, Sendable {
             createdAt: nil,
             localIdentifier: localIdentifier,
             isLocalBackedUp: backedUp,
-            hasLocalMotion: isLivePhoto
+            hasLocalMotion: isLivePhoto,
+            localImageVersion: modificationDate.map { String($0.timeIntervalSinceReferenceDate.bitPattern) }
         )
     }
 }
@@ -87,37 +88,23 @@ nonisolated enum PhotoLibraryService {
 
     // MARK: - scanning
 
-    /// the last full scan with the library change token it was taken at.
-    /// a launch asks for the scan from several places within a second - the
-    /// reconcile run, the timeline merge, a library change notice - and each
-    /// walk of a large library is hundreds of milliseconds of photokit time
-    /// the grid's own thumbnail requests then queue behind.
-    private struct ScanMemo: @unchecked Sendable {
-        let token: PHPersistentChangeToken
-        let assets: [DeviceAsset]
-    }
-
-    private static let scanMemo = OSAllocatedUnfairLock<ScanMemo?>(initialState: nil)
-
+    /// All backup/timeline consumers share the persistent token scanner. Failure keeps the
+    /// last committed metadata snapshot; callers still enforce the full-access gate.
     @concurrent
     static func scan() async -> [DeviceAsset] {
-        let token = PHPhotoLibrary.shared().currentChangeToken
-        if let memo = scanMemo.withLock({ $0 }), memo.token == token {
-            return memo.assets
+        do {
+            _ = try await LocalLibraryDeltaStore.shared.loadChanges()
+            return try await LocalLibraryDeltaStore.shared.snapshot()
+        } catch {
+            return (try? await LocalLibraryDeltaStore.shared.snapshot()) ?? []
         }
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let result = PHAsset.fetchAssets(with: options)
-        // the enumeration is serial and synchronous without the concurrent
-        // option; the block's sendable signature just cannot say so.
-        nonisolated(unsafe) var assets: [DeviceAsset] = []
-        assets.reserveCapacity(result.count)
-        result.enumerateObjects { asset, _, _ in
-            guard asset.mediaType == .image || asset.mediaType == .video else { return }
-            assets.append(snapshot(of: asset))
-        }
-        scanMemo.withLock { $0 = ScanMemo(token: token, assets: assets) }
-        return assets
+    }
+
+    /// Backup and cleanup must stop on a failed scan, never interpret a cache failure as an empty library.
+    @concurrent
+    static func scanForBackup() async throws -> [DeviceAsset] {
+        _ = try await LocalLibraryDeltaStore.shared.loadChanges()
+        return try await LocalLibraryDeltaStore.shared.snapshot()
     }
 
     @concurrent
@@ -150,6 +137,20 @@ nonisolated enum PhotoLibraryService {
     }
 
     // MARK: - local info
+
+    /// Browsing may use limited access; backup and cleanup keep their full-access gate.
+    @concurrent
+    static func browsableAssets() async -> [DeviceAsset] {
+        if hasFullAccess { return await scan() }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited else { return [] }
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let result = PHAsset.fetchAssets(with: options)
+        return (0..<result.count).compactMap { index in
+            let asset = result.object(at: index)
+            return asset.mediaType == .image || asset.mediaType == .video ? snapshot(of: asset) : nil
+        }
+    }
 
     /// camera fields read from the image file's own metadata.
     private struct CameraMetadata: Sendable {
@@ -633,7 +634,21 @@ nonisolated enum PhotoLibraryService {
 
     /// Fetches and checks the exact approved set again inside Photos' commit
     /// closure. A zero/partial fetch is a changed report, never a success count.
-    static func deleteVerified(_ expected: [DeviceAsset], permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
+    static func protectedAlbumMemberIDs(_ albumIDs: Set<String>) throws -> Set<String> {
+        guard !albumIDs.isEmpty else { return [] }
+        guard hasFullAccess else { throw CleanupVerificationError.permission }
+        let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: Array(albumIDs), options: nil)
+        guard collections.count == albumIDs.count else { throw CleanupVerificationError.changed }
+        var ids: Set<String> = []
+        for index in 0..<collections.count {
+            let assets = PHAsset.fetchAssets(in: collections.object(at: index), options: nil)
+            for assetIndex in 0..<assets.count { ids.insert(assets.object(at: assetIndex).localIdentifier) }
+        }
+        return ids
+    }
+
+    static func deleteVerified(_ expected: [DeviceAsset], retention: CleanupRetentionSnapshot? = nil,
+                               permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
         guard hasFullAccess else { throw CleanupVerificationError.permission }
         guard !expected.isEmpty, Set(expected.map(\.localIdentifier)).count == expected.count else { throw CleanupVerificationError.changed }
         let expectedByID = Dictionary(uniqueKeysWithValues: expected.map { ($0.localIdentifier, $0) })
@@ -643,12 +658,17 @@ nonisolated enum PhotoLibraryService {
             try Task.checkCancellation()
             try await PHPhotoLibrary.shared().performChanges {
                 guard !cancelled.withLock({ $0 }), permitted(), hasFullAccess else { return }
+                let protected: Set<String>
+                do { protected = try protectedAlbumMemberIDs(retention?.policy.protectedAlbumIDs ?? []) }
+                catch { return }
                 let fetched = PHAsset.fetchAssets(withLocalIdentifiers: Array(expectedByID.keys), options: nil)
                 guard fetched.count == expected.count else { return }
                 var ids: [String] = []
                 for index in 0..<fetched.count {
                     let asset = fetched.object(at: index)
                     guard expectedByID[asset.localIdentifier] == snapshot(of: asset) else { return }
+                    if let retention, !retention.reasons(creationDate: asset.creationDate, isFavorite: asset.isFavorite,
+                        protectedAlbumMember: protected.contains(asset.localIdentifier)).isEmpty { return }
                     ids.append(asset.localIdentifier)
                 }
                 guard !cancelled.withLock({ $0 }), permitted() else { return }

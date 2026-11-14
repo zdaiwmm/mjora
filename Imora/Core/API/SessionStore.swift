@@ -60,6 +60,7 @@ final class SessionStore {
 
     private static let serverKey = "imora.serverURL"
     private static let tokenKey = "accessToken"
+    private static let loginSessionKey = "loginSessionKey"
     private static let loginNoticeDefaultsKey = "imora.loginNotice"
     private static let profileImageCacheKeyDefaultsKey = "imora.profileImageCacheKey"
 
@@ -110,6 +111,11 @@ final class SessionStore {
         // re-setting moves tokens from before keychain sharing into the app
         // group access group, and the mirror keeps the extension current.
         KeychainStore.set(token, for: Self.tokenKey)
+        // Migrate an existing credential once; cold launches reuse this key.
+        // Account history remains keyed by server and user, outside this session.
+        if case .missing = KeychainStore.get(Self.loginSessionKey) {
+            KeychainStore.set(UUID().uuidString, for: Self.loginSessionKey)
+        }
         mirrorForShareExtension(apiURL: apiURL)
         let cached = SessionCache.load(host: ServerTrustPolicy(apiURL: apiURL).canonicalRoot)
         features = cached?.features
@@ -128,6 +134,7 @@ final class SessionStore {
         UserDefaults.standard.removeObject(forKey: Self.loginNoticeDefaultsKey)
         UserDefaults.standard.set(apiURL, forKey: Self.serverKey)
         KeychainStore.set(response.accessToken, for: Self.tokenKey)
+        KeychainStore.set(UUID().uuidString, for: Self.loginSessionKey)
         mirrorForShareExtension(apiURL: apiURL, renew: true)
         SessionCache.noteUserId(response.userId)
         let client = ImoraClient(apiURL: apiURL, accessToken: response.accessToken)
@@ -148,6 +155,7 @@ final class SessionStore {
         ImageLoader.shared.configure(client: nil)
         refreshUserRevision &+= 1
         KeychainStore.delete(Self.tokenKey)
+        KeychainStore.delete(Self.loginSessionKey)
         LocalServerRouter.shared.deactivate()
         SessionCache.clear()
         RecentSearches.eraseAll()
@@ -416,6 +424,7 @@ final class SessionStore {
         lockedFolder = LockedFolderSession(client: client)
         ImageLoader.shared.configure(client: client)
         let backup = BackupManager(client: client)
+        if case .value(let key) = KeychainStore.get(Self.loginSessionKey) { backup.loginSessionKey = key }
         backup.userId = user?.id
         self.backup = backup
         let hub = RealtimeHub(client: client)
@@ -424,7 +433,8 @@ final class SessionStore {
             LocalNotifications.shared.deliverBackupFailure(message)
         }
         ContinuedProcessing.backup.workload = backup
-        hub.onBackupReconciliationNeeded = { [weak backup] in backup?.requestRemoteReconciliation() }
+        hub.onBackupReconciliationNeeded = { [weak backup] generation in backup?.requestRemoteReconciliation(generation: generation) }
+        hub.onBackupConnectionGap = { [weak backup] in backup?.noteRemoteConnectionGap() }
         hub.onRemoteBackupChange = { [weak backup] ids, change in backup?.noteRemoteChange(ids, change: change) }
         hub.onRemoteEdit = { [weak backup] ids in backup?.noteRemoteEdits(ids) }
         hub.onServerVersion = { [weak self, weak client] version in

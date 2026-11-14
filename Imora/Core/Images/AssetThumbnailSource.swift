@@ -7,6 +7,15 @@ nonisolated struct AssetThumbnailSource {
     let remoteIdentifier: String?
     let preferredLocalIdentifier: String?
 
+    static func localCacheScope(accountKey: String?, version: String?, pixels: CGFloat) -> String {
+        "\(accountKey ?? "device")|\(version ?? "")|fit-cover|\(Int(pixels.rounded(.up)))"
+    }
+
+    /// Namespace passed by the prefetch adapter to LocalImageLoader.
+    static func prefetchScope(accountKey: String?, version: String?, pixels: CGFloat) -> String {
+        localCacheScope(accountKey: accountKey, version: version, pixels: pixels)
+    }
+
     init(
         assetID: String,
         localIdentifier: String?,

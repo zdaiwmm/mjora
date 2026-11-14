@@ -12,12 +12,15 @@ extension MediaCounts {
 
 /// a Live Photo only counts as backed up when both resources are confirmed.
 nonisolated struct BackupLibraryStatus: Equatable, Sendable {
+    var lastSuccessfulCloudSync: Date? = nil
     private(set) var totalMedia = MediaCounts()
     private(set) var backedUpMedia = MediaCounts()
     private(set) var unindexedMedia = MediaCounts()
     private(set) var unsupportedMedia = MediaCounts()
     private(set) var pendingMedia = MediaCounts()
     private(set) var excludedMedia = MediaCounts()
+    private(set) var cloudDeletedMedia = MediaCounts()
+    var cloudDeleted: Int { cloudDeletedMedia.total }
 
     var excluded: Int { excludedMedia.total }
     var total: Int { totalMedia.total }
@@ -34,6 +37,11 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
                 continue
             }
             totalMedia.add(asset)
+            // Removal protection outlives revisions and login sessions.
+            if entries[asset.localIdentifier]?.isUploadBlockedByRemoteRemoval == true {
+                cloudDeletedMedia.add(asset)
+                continue
+            }
             guard let entry = entries[asset.localIdentifier],
                   entry.matches(modificationDate: asset.modificationDate),
                   entry.isLivePhoto == asset.isLivePhoto else {
@@ -41,7 +49,7 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
                 pendingMedia.add(asset)
                 continue
             }
-            if entry.isBackedUp { backedUpMedia.add(asset) }
+            if entry.isBackedUp || entry.hasHistoricalBackup { backedUpMedia.add(asset) }
             else if entry.unsupported { unsupportedMedia.add(asset) }
             else { pendingMedia.add(asset) }
         }

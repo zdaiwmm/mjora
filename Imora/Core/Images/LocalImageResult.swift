@@ -10,10 +10,11 @@ nonisolated enum LocalImageResult: Equatable {
     case cancelled
     case failed
     case missing
+    case insufficient
 
     var shouldTryAlternateSource: Bool {
         switch self {
-        case .cloudUnavailable, .failed, .missing: true
+        case .cloudUnavailable, .failed, .missing, .insufficient: true
         default: false
         }
     }

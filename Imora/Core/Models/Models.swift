@@ -329,6 +329,8 @@ nonisolated struct Asset: Identifiable, Hashable, Codable, Sendable {
     /// return each stack's primary, with how many photos it holds.
     var stackId: String? = nil
     var stackCount: Int? = nil
+    /// Device content revision; independent of the server derivative thumbhash.
+    var localImageVersion: String? = nil
 
     var isLocal: Bool { localIdentifier != nil }
     var isStacked: Bool { (stackCount ?? 0) > 1 }

@@ -4,52 +4,60 @@ import SwiftUI
 struct BackupScreen: View {
     @Environment(SessionStore.self) private var session
 
-    @State private var cleanup: CleanupState = .idle
-    @State private var cleanupTask: Task<Void, Never>?
-    @State private var confirmCleanup = false
     @State private var confirmBackupConditions = false
     @State private var confirmBackgroundConditions = false
     @State private var reportsNextBackupFailure = false
     @State private var activeBackupPresented = false
 
-    nonisolated private enum CleanupState: Equatable {
-        case idle
-        case verifying
-        case ready(CleanupReport)
-        case deleting
-        case finished(deleted: MediaCounts, kept: MediaCounts)
-        case failed(String)
-    }
-
     var body: some View {
         List {
-            ManualServerRouteSection()
             if let backup = session.backup {
                 autoSection(backup)
-                selectionSection(backup)
-                batterySection(backup)
-                repeatedFailuresSection(backup)
-                statusSection(backup)
-                Section("Background Backup") {
-                    BackgroundBackupControls(backup: backup) {
-                        if backup.manualBackupNeedsApproval {
-                            confirmBackgroundConditions = true
-                        } else {
-                            startBackup(backup)
-                        }
-                    }
+                statusSection(backup, showsManualActions: false)
+                Section("Current Connection") {
+                    LabeledContent("Connected Through", value: connectionText)
+                    if let message = backup.syncHoldMessage { Text(message).foregroundStyle(.secondary) }
                 }
+                repeatedFailuresSection(backup)
                 if !backup.activeTransfers.items.isEmpty {
                     Section {
                         ActiveBackupTransfersView(transfers: backup.activeTransfers)
                     }
                 }
-                advancedSection(backup)
-                cleanupSection(backup)
+                Section {
+                    NavigationLink { CleanupSettingsScreen() } label: {
+                        Label("Clean Up Device", systemImage: "trash.slash")
+                    }
+                    .accessibilityIdentifier("backup-cleanup")
+                    NavigationLink("Advanced Options") {
+                        List {
+                            ManualServerRouteSection()
+                            Section {
+                                Toggle("Use Cellular or Metered Wi-Fi", isOn: Binding(get: { backup.backUpOnCellular }, set: { backup.backUpOnCellular = $0 }))
+                                    .accessibilityIdentifier("backup-cellular-toggle")
+                            }
+                            selectionSection(backup)
+                            batterySection(backup)
+                            statusSection(backup)
+                            Section("Background Backup") {
+                                BackgroundBackupControls(backup: backup) {
+                                    if backup.manualBackupNeedsApproval { confirmBackgroundConditions = true }
+                                    else { startBackup(backup) }
+                                }
+                            }
+                            advancedSection(backup)
+                            Section {
+                                Button("Recheck Entire Library") { backup.requestFullReconciliation() }
+                                    .disabled(backup.isRunning)
+                            }
+                        }
+                        .navigationTitle("Advanced Options")
+                    }
+                    .accessibilityIdentifier("backup-advanced")
+                }
             }
         }
         .task { await session.backup?.refreshLibraryStatus() }
-        .onDisappear { cleanupTask?.cancel() }
         .navigationTitle("Backup")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Back up now?", isPresented: $confirmBackgroundConditions, titleVisibility: .visible) {
@@ -102,15 +110,8 @@ struct BackupScreen: View {
             }
             .accessibilityIdentifier("backup-auto-toggle")
 
-            Toggle(isOn: Binding(
-                get: { backup.backUpOnCellular },
-                set: { backup.backUpOnCellular = $0 }
-            )) {
-                Label("Use Cellular or Metered Wi-Fi", systemImage: "antenna.radiowaves.left.and.right")
-            }
-            .accessibilityIdentifier("backup-cellular-toggle")
         } footer: {
-            Text("Imora first indexes your library to identify photos and videos already on your server, then uploads what's missing. New captures get priority during the initial backup.\n\nWhen metered connections are off, automatic indexing and uploads wait for an unmetered connection. A Personal Hotspot can count as metered Wi-Fi. Back Up Now lets you approve a backup on that connection. Transfers run only while iOS gives Imora execution time. Suspension, termination, or force-quitting can pause them. Reopen Imora to reconcile and resume.")
+            Text("New photos back up automatically when your connection and battery settings allow. iOS may pause background work; your progress is saved.")
         }
     }
 
@@ -257,7 +258,7 @@ struct BackupScreen: View {
     }
 
     @ViewBuilder
-    private func statusSection(_ backup: BackupManager) -> some View {
+    private func statusSection(_ backup: BackupManager, showsManualActions: Bool = true) -> some View {
         Section("Status") {
             if PhotoAccess.shared.canAsk {
                 VStack(alignment: .leading, spacing: 6) {
@@ -286,11 +287,33 @@ struct BackupScreen: View {
                 Text(statusText(backup))
                     .font(.callout)
                     .accessibilityIdentifier("backup-status")
+                if let message = backup.reconciliationMessage {
+                    Text(message).font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("backup-reconciliation-status")
+                }
                 if let status = backup.libraryStatus {
                     Text(status.countText)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("backup-library-count")
+                    if backup.isConnectionOffline {
+                        if let observed = status.lastSuccessfulCloudSync {
+                            Text("Last successful cloud sync: \(observed.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("backup-history-as-of")
+                        } else {
+                            Text("Last successful cloud sync time is unknown.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("backup-history-as-of-unknown")
+                        }
+                    }
+                    LabeledContent("Pending Backup", value: status.pendingMedia.text)
+                    if status.cloudDeleted > 0 {
+                        LabeledContent("Deleted in Cloud", value: status.cloudDeletedMedia.text)
+                            .accessibilityIdentifier("backup-cloud-deleted-count")
+                        Text("These originals stay on your device and will not upload again automatically.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if status.excluded > 0 {
                         Text(status.excluded == 1 ? String(localized: "1 screenshot excluded") : String(localized: "\(status.excluded) screenshots excluded"))
                             .font(.footnote)
@@ -328,7 +351,7 @@ struct BackupScreen: View {
                     .accessibilityIdentifier("backup-recent-status")
             }
 
-            if backup.isRunning {
+            if backup.isRunning && showsManualActions {
                 Button {
                     activeBackupPresented = true
                 } label: {
@@ -344,8 +367,8 @@ struct BackupScreen: View {
                     backup.cancel()
                 }
                 .accessibilityIdentifier("backup-cancel")
-            } else {
-                let canStart = backup.canStartBackup && cleanup != .verifying && cleanup != .deleting
+            } else if !backup.isRunning && (showsManualActions || backup.requiresExplicitResume || backup.syncHoldMessage != nil) {
+                let canStart = backup.canStartBackup
                 Button {
                     if backup.manualBackupNeedsApproval {
                         confirmBackupConditions = true
@@ -353,7 +376,7 @@ struct BackupScreen: View {
                         startBackup(backup)
                     }
                 } label: {
-                    Label("Back Up Now", systemImage: "icloud.and.arrow.up")
+                    Label(showsManualActions ? String(localized: "Back Up Now") : String(localized: "Continue Backup"), systemImage: "icloud.and.arrow.up")
                         .foregroundStyle(canStart ? Color.accentColor : Color.secondary)
                 }
                 .disabled(!canStart)
@@ -375,6 +398,16 @@ struct BackupScreen: View {
                     Text(backup.manualBackupApprovalMessage)
                 }
             }
+        }
+    }
+
+    private var connectionText: String {
+        if session.backup?.isConnectionOffline == true { return String(localized: "Offline") }
+        return switch LocalServerRouter.shared.status {
+        case .local: String(localized: "Local Network")
+        case .held: String(localized: "Local Connection Paused")
+        case .checking: String(localized: "Checking...")
+        case .off, .external: String(localized: "External Address")
         }
     }
 
@@ -442,127 +475,4 @@ struct BackupScreen: View {
         }
     }
 
-    // MARK: - cleanup
-
-    @ViewBuilder
-    private func cleanupSection(_ backup: BackupManager) -> some View {
-        Section {
-            switch cleanup {
-            case .verifying:
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text("Verifying with server...")
-                        .foregroundStyle(.secondary)
-                }
-            case .deleting:
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text("Verifying original files before removal...")
-                        .foregroundStyle(.secondary)
-                }
-                Button("Cancel Verification", role: .cancel) { cleanupTask?.cancel() }
-            default:
-                Button(role: .destructive) {
-                    verifyCleanup(backup)
-                } label: {
-                    Label("Clean Up Device", systemImage: "trash.slash")
-                }
-                .disabled(backup.isRunning)
-                .accessibilityIdentifier("backup-cleanup")
-                // ios 26 morphs the dialog out of its source control, so it sits
-                // on the row - on the section it floats detached.
-                .confirmationDialog(
-                    confirmTitle,
-                    isPresented: $confirmCleanup,
-                    titleVisibility: .visible
-                ) {
-                    if case .ready(let report) = cleanup {
-                        Button("Verify and Remove \(report.eligibleMedia.text)", role: .destructive) {
-                            performCleanup(backup, report: report)
-                        }
-                        .accessibilityIdentifier("backup-cleanup-confirm")
-                        Button("Cancel", role: .cancel) {
-                            cleanup = .idle
-                        }
-                    }
-                } message: {
-                    if case .ready(let report) = cleanup { Text(verificationNotice(report)) }
-                }
-            }
-
-            if case .ready(let report) = cleanup {
-                Text(verificationNotice(report))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if let summary = cleanupSummary {
-                Text(summary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("backup-cleanup-summary")
-            }
-        } header: {
-            Text("Device Storage")
-        } footer: {
-            Text("Removes device copies of photos and videos already backed up to your server. Anything not verified as backed up stays on this device.")
-        }
-    }
-
-    private func verificationNotice(_ report: CleanupReport) -> String {
-        let amount = report.estimatedOriginalBytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? String(localized: "not yet known")
-        return String(localized: "Originals will be downloaded and checked through \(report.route.absoluteString) before removal. Verification size: \(amount). Reading iCloud resources may also be needed. You can cancel or clean up later.")
-    }
-
-    private var confirmTitle: String {
-        if case .ready(let report) = cleanup {
-            return String(localized: "Verify the server originals, then remove \(report.eligibleMedia.text) from this device?")
-        }
-        return ""
-    }
-
-    private var cleanupSummary: String? {
-        switch cleanup {
-        case .finished(let deleted, let kept):
-            String(localized: "Deleted \(deleted.text). Kept \(kept.text) on this device because their backups could not be verified.")
-        case .failed(let message):
-            String(localized: "Cleanup failed: \(message)")
-        default:
-            nil
-        }
-    }
-
-    private func verifyCleanup(_ backup: BackupManager) {
-        cleanup = .verifying
-        cleanupTask = Task {
-            do {
-                let report = try await backup.cleanUpCandidates()
-                if report.eligible.isEmpty {
-                    cleanup = .finished(deleted: MediaCounts(), kept: report.keptMedia)
-                } else {
-                    cleanup = .ready(report)
-                    confirmCleanup = true
-                }
-            } catch {
-                cleanup = .idle
-                if !Task.isCancelled { ErrorToastCenter.shared.show(String(localized: "Couldn't verify cleanup candidates"), error: error) }
-            }
-        }
-    }
-
-    private func performCleanup(_ backup: BackupManager, report: CleanupReport) {
-        cleanup = .deleting
-        cleanupTask = Task {
-            do {
-                let result = try await backup.performCleanup(report: report)
-                cleanup = .finished(deleted: result.deletedMedia, kept: result.keptMedia)
-            } catch {
-                // declining the system dialog is a normal way out, not a failure.
-                if Task.isCancelled || PhotoLibraryService.isUserCancelled(error) {
-                    cleanup = .idle
-                } else {
-                    cleanup = .failed(error.localizedDescription)
-                }
-            }
-        }
-    }
 }

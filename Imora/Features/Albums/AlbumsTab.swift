@@ -53,6 +53,15 @@ struct AlbumsTab: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    NavigationLink {
+                        TimelineScreen(title: String(localized: "All Cloud Photos"), filter: TimelineFilter(withPartners: true,
+                            withSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline, withStacked: true))
+                    } label: {
+                        Label("All Cloud Photos", systemImage: "icloud")
+                            .font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 8)
+                    }
+                    .accessibilityIdentifier("albums-all-cloud-photos")
                     filterChips
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 14)], spacing: 18) {

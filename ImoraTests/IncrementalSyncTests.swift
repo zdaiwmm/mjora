@@ -1,0 +1,461 @@
+import XCTest
+@testable import Imora
+
+private let syncScope = SyncScope(serverIdentity: "fixed-server", accountID: "owner", loginSessionKey: "session-a")
+
+private func syncRecord(_ type: String, _ id: String = "1", _ data: [String: String] = [:]) throws -> RemoteSyncRecord {
+    try JSONDecoder().decode(RemoteSyncRecord.self, from: JSONSerialization.data(withJSONObject: ["type": type, "ack": "\(type)|\(id)", "data": data]))
+}
+private func syncLine(_ record: RemoteSyncRecord) throws -> Data { var data = try JSONEncoder().encode(record); data.append(10); return data }
+private func syncAsset(_ id: String, deleted: Bool = false) throws -> RemoteSyncRecord {
+    var data = ["id": id, "ownerId": "owner", "checksum": "c3ludGhldGlj"]
+    if deleted { data["deletedAt"] = "2026-11-14T00:00:00Z" }
+    return try syncRecord("AssetV2", id, data)
+}
+private func syncStore(_ url: URL? = nil) throws -> SyncStateStore {
+    try SyncStateStore(fileURL: url ?? FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite"))
+}
+
+actor SyncFixtureTransport: RemoteSyncTransport {
+    var streams: [[Data]]
+    var acknowledgements: [String] = []
+    var resets: [Bool] = []
+    var ackFails = false
+    init(_ streams: [[Data]]) { self.streams = streams }
+    func stream(types: [String], reset: Bool) async throws -> AsyncThrowingStream<Data, Error> {
+        resets.append(reset)
+        guard !streams.isEmpty else { throw RemoteSyncError.incompleteStream }
+        let chunks = streams.removeFirst()
+        return AsyncThrowingStream { continuation in
+            chunks.forEach { continuation.yield($0) }; continuation.finish()
+        }
+    }
+    func acknowledge(_ acks: [String]) async throws {
+        if ackFails { throw RemoteSyncError.incompleteStream }
+        acknowledgements += acks
+    }
+    func failAck(_ fail: Bool) { ackFails = fail }
+}
+actor SyncFixtureBridge: RemoteSyncIndexBridge {
+    var operations: [RemoteIndexOperation] = []
+    var pairings: [SyncHistoricalPairing] = []
+    var flushFails = false
+    func history(scope: SyncScope) async throws -> [SyncHistoricalPairing] { pairings }
+    func applyAndFlush(_ operations: [RemoteIndexOperation], scope: SyncScope) async throws {
+        if flushFails { throw RemoteSyncError.indexFlushFailed }
+        self.operations += operations
+    }
+    func failFlush(_ fail: Bool) { flushFails = fail }
+    func seed(_ pairings: [SyncHistoricalPairing]) { self.pairings = pairings }
+}
+
+final class IncrementalSyncTests: XCTestCase, @unchecked Sendable {
+    func testAuthoritativeCompleteRestoresProtectionOnlyAfterAllLiveComponentsReturn() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        let history = SyncHistoricalPairing(localID: "local", primaryRemoteID: "still", motionRemoteID: "motion",
+            primaryChecksum: "c3ludGhldGlj", motionChecksum: "c3ludGhldGlj", isLivePhoto: true, remoteDeleted: true)
+        await bridge.seed([history])
+        let still = try syncRecord("AssetV2", "still", ["id": "still", "ownerId": "owner", "checksum": "c3ludGhldGlj", "livePhotoVideoId": "motion"])
+        let transport = SyncFixtureTransport([
+            [try syncLine(still), try syncLine(syncRecord("SyncCompleteV1", "1"))],
+            [try syncLine(syncAsset("motion")), try syncLine(syncRecord("SyncCompleteV1", "2"))]
+        ])
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        _ = try await client.catchUp(scope: syncScope)
+        let protected = try await store.isLocalDeletionProtected("local", scope: syncScope)
+        XCTAssertTrue(protected)
+        _ = try await client.catchUp(scope: syncScope)
+        let restored = try await store.isLocalDeletionProtected("local", scope: syncScope)
+        XCTAssertFalse(restored)
+        let operations = await bridge.operations
+        XCTAssertTrue(operations.contains { if case .restoreLocal = $0 { true } else { false } })
+    }
+
+    func testAPIKeyRecoveryFlushesDeletionWithoutSendingSessionAcknowledgement() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge(), transport = SyncFixtureTransport([])
+        try await store.apply(batch: .init(records: [syncRecord("AssetDeleteV1", "1", ["assetId": "gone"])]), scope: syncScope)
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge, credential: .apiKey)
+        try await client.recoverPending(scope: syncScope)
+        let operations = await bridge.operations
+        let acknowledgements = await transport.acknowledgements
+        let streams = await transport.resets
+        XCTAssertEqual(operations, [.removed("gone")])
+        XCTAssertTrue(acknowledgements.isEmpty)
+        XCTAssertTrue(streams.isEmpty)
+    }
+
+    func testExplicitRebackupClearsOnlyLocalProtectionAndForgetsRetiredPair() async throws {
+        let store = try syncStore()
+        try await store.importHistory([.init(localID: "local", primaryRemoteID: "deleted", motionRemoteID: nil,
+            primaryChecksum: "checksum", motionChecksum: nil, isLivePhoto: false, remoteDeleted: true)], scope: syncScope)
+        try await store.apply(batch: .init(records: [syncRecord("AssetDeleteV1", "1", ["assetId": "deleted"])]), scope: syncScope)
+        try await store.clearDeletionProtectionForRebackup(localID: "local", scope: syncScope)
+        let protected = try await store.isLocalDeletionProtected("local", scope: syncScope)
+        let remoteDeleted = try await store.isRemoteDeleted("deleted", scope: syncScope)
+        let history = try await store.historicalPairing(localID: "local", scope: syncScope)
+        XCTAssertFalse(protected)
+        XCTAssertTrue(remoteDeleted, "Other local photos paired to the retired asset stay protected")
+        XCTAssertNil(history?.primaryRemoteID)
+    }
+
+    func testFirstEmptyAndDeletionCatchUpFixture() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        let transport = SyncFixtureTransport([
+            [try syncLine(syncAsset("a")), try syncLine(syncRecord("SyncCompleteV1", "2"))],
+            [try syncLine(syncRecord("SyncCompleteV1", "3"))],
+            [try syncLine(syncRecord("AssetDeleteV1", "4", ["assetId": "a"])), try syncLine(syncRecord("SyncCompleteV1", "5"))]
+        ])
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        let first = try await client.catchUp(scope: syncScope)
+        XCTAssertTrue(first.completed); XCTAssertEqual(first.changedIDs, ["a"])
+        let empty = try await client.catchUp(scope: syncScope)
+        XCTAssertTrue(empty.completed); XCTAssertTrue(empty.changedIDs.isEmpty)
+        let deleted = try await client.catchUp(scope: syncScope)
+        XCTAssertEqual(deleted.deletedIDs, ["a"])
+        let removed = try await store.isRemoteDeleted("a", scope: syncScope)
+        XCTAssertTrue(removed)
+        let resets = await transport.resets
+        XCTAssertEqual(resets, [true, false, false])
+    }
+
+    func testSQLiteCommitBeforeJSONFlushNeverAcknowledgesAndReplaysAfterRestart() async throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite")
+        let store = try syncStore(file), bridge = SyncFixtureBridge()
+        let transport = SyncFixtureTransport([[try syncLine(syncAsset("a")), try syncLine(syncRecord("SyncCompleteV1"))]])
+        await bridge.failFlush(true)
+        do { _ = try await RemoteSyncClient(store: store, transport: transport, indexBridge: bridge).catchUp(scope: syncScope); XCTFail() } catch {}
+        let acknowledgements = await transport.acknowledgements
+        XCTAssertTrue(acknowledgements.isEmpty)
+        let reopened = try syncStore(file)
+        let pending = try await reopened.pending(scope: syncScope)
+        XCTAssertFalse(pending.isEmpty)
+        await bridge.failFlush(false)
+        try await RemoteSyncClient(store: reopened, transport: transport, indexBridge: bridge).recoverPending(scope: syncScope)
+        let finalPending = try await reopened.pending(scope: syncScope)
+        XCTAssertTrue(finalPending.isEmpty)
+    }
+
+    func testAckFailureRetainsReplayAndDoesNotComplete() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        let transport = SyncFixtureTransport([[try syncLine(syncAsset("a")), try syncLine(syncRecord("SyncCompleteV1"))]])
+        await transport.failAck(true)
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        do { _ = try await client.catchUp(scope: syncScope); XCTFail() } catch {}
+        let complete = try await store.isCaughtUp(scope: syncScope)
+        XCTAssertFalse(complete)
+        let pending = try await store.pending(scope: syncScope)
+        XCTAssertFalse(pending.isEmpty)
+        await transport.failAck(false)
+        try await client.recoverPending(scope: syncScope)
+        let acks = await transport.acknowledgements
+        XCTAssertEqual(acks, ["AssetV2|a"])
+    }
+
+    func testResetHandshakeProtectsHistoricalMissingLivePhotoComponent() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        await bridge.seed([SyncHistoricalPairing(localID: "local", primaryRemoteID: "still", motionRemoteID: "motion", primaryChecksum: "c3ludGhldGlj", motionChecksum: "bW90aW9u", isLivePhoto: true, remoteDeleted: false)])
+        let transport = SyncFixtureTransport([
+            [try syncLine(syncRecord("SyncResetV1", "reset"))],
+            [try syncLine(syncAsset("still")), try syncLine(syncRecord("SyncCompleteV1"))]
+        ])
+        let result = try await RemoteSyncClient(store: store, transport: transport, indexBridge: bridge).catchUp(scope: syncScope)
+        XCTAssertTrue(result.resetOccurred); XCTAssertTrue(result.completed)
+        let operations = await bridge.operations
+        XCTAssertTrue(operations.contains(.protectLocal("local")))
+        let acks = await transport.acknowledgements
+        XCTAssertEqual(acks.first, "SyncResetV1|reset")
+    }
+
+    func testIncompleteBaselineKeepsPreviousSnapshotAndDoesNotComplete() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        let transport = SyncFixtureTransport([
+            [try syncLine(syncAsset("old")), try syncLine(syncRecord("SyncCompleteV1"))],
+            [try syncLine(syncRecord("SyncResetV1", "reset"))],
+            [try syncLine(syncAsset("new")), Data("{\"type\":".utf8)]
+        ])
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        _ = try await client.catchUp(scope: syncScope)
+        do { _ = try await client.catchUp(scope: syncScope); XCTFail() } catch {}
+        let old = try await store.remoteAsset("old", scope: syncScope)
+        let new = try await store.remoteAsset("new", scope: syncScope)
+        XCTAssertNotNil(old); XCTAssertNil(new)
+        let complete = try await store.isCaughtUp(scope: syncScope)
+        XCTAssertFalse(complete)
+    }
+
+    func testSessionCheckpointIsolationRetainsAccountDeletionHistory() async throws {
+        let store = try syncStore()
+        try await store.apply(batch: RemoteSyncBatch(records: [try syncRecord("AssetDeleteV1", "1", ["assetId": "a"])]), scope: syncScope)
+        let relogin = SyncScope(serverIdentity: "fixed-server", accountID: "owner", loginSessionKey: "session-b")
+        let removed = try await store.isRemoteDeleted("a", scope: relogin)
+        let pending = try await store.pending(scope: relogin)
+        XCTAssertTrue(removed); XCTAssertTrue(pending.isEmpty)
+        let other = SyncScope(serverIdentity: "fixed-server", accountID: "other", loginSessionKey: "session-b")
+        let isolated = try await store.isRemoteDeleted("a", scope: other)
+        XCTAssertFalse(isolated)
+    }
+
+    func testDuplicateEventsHaveSameDurableResult() async throws {
+        let store = try syncStore()
+        let batch = RemoteSyncBatch(records: [try syncAsset("a", deleted: true)])
+        try await store.apply(batch: batch, scope: syncScope)
+        try await store.apply(batch: batch, scope: syncScope)
+        let removed = try await store.isRemoteDeleted("a", scope: syncScope)
+        XCTAssertTrue(removed)
+    }
+
+    func testAPIKeySelectsCompatibilityWithoutSessionEndpoint() async throws {
+        let transport = SyncFixtureTransport([])
+        let client = RemoteSyncClient(store: try syncStore(), transport: transport, indexBridge: SyncFixtureBridge(), credential: .apiKey)
+        do { _ = try await client.catchUp(scope: syncScope); XCTFail() } catch {
+            XCTAssertEqual(error as? RemoteSyncError, .compatibilityRequired)
+        }
+        let resets = await transport.resets
+        XCTAssertTrue(resets.isEmpty)
+    }
+}
+
+extension IncrementalSyncTests {
+    func testMoreThanOneHundredChangesUseBoundedAcknowledgementBatches() async throws {
+        let records = try (0..<205).map { try syncLine(syncAsset("asset-\($0)")) }
+        let transport = SyncFixtureTransport([records + [try syncLine(syncRecord("SyncCompleteV1"))]])
+        let bridge = SyncFixtureBridge(), store = try syncStore()
+        let result = try await RemoteSyncClient(store: store, transport: transport, indexBridge: bridge).catchUp(scope: syncScope)
+        XCTAssertEqual(result.changedIDs.count, 205)
+        let operations = await bridge.operations
+        XCTAssertEqual(operations.count, 205)
+    }
+    func testUnknownLaterDeltaPreservesPreviousCommittedSnapshot() async throws {
+        let transport = SyncFixtureTransport([
+            [try syncLine(syncAsset("old")), try syncLine(syncRecord("SyncCompleteV1"))],
+            try (0..<100).map { try syncLine(syncAsset("new-\($0)")) } + [Data("{\"type\":\"CriticalV99\",\"ack\":\"unknown\",\"data\":{}}\n".utf8)]
+        ])
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        _ = try await client.catchUp(scope: syncScope)
+        do { _ = try await client.catchUp(scope: syncScope); XCTFail() } catch {}
+        let new = try await store.remoteAsset("new-0", scope: syncScope)
+        XCTAssertNil(new)
+    }
+    func testSkipRequiresCurrentOwnedChecksumAndNoRemoval() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        let transport = SyncFixtureTransport([[try syncLine(syncAsset("a")), try syncLine(syncRecord("SyncCompleteV1"))]])
+        _ = try await RemoteSyncClient(store: store, transport: transport, indexBridge: bridge).catchUp(scope: syncScope)
+        let paired = SyncHistoricalPairing(localID: "local", primaryRemoteID: "a", motionRemoteID: nil, primaryChecksum: "c3ludGhldGlj", motionChecksum: nil, isLivePhoto: false, remoteDeleted: false)
+        let skip = try await store.canSkipRoutineBackupRecheck(pairing: paired, scope: syncScope)
+        XCTAssertTrue(skip)
+        try await store.apply(batch: RemoteSyncBatch(records: [try syncRecord("AssetDeleteV1", "3", ["assetId": "a"])]), scope: syncScope)
+        let after = try await store.canSkipRoutineBackupRecheck(pairing: paired, scope: syncScope)
+        XCTAssertFalse(after)
+    }
+}
+
+extension IncrementalSyncTests {
+    func testLostStagedRowsAfterPartialAcknowledgementForcesReset() async throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite")
+        let store = try syncStore(file), bridge = SyncFixtureBridge()
+        let transport = SyncFixtureTransport([[try syncLine(syncAsset("old")), try syncLine(syncRecord("SyncCompleteV1"))]])
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        _ = try await client.catchUp(scope: syncScope)
+        _ = try await store.prepareRound(scope: syncScope)
+        try await store.apply(batch: .init(records: [syncAsset("new")]), scope: syncScope)
+        try await client.recoverPending(scope: syncScope)
+        try corruptSyncFixtureDatabase(file, sql: "DELETE FROM sync_state WHERE kind='stagedAssets'")
+        let needsReset = try await store.prepareRound(scope: syncScope)
+        XCTAssertTrue(needsReset, "Missing already-acknowledged staged rows must restart the baseline")
+        let active = try await store.remoteAsset("old", scope: syncScope)
+        XCTAssertNotNil(active, "The last complete snapshot remains until replacement completes")
+    }
+
+    func testLostDerivedSnapshotAfterAckForcesResetAndKeepsHistoricalDeletionProtection() async throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite")
+        let store = try syncStore(file), bridge = SyncFixtureBridge()
+        await bridge.seed([SyncHistoricalPairing(localID: "local", primaryRemoteID: "a", motionRemoteID: nil, primaryChecksum: "c3ludGhldGlj", motionChecksum: nil, isLivePhoto: false, remoteDeleted: false)])
+        let transport = SyncFixtureTransport([
+            [try syncLine(syncAsset("a")), try syncLine(syncRecord("SyncCompleteV1"))],
+            [try syncLine(syncRecord("SyncCompleteV1", "2"))]
+        ])
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        _ = try await client.catchUp(scope: syncScope)
+        try corruptSyncFixtureDatabase(file, sql: "DELETE FROM sync_state WHERE kind='assets'")
+        _ = try await client.catchUp(scope: syncScope)
+        let resets = await transport.resets
+        XCTAssertEqual(resets, [true, true])
+        let protected = try await store.isLocalDeletionProtected("local", scope: syncScope)
+        XCTAssertTrue(protected)
+    }
+}
+
+extension IncrementalSyncTests {
+    func testReloginRecoversAccountIndexWorkWithoutAcknowledgingOldSession() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge(), transport = SyncFixtureTransport([])
+        try await store.apply(batch: RemoteSyncBatch(records: [try syncRecord("AssetDeleteV1", "old-session", ["assetId": "gone"])]), scope: syncScope)
+        let relogin = SyncScope(serverIdentity: syncScope.serverIdentity, accountID: syncScope.accountID, loginSessionKey: "new-session")
+        try await RemoteSyncClient(store: store, transport: transport, indexBridge: bridge).recoverPending(scope: relogin)
+        let operations = await bridge.operations
+        let acks = await transport.acknowledgements
+        XCTAssertTrue(operations.contains(.removed("gone")))
+        XCTAssertTrue(acks.isEmpty)
+    }
+}
+
+
+extension IncrementalSyncTests {
+    @MainActor
+    func testFiveThousandColdPairingsSkipRoutineWorkAndOnlyTenNewAssetsNeedChecks() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let json = directory.appending(path: "index.json"), sqlite = directory.appending(path: "sync.sqlite")
+        let generation = UUID(), index = BackupIndex(fileURL: json)
+        _ = await index.load(serverHost: syncScope.serverIdentity, userId: syncScope.accountID, generation: generation)
+        var oldAssets: [DeviceAsset] = []
+        for offset in 0..<5000 {
+            let asset = fixtureDevice(id: "old-\(offset)")
+            oldAssets.append(asset)
+            await index.setHashed(localId: asset.localIdentifier, isLivePhoto: false, primaryChecksum: "c3ludGhldGlj",
+                motionChecksum: nil, modificationDate: asset.modificationDate)
+            await index.setPrimaryRemoteId(localId: asset.localIdentifier, "remote-\(offset)")
+        }
+        await index.markHistoricallyPresent(localIDs: Set(oldAssets.map(\.localIdentifier)))
+        let flushed = await index.flush()
+        XCTAssertTrue(flushed)
+        let pairings = try await index.syncHistory(scope: syncScope, generation: generation)
+        let bridge = SyncFixtureBridge()
+        await bridge.seed(pairings)
+        let firstTransport = SyncFixtureTransport([try (0..<5000).map { try syncLine(syncAsset("remote-\($0)")) }
+            + [syncLine(syncRecord("SyncCompleteV1", "baseline"))]])
+        let store = try syncStore(sqlite)
+        _ = try await RemoteSyncClient(store: store, transport: firstTransport, indexBridge: bridge).catchUp(scope: syncScope)
+        // Both persisted stores reopen, and twenty rapid routine signals share one real catch-up.
+        let coldStore = try syncStore(sqlite), coldIndex = BackupIndex(fileURL: json)
+        _ = await coldIndex.load(serverHost: syncScope.serverIdentity, userId: syncScope.accountID, generation: UUID())
+        let routineTransport = SyncFixtureTransport(Array(repeating: [try syncLine(syncRecord("SyncCompleteV1", "empty"))], count: 10))
+        let client = RemoteSyncClient(store: coldStore, transport: routineTransport, indexBridge: bridge)
+        var rounds = 0
+        let coordinator = BackupReconcileCoordinator { _ in
+            do { _ = try await client.catchUp(scope: syncScope); rounds += 1 }
+            catch { XCTFail("Unexpected catch-up failure: \(error)") }
+        }
+        for _ in 0..<10 { coordinator.request(.foreground); coordinator.request(.reconnect) }
+        await coordinator.waitUntilIdle()
+        XCTAssertEqual(rounds, 1)
+        let entries = await coldIndex.allEntries()
+        let skip = try await coldStore.skippableLocalIDs(pairings: pairings, scope: syncScope)
+        XCTAssertEqual(skip, Set(oldAssets.map(\.localIdentifier)))
+        let newAssets = (0..<10).map { fixtureDevice(id: "new-\($0)") }
+        let allAssets = oldAssets + newAssets
+        let needingHashes = allAssets.filter { BackupRoutineRecheckPolicy.requiresHash(asset: $0, entry: entries[$0.localIdentifier]) }
+        let requiringChecks = BackupRoutineRecheckPolicy.recheckCandidates(assets: allAssets, entries: entries,
+            skippable: skip, requiresFreshProof: false)
+        XCTAssertEqual(Set(needingHashes.map(\.localIdentifier)), Set(newAssets.map(\.localIdentifier)))
+        XCTAssertEqual(Set(requiringChecks.map(\.localIdentifier)), Set(newAssets.map(\.localIdentifier)))
+        let cleanupChecks = BackupRoutineRecheckPolicy.recheckCandidates(assets: oldAssets, entries: entries,
+            skippable: [], requiresFreshProof: true)
+        XCTAssertEqual(cleanupChecks.count, 5000, "Historical routine skips never license device cleanup")
+        XCTAssertTrue(entries.values.allSatisfy { $0.proof == nil && !$0.isBackedUp })
+    }
+}
+
+
+extension IncrementalSyncTests {
+    func testConfirmedReplacementSurvivesRestartAndEmptyCompleteOrReset() async throws {
+        for reset in [false, true] {
+            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite")
+            let store = try syncStore(file)
+            let histories = ["approved", "other"].map { SyncHistoricalPairing(localID: $0,
+                primaryRemoteID: "retired", motionRemoteID: nil, primaryChecksum: "checksum",
+                motionChecksum: nil, isLivePhoto: false, remoteDeleted: true) }
+            try await store.importHistory(histories, scope: syncScope)
+            try await store.protectRemoteIDs(["retired"], scope: syncScope)
+            try await store.clearDeletionProtectionForRebackup(localID: "approved", scope: syncScope)
+            let reopened = try syncStore(file), bridge = SyncFixtureBridge()
+            await bridge.seed([histories[1]])
+            var streams = [[try syncLine(syncRecord("SyncCompleteV1"))]]
+            if reset { streams.insert([try syncLine(syncRecord("SyncResetV1"))], at: 0) }
+            _ = try await RemoteSyncClient(store: reopened, transport: SyncFixtureTransport(streams), indexBridge: bridge).catchUp(scope: syncScope)
+            let approved = try await reopened.isLocalDeletionProtected("approved", scope: syncScope)
+            let other = try await reopened.isLocalDeletionProtected("other", scope: syncScope)
+            XCTAssertFalse(approved, "Explicit replacement remains authorized after an interrupted attempt")
+            XCTAssertTrue(other)
+        }
+    }
+}
+
+
+extension IncrementalSyncTests {
+    func testAuthoritativeTimestampPersistsAcrossLoginAndFailedRoundDoesNotRefreshIt() async throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".sqlite")
+        let store = try syncStore(file), bridge = SyncFixtureBridge()
+        let unknown = try await store.lastSuccessfulSync(scope: syncScope)
+        XCTAssertNil(unknown)
+        let transport = SyncFixtureTransport([[try syncLine(syncRecord("SyncCompleteV1"))]])
+        _ = try await RemoteSyncClient(store: store, transport: transport, indexBridge: bridge).catchUp(scope: syncScope)
+        let successful = try await store.lastSuccessfulSync(scope: syncScope)
+        XCTAssertNotNil(successful)
+        let reopened = try syncStore(file)
+        let relogin = SyncScope(serverIdentity: syncScope.serverIdentity, accountID: syncScope.accountID, loginSessionKey: "new-login")
+        let restored = try await reopened.lastSuccessfulSync(scope: relogin)
+        XCTAssertEqual(restored, successful)
+        do { _ = try await RemoteSyncClient(store: reopened, transport: SyncFixtureTransport([[]]), indexBridge: bridge).catchUp(scope: relogin); XCTFail() } catch {}
+        let afterFailure = try await reopened.lastSuccessfulSync(scope: relogin)
+        XCTAssertEqual(afterFailure, successful)
+    }
+}
+
+extension IncrementalSyncTests {
+    func testSQLiteRebackupWriteFailureKeepsDurableProtectionAfterJSONFlush() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appending(path: "state.sqlite"), generation = UUID()
+        let index = BackupIndex(fileURL: directory.appending(path: "index.json"))
+        _ = await index.load(serverHost: syncScope.serverIdentity, userId: syncScope.accountID, generation: generation)
+        await index.setHashed(localId: "approved", isLivePhoto: false, primaryChecksum: "checksum", motionChecksum: nil, modificationDate: nil)
+        await index.setPrimaryRemoteId(localId: "approved", "retired")
+        await index.noteRemoteChange(ids: ["retired"], change: .trashed, generation: generation)
+        let store = try syncStore(file)
+        try await store.importHistory(index.syncHistory(scope: syncScope, generation: generation), scope: syncScope)
+        try await store.protectRemoteIDs(["retired"], scope: syncScope)
+        try await index.prepareForExplicitRebackup(localID: "approved", generation: generation)
+        try corruptSyncFixtureDatabase(file, sql: "CREATE TRIGGER fail_rebackup BEFORE DELETE ON sync_state WHEN OLD.kind = 'history' BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END")
+        do { try await store.clearDeletionProtectionForRebackup(localID: "approved", scope: syncScope); XCTFail() } catch {}
+        let reopened = try syncStore(file)
+        let protected = try await reopened.isLocalDeletionProtected("approved", scope: syncScope)
+        XCTAssertTrue(protected, "The transaction must roll back its earlier protection clear")
+    }
+}
+
+extension IncrementalSyncTests {
+    @MainActor
+    func testReconnectDeltaDuringHealthyUploadPersistsMissedDeletionWithoutFullReset() async throws {
+        let store = try syncStore(), bridge = SyncFixtureBridge()
+        await bridge.seed([.init(localID: "local", primaryRemoteID: "remote", motionRemoteID: nil,
+            primaryChecksum: "c3ludGhldGlj", motionChecksum: nil, isLivePhoto: false, remoteDeleted: false)])
+        let transport = SyncFixtureTransport([
+            [try syncLine(syncAsset("remote")), try syncLine(syncRecord("SyncCompleteV1", "first"))],
+            [try syncLine(syncRecord("AssetDeleteV1", "delete", ["assetId": "remote"])), try syncLine(syncRecord("SyncCompleteV1", "second"))]
+        ])
+        let client = RemoteSyncClient(store: store, transport: transport, indexBridge: bridge)
+        let coordinator = BackupReconcileCoordinator { _ in
+            do { _ = try await client.catchUp(scope: syncScope) } catch { XCTFail("\(error)") }
+        }
+        coordinator.request(.foreground)
+        await coordinator.waitUntilIdle()
+        var resumeUpload: CheckedContinuation<Void, Never>?
+        let uploading = expectation(description: "upload ongoing after catch-up")
+        let upload = Task { @MainActor in await withCheckedContinuation { resumeUpload = $0; uploading.fulfill() } }
+        await fulfillment(of: [uploading])
+        let connection = UUID()
+        coordinator.request(.reconnect, generation: connection)
+        coordinator.request(.reconnect, generation: connection)
+        await coordinator.waitUntilIdle()
+        let resets = await transport.resets
+        XCTAssertEqual(resets, [true, false])
+        let protected = try await store.isLocalDeletionProtected("local", scope: syncScope)
+        XCTAssertTrue(protected)
+        let operations = await bridge.operations
+        XCTAssertTrue(operations.contains(.removed("remote")))
+        XCTAssertFalse(upload.isCancelled)
+        resumeUpload?.resume()
+        await upload.value
+    }
+}

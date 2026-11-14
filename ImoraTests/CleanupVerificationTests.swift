@@ -13,6 +13,8 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
     let mode: DeletionMode
     var invalidHash = false
     var onHash: (@Sendable () -> Void)?
+    var beforeDelete: (@Sendable () async -> Void)?
+    var protectedIDs: Set<String> = []
     private(set) var deleted: [String] = []
     private(set) var hashCount = 0
 
@@ -20,6 +22,8 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
         values = assets; self.fetchOverride = fetchOverride; self.mode = mode
     }
     func hasFullAccess() async -> Bool { permission }
+    func protectedAlbumMemberIDs(_ albumIDs: Set<String>) async throws -> Set<String> { protectedIDs }
+    func protect(_ ids: Set<String>) { protectedIDs = ids }
     func assets(ids: [String]) async throws -> [DeviceAsset] { fetchOverride ?? values.filter { ids.contains($0.localIdentifier) } }
     func hashes(for asset: DeviceAsset) async throws -> LocalResourceHashes {
         hashCount += 1
@@ -27,6 +31,7 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
         return LocalResourceHashes(primaryDigest: invalidHash ? motionDigest : stillDigest, motionDigest: asset.isLivePhoto ? motionDigest : nil)
     }
     func delete(_ assets: [DeviceAsset], permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
+        await beforeDelete?()
         guard permission, permitted() else { throw CleanupVerificationError.changed }
         switch mode {
         case .cancel: throw CancellationError()
@@ -36,6 +41,7 @@ actor CleanupFixtureLibrary: CleanupPhotoLibrary {
         }
         return deleted
     }
+    func beforePermission(_ operation: @escaping @Sendable () async -> Void) { beforeDelete = operation }
     func changeAssets(_ value: [DeviceAsset]) { values = value }
     func denyPermission() { permission = false }
     func useInvalidHash() { invalidHash = true }
@@ -94,7 +100,8 @@ final class CleanupVerificationTests: XCTestCase {
     private let account = "https://fixture.invalid/api|owner"
     private let generation = UUID()
 
-    private func report(assets: [DeviceAsset], knownSizes: Bool = false, expiresAt: Date? = nil) async throws -> CleanupReport {
+    private func report(assets: [DeviceAsset], knownSizes: Bool = false, expiresAt: Date? = nil,
+                        retention: CleanupRetentionSnapshot? = nil) async throws -> CleanupReport {
         var candidates: [CleanupCandidate] = []
         for asset in assets {
             var entry = BackupEntry(modificationDate: asset.modificationDate, isLivePhoto: asset.isLivePhoto,
@@ -105,7 +112,26 @@ final class CleanupVerificationTests: XCTestCase {
                                                        remote: FixtureBackupRemote(remoteAssets(live: asset.isLivePhoto)), current: { true })
             candidates.append(CleanupCandidate(source: entry, proof: proof))
         }
-        return CleanupReport(account: account, generation: generation, candidates: candidates, keptMedia: MediaCounts(), route: URL(string: "http://127.0.0.1:32283/api")!, expiresAt: expiresAt)
+        return CleanupReport(account: account, generation: generation, candidates: candidates, keptMedia: MediaCounts(), route: URL(string: "http://127.0.0.1:32283/api")!, expiresAt: expiresAt, retention: retention)
+    }
+
+    func testAlbumProtectionAddedAfterPreviewStopsDeletion() async throws {
+        let asset = fixtureDevice()
+        let snapshot = CleanupRetentionPolicy(retentionDays: nil, protectedAlbumIDs: ["protected"]).snapshot()
+        let report = try await report(assets: [asset], retention: snapshot)
+        let library = CleanupFixtureLibrary([asset])
+        let remote = CleanupFixtureRemote(remoteAssets(live: false))
+        await remote.onCall { stage in
+            if stage == 3 { await library.protect([asset.localIdentifier]) }
+        }
+        do {
+            _ = try await CleanupVerifier.perform(report: report, account: account, generation: generation,
+                library: library, remote: remote, isCurrent: { true })
+            XCTFail("A newly protected album member was removed")
+        } catch CleanupVerificationError.changed {
+        } catch BackupVerificationError.stale {}
+        let deleted = await library.deleted
+        XCTAssertTrue(deleted.isEmpty)
     }
 
     private func remoteAssets(live: Bool) -> [BackupRemoteAsset] {

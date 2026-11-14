@@ -9,26 +9,15 @@ import Photos
 /// photokit's caching manager, but both take the same window.
 @MainActor
 final class ThumbnailPrefetcher {
-    /// tiles kept warm past the fold, about what a fast fling can reveal before
-    /// the network can answer.
-    private static let lookAhead = 36
-    /// of those, the ones a fling reaches first are decoded ahead of time. the
-    /// rest only land on disk: a fast fling usually races past them, and a
-    /// decode nobody sees is the costliest part of a prefetch.
-    private static let decodedAhead = 15
-    /// scrolling back up is common enough to keep a short tail warm too.
-    private static let lookBehind = 12
-
     /// where one warmed asset's tile comes from.
     private enum Source: Hashable {
         case remote(URL)
-        /// device-only: the library is its only source, so icloud may be
-        /// asked for it.
-        case local(String)
+        /// Device-only: warm only the locally available derivative.
+        case local(String, String)
         /// device copy of a server asset: rendered from the library when it
         /// has it, never downloaded for a tile the server can serve. kept
         /// apart because the caching manager only serves matching options.
-        case paired(String)
+        case paired(String, String)
     }
 
     private struct Warmed: Hashable {
@@ -52,6 +41,10 @@ final class ThumbnailPrefetcher {
     /// moving window diffs by index arithmetic: only the assets entering or
     /// leaving it are looked at, never a url per asset of the whole window.
     private var warmed: [Warmed] = []
+    private let ownerID = UUID()
+    private weak var windowClient: ImoraClient?
+    private var rowAssetCounts: [String: Int] = [:]
+    private var rowCountsVersion = -1
 
     init(
         targetPixelSize: CGFloat = 640,
@@ -89,14 +82,22 @@ final class ThumbnailPrefetcher {
         let assets = model.flatAssets
         let low = min(first, last)
         let high = max(first, last)
-        let goingUp = direction < 0
-        let lower = max(0, low - (goingUp ? Self.lookAhead : Self.lookBehind))
-        let upper = min(assets.count, high + 1 + (goingUp ? Self.lookBehind : Self.lookAhead))
-        guard lower < upper else { return cancel() }
-        let decodedLower = max(0, low - (goingUp ? Self.decodedAhead : Self.lookBehind))
-        let decodedUpper = min(assets.count, high + 1 + (goingUp ? Self.lookBehind : Self.decodedAhead))
-        let next = lower..<upper
-        let nextDecoded = decodedLower..<max(decodedLower, decodedUpper)
+        if windowClient !== client {
+            cancel()
+            windowClient = client
+        }
+        if rowCountsVersion != model.flatAssetsVersion {
+            rowAssetCounts = Dictionary(uniqueKeysWithValues: model.rows.compactMap { row in
+                guard case .tiles(let id, let runs) = row else { return nil }
+                return (id, runs.reduce(0) { $0 + $1.assets.count })
+            })
+            rowCountsVersion = model.flatAssetsVersion
+        }
+        let lastRowID = visibleRowIDs.reversed().first { model.firstAssetIDByRowID[$0] != nil }
+        let visibleEnd = min(assets.count, high + (lastRowID.flatMap { rowAssetCounts[$0] } ?? 1))
+        let next = ThumbnailLoadState.prefetchWindow(visible: low..<visibleEnd, count: assets.count)
+        guard !next.isEmpty else { return cancel() }
+        let nextDecoded = next
 
         let version = model.flatAssetsVersion
         guard next != window || version != windowVersion || nextDecoded != decodedRange else { return }
@@ -109,7 +110,7 @@ final class ThumbnailPrefetcher {
             if let reusable, reusable.contains(index) {
                 source = warmed[index - reusable.lowerBound].source
             } else {
-                source = Self.source(of: assets[index], client: client, backup: backup)
+                source = Self.source(of: assets[index], client: client, backup: backup, pixels: self.targetPixelSize)
             }
             // photokit has one caching lane, so only server tiles split.
             let isDecoded: Bool
@@ -156,7 +157,7 @@ final class ThumbnailPrefetcher {
     /// viewer pages a flat list and picks its own thumbnail size.
     func warm(remote: Set<URL>, local: Set<String>) {
         let entries = remote.map { Warmed(source: .remote($0), isDecoded: true) }
-            + local.map { Warmed(source: .local($0), isDecoded: true) }
+            + local.map { Warmed(source: .local($0, ""), isDecoded: true) }
         let (start, stop) = Self.difference(from: warmed, to: entries)
         window = nil
         windowVersion = -1
@@ -183,12 +184,14 @@ final class ThumbnailPrefetcher {
 
     /// tiles render the device copy when one is paired, so warm the same
     /// source, with the same options, the tile will ask for.
-    private static func source(of asset: Asset, client: ImoraClient, backup: BackupManager?) -> Source {
+    private static func source(of asset: Asset, client: ImoraClient, backup: BackupManager?, pixels: CGFloat) -> Source {
+        let scope = AssetThumbnailSource.prefetchScope(accountKey: client.offlineAccountKey,
+            version: asset.localImageVersion ?? asset.thumbhash, pixels: pixels)
         if let localIdentifier = asset.localIdentifier {
-            return .local(localIdentifier)
+            return .local(localIdentifier, scope)
         }
         if let localIdentifier = backup?.localIdentifierByRemoteId[asset.id] {
-            return .paired(localIdentifier)
+            return .paired(localIdentifier, scope)
         }
         return .remote(client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash))
     }
@@ -203,8 +206,8 @@ final class ThumbnailPrefetcher {
         guard !start.isEmpty || !stop.isEmpty else { return }
         var decoded: (start: [URL], stop: [URL]) = ([], [])
         var data: (start: [URL], stop: [URL]) = ([], [])
-        var local: (start: [String], stop: [String]) = ([], [])
-        var paired: (start: [String], stop: [String]) = ([], [])
+        var local: (start: [String: String], stop: [String: String]) = ([:], [:])
+        var paired: (start: [String: String], stop: [String: String]) = ([:], [:])
         for (entries, isStart) in [(stop, false), (start, true)] {
             for entry in entries {
                 switch entry.source {
@@ -214,10 +217,10 @@ final class ThumbnailPrefetcher {
                     } else {
                         isStart ? data.start.append(url) : data.stop.append(url)
                     }
-                case .local(let identifier):
-                    isStart ? local.start.append(identifier) : local.stop.append(identifier)
-                case .paired(let identifier):
-                    isStart ? paired.start.append(identifier) : paired.stop.append(identifier)
+                case .local(let identifier, let scope):
+                    if isStart { local.start[identifier] = scope } else { local.stop[identifier] = scope }
+                case .paired(let identifier, let scope):
+                    if isStart { paired.start[identifier] = scope } else { paired.stop[identifier] = scope }
                 }
             }
         }
@@ -233,27 +236,29 @@ final class ThumbnailPrefetcher {
         if !data.start.isEmpty {
             ImageLoader.shared.startPrefetchingData(urls: data.start)
         }
-        syncLocal(start: local.start, stop: local.stop, allowsNetwork: true)
+        syncLocal(start: local.start, stop: local.stop, allowsNetwork: false)
         syncLocal(start: paired.start, stop: paired.stop, allowsNetwork: false)
     }
 
-    private func syncLocal(start: [String], stop: [String], allowsNetwork: Bool) {
+    private func syncLocal(start: [String: String], stop: [String: String], allowsNetwork: Bool) {
         if !stop.isEmpty {
             LocalImageLoader.shared.stopCaching(
-                localIdentifiers: stop,
+                localIdentifiers: Array(stop.keys),
                 targetPixelSize: targetPixelSize,
                 contentMode: localContentMode,
                 coversTarget: localCoversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScopes: stop, ownerID: ownerID
             )
         }
         if !start.isEmpty {
             LocalImageLoader.shared.startCaching(
-                localIdentifiers: start,
+                localIdentifiers: Array(start.keys),
                 targetPixelSize: targetPixelSize,
                 contentMode: localContentMode,
                 coversTarget: localCoversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScopes: start, ownerID: ownerID
             )
         }
     }

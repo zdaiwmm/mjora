@@ -38,6 +38,7 @@ final class RealtimeHub {
 
     /// bumped after album events so album lists reload without a listener.
     private(set) var albumsGeneration = 0
+    private(set) var localGeneration = 0
     /// cache-buster per person, set once the server has re-rendered their
     /// portrait. it outranks the person's updatedAt because a re-render can
     /// land after the row was already read back, and it is persisted because
@@ -50,7 +51,8 @@ final class RealtimeHub {
     private var resyncOnConnect = false
     /// wired by sessionstore to the backup manager, which retires the device
     /// twins of assets the server has repainted.
-    @ObservationIgnored var onBackupReconciliationNeeded: (() -> Void)?
+    @ObservationIgnored var onBackupReconciliationNeeded: ((UUID?) -> Void)?
+    @ObservationIgnored var onBackupConnectionGap: (() -> Void)?
     @ObservationIgnored var onRemoteBackupChange: ((Set<String>, BackupRemoteChange) -> Void)?
     @ObservationIgnored var onRemoteEdit: ((Set<String>) -> Void)?
     /// the server version sent on every connect, so api shapes can follow an
@@ -107,7 +109,7 @@ final class RealtimeHub {
             startConnection()
             // the resync doubles as the missed-while-backgrounded catch-up.
             broadcast { $0.realtimeCatchUp() }
-            onBackupReconciliationNeeded?()
+            onBackupReconciliationNeeded?(nil)
             startSafetyTick()
         } else {
             connectionTask?.cancel()
@@ -117,6 +119,9 @@ final class RealtimeHub {
             resyncDebounce?.cancel()
             resyncDebounce = nil
             isConnected = false
+            // Deliberate background suspension is not a transport failure.
+            // Foreground activation already requests catch-up; uploads keep
+            // their existing authority while the socket is intentionally off.
         }
     }
 
@@ -131,6 +136,7 @@ final class RealtimeHub {
     /// called by the backup manager whenever device assets or the backup
     /// index changed. debounced so upload bursts coalesce.
     func notifyLocalChange() {
+        localGeneration &+= 1
         guard localDebounce == nil else { return }
         localDebounce = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
@@ -213,6 +219,10 @@ final class RealtimeHub {
                 } catch {
                     realtimeLog.info("socket dropped: \((error as NSError).code)")
                 }
+                // URLSession can report deliberate cancellation as URLError,
+                // not CancellationError. Do not turn background teardown into
+                // a transport gap after the owner has stopped this socket.
+                guard self.active, !Task.isCancelled else { return }
                 // a dropped or refused socket means missed events; the next
                 // successful connect catches up immediately instead of
                 // waiting out the safety tick. this is also what turns an
@@ -220,7 +230,7 @@ final class RealtimeHub {
                 // returns.
                 self.resyncOnConnect = true
                 self.isConnected = false
-                guard self.active, !Task.isCancelled else { return }
+                self.onBackupConnectionGap?()
                 let jitter = Double.random(in: 0...0.4) * backoff
                 try? await Task.sleep(for: .seconds(backoff + jitter))
                 backoff = min(backoff * 2, 30)
@@ -251,6 +261,7 @@ final class RealtimeHub {
         // grace before the first server frame, then a rolling deadline based
         // on the server ping cadence so half-open sockets get torn down.
         var deadline: Duration = .seconds(15)
+        let connectionGeneration = UUID()
 
         while !Task.isCancelled {
             let message = try await SocketConnection.receive(from: task, timeout: deadline)
@@ -264,7 +275,7 @@ final class RealtimeHub {
             case .ping:
                 try await task.send(.string("3"))
             case .connected:
-                await noteConnected()
+                await noteConnected(generation: connectionGeneration)
             case .connectError(let detail):
                 throw ImoraError.http(401, detail)
             case .event(let event):
@@ -277,12 +288,12 @@ final class RealtimeHub {
         }
     }
 
-    private func noteConnected() {
+    private func noteConnected(generation: UUID) {
         guard client.context.isActive, active else { return }
         realtimeLog.info("socket connected")
         isConnected = true
         if resyncOnConnect {
-            onBackupReconciliationNeeded?()
+            onBackupReconciliationNeeded?(generation)
             resyncOnConnect = false
             broadcast { $0.realtimeCatchUp() }
         }
@@ -318,7 +329,7 @@ final class RealtimeHub {
             scheduleResync()
 
         case "AssetUploadReadyV1", "AssetUploadReadyV2", "on_upload_success", "on_asset_stack_update":
-            onBackupReconciliationNeeded?()
+            onBackupReconciliationNeeded?(nil)
             scheduleResync()
 
         case "on_asset_delete", "on_asset_trash", "on_asset_hidden":

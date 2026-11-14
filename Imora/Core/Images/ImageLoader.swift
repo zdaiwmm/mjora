@@ -34,11 +34,9 @@ nonisolated final class ImageLoader: Sendable {
         // the sanitized key drops the thumbnail size, so one download serves
         // every pixel size the grid and the viewer ask for.
         configuration.dataCachePolicy = .storeOriginalData
-        // room for the tiles coming on screen while the prefetcher and the
-        // sweep hold their lanes: a fling asks for a screenful at once, and
-        // with six slots those requests queued behind loads nobody would
-        // see. thumbnails are small, so two decoders run comfortably.
-        configuration.dataLoadingQueue.maxConcurrentOperationCount = 10
+        // Both prefetch lanes and visible requests share four network
+        // slots; decoding keeps its existing two-worker bound.
+        configuration.dataLoadingQueue.maxConcurrentOperationCount = 4
         configuration.imageDecodingQueue.maxConcurrentOperationCount = 2
         configuration.makeImageDecoder = { context in
             FittingThumbnailDecoder(context: context) ?? ImageDecoderRegistry.shared.decoder(for: context)
@@ -93,6 +91,39 @@ nonisolated final class ImageLoader: Sendable {
             guard client.context.isActive, authorization.client.withLock({ $0 === client }) else { throw ServerTrustError.sessionExpired }
             return image
         } onCancel: { task.cancel() }
+    }
+
+    /// Bounded grid-only derivative loading. An error is propagated after
+    /// the single preview attempt, so a tile remains retryable.
+    func gridThumbnail(
+        thumbnailURL: URL,
+        previewURL: URL,
+        targetPixelSize: CGFloat,
+        aspectRatio: Double = 1,
+        onPreview: @escaping @MainActor @Sendable (UIImage) -> Void = { _ in }
+    ) async throws -> UIImage {
+        guard let initialClient = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
+        var state = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
+        let ratio = max(0.01, aspectRatio)
+        for (url, isPreview) in [(thumbnailURL, false), (previewURL, true)] {
+            try Task.checkCancellation()
+            guard initialClient.context.isActive, authorization.client.withLock({ $0 === initialClient }) else {
+                throw ServerTrustError.sessionExpired
+            }
+            let size = isPreview ? targetPixelSize * max(ratio, 1 / ratio) : targetPixelSize
+            do {
+                let loaded = try await image(for: url, targetPixelSize: size)
+                try Task.checkCancellation()
+                let pixels = Double(min(loaded.size.width, loaded.size.height) * loaded.scale)
+                if state.remoteResult(pixels: pixels, isPreview: isPreview) == .finished { return loaded }
+                await onPreview(loaded)
+            } catch {
+                try Task.checkCancellation()
+                if isPreview { throw error }
+                _ = state.remoteResult(pixels: nil, isPreview: false)
+            }
+        }
+        throw URLError(.cannotDecodeContentData)
     }
 
     // MARK: - prefetching
@@ -346,6 +377,9 @@ private nonisolated final class AccountImageDataLoader: DataLoading {
                           request.value(forHTTPHeaderField: "Authorization") == "Bearer \(client.accessToken)" else {
                         throw ServerTrustError.sessionExpired
                     }
+                    let permit = try await ThumbnailLoadLimiter.shared.acquire()
+                    defer { Task { await ThumbnailLoadLimiter.shared.release(permit) } }
+                    try Task.checkCancellation()
                     let (data, response) = try await client.imageData(for: request)
                     guard owner.client.withLock({ $0 === client }) else { throw ServerTrustError.sessionExpired }
                     didReceiveData(data, response)

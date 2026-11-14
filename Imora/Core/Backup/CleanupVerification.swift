@@ -17,12 +17,17 @@ nonisolated struct CleanupReport: Equatable, Sendable {
     let route: URL
     let createdAt: Date
     let expiresAt: Date
+    let retention: CleanupRetentionSnapshot?
+    let retainedReasons: [CleanupRetentionReason: MediaCounts]
 
     init(account: String, generation: UUID, candidates: [CleanupCandidate], keptMedia: MediaCounts,
-         route: URL, createdAt: Date = Date(), expiresAt: Date? = nil) {
+         route: URL, createdAt: Date = Date(), expiresAt: Date? = nil,
+         retention: CleanupRetentionSnapshot? = nil, retainedReasons: [CleanupRetentionReason: MediaCounts] = [:]) {
         self.account = account; self.generation = generation; self.candidates = candidates
         self.keptMedia = keptMedia; self.route = route; self.createdAt = createdAt
         self.expiresAt = expiresAt ?? createdAt.addingTimeInterval(600)
+        self.retention = retention
+        self.retainedReasons = retainedReasons
     }
     var eligible: [String] { candidates.map { $0.asset.localIdentifier } }
     var eligibleMedia: MediaCounts { MediaCounts(assets: candidates.map(\.asset)) }
@@ -67,6 +72,18 @@ nonisolated protocol CleanupPhotoLibrary: Sendable {
     func assets(ids: [String]) async throws -> [DeviceAsset]
     func hashes(for asset: DeviceAsset) async throws -> LocalResourceHashes
     func delete(_ assets: [DeviceAsset], permitted: @escaping @Sendable () -> Bool) async throws -> [String]
+    func protectedAlbumMemberIDs(_ albumIDs: Set<String>) async throws -> Set<String>
+    func delete(_ assets: [DeviceAsset], retention: CleanupRetentionSnapshot?, permitted: @escaping @Sendable () -> Bool) async throws -> [String]
+}
+
+nonisolated extension CleanupPhotoLibrary {
+    func protectedAlbumMemberIDs(_ albumIDs: Set<String>) async throws -> Set<String> {
+        guard albumIDs.isEmpty else { throw CleanupVerificationError.changed }
+        return []
+    }
+    func delete(_ assets: [DeviceAsset], retention: CleanupRetentionSnapshot?, permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
+        try await delete(assets, permitted: permitted)
+    }
 }
 
 nonisolated protocol CleanupRemoteAPI: BackupRemoteAPI {
@@ -84,12 +101,19 @@ nonisolated enum CleanupVerifier {
     }
 
     private static func validateLocal(_ expected: [DeviceAsset], library: any CleanupPhotoLibrary,
+                                      retention: CleanupRetentionSnapshot? = nil,
                                       isCurrent: @Sendable () async -> Bool) async throws {
         let actual = try await library.assets(ids: expected.map(\.localIdentifier))
         try await check(library: library, isCurrent: isCurrent)
         guard actual.count == expected.count, Set(actual.map(\.localIdentifier)).count == actual.count else { throw CleanupVerificationError.changed }
         let byID = Dictionary(uniqueKeysWithValues: actual.map { ($0.localIdentifier, $0) })
         guard expected.allSatisfy({ byID[$0.localIdentifier] == $0 }) else { throw CleanupVerificationError.changed }
+        if let retention {
+            let protected = try await library.protectedAlbumMemberIDs(retention.policy.protectedAlbumIDs)
+            try await check(library: library, isCurrent: isCurrent)
+            guard actual.allSatisfy({ retention.reasons(creationDate: $0.creationDate, isFavorite: $0.isFavorite,
+                protectedAlbumMember: protected.contains($0.localIdentifier)).isEmpty }) else { throw CleanupVerificationError.changed }
+        }
     }
 
     static func perform(report: CleanupReport, account: String, generation: UUID,
@@ -105,7 +129,7 @@ nonisolated enum CleanupVerifier {
               let owner = account.split(separator: "|").last.map(String.init)
         else { throw CleanupVerificationError.invalidReport }
         try await check(library: library, isCurrent: isCurrent)
-        try await validateLocal(report.candidates.map(\.asset), library: library, isCurrent: isCurrent)
+        try await validateLocal(report.candidates.map(\.asset), library: library, retention: report.retention, isCurrent: isCurrent)
 
         var items: [BulkUploadCheckItem] = []
         var expectedIDs: [String: String] = [:]
@@ -134,7 +158,7 @@ nonisolated enum CleanupVerifier {
             let asset = candidate.asset
             let current: @Sendable () async -> Bool = {
                 guard await isCurrent(), await evidenceCurrent(candidate) else { return false }
-                do { try await validateLocal([asset], library: library, isCurrent: isCurrent); return true }
+                do { try await validateLocal([asset], library: library, retention: report.retention, isCurrent: isCurrent); return true }
                 catch { return false }
             }
             try await BackupVerifier.checkCurrent(current)
@@ -173,13 +197,13 @@ nonisolated enum CleanupVerifier {
                                                     return await evidenceCurrent(candidate)
                                                 })
         }
-        try await validateLocal(report.candidates.map(\.asset), library: library, isCurrent: isCurrent)
+        try await validateLocal(report.candidates.map(\.asset), library: library, retention: report.retention, isCurrent: isCurrent)
         try await check(library: library, isCurrent: isCurrent)
         for candidate in report.candidates {
             guard await evidenceCurrent(candidate) else { throw CleanupVerificationError.changed }
         }
         guard canCommit() else { throw CleanupVerificationError.changed }
-        let deleted = try await library.delete(report.candidates.map(\.asset), permitted: canCommit)
+        let deleted = try await library.delete(report.candidates.map(\.asset), retention: report.retention, permitted: canCommit)
         guard Set(deleted).count == deleted.count, Set(deleted).isSubset(of: Set(ids)) else { throw CleanupVerificationError.invalidReport }
         let deletedSet = Set(deleted)
         let removed = MediaCounts(assets: report.candidates.filter { deletedSet.contains($0.asset.localIdentifier) }.map(\.asset))
@@ -193,6 +217,12 @@ extension ImoraClient: CleanupRemoteAPI {}
 
 nonisolated struct PhotosCleanupLibrary: CleanupPhotoLibrary {
     func hasFullAccess() async -> Bool { PhotoLibraryService.hasFullAccess }
+    func protectedAlbumMemberIDs(_ albumIDs: Set<String>) async throws -> Set<String> {
+        try PhotoLibraryService.protectedAlbumMemberIDs(albumIDs)
+    }
+    func delete(_ assets: [DeviceAsset], retention: CleanupRetentionSnapshot?, permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
+        try await PhotoLibraryService.deleteVerified(assets, retention: retention, permitted: permitted)
+    }
     func assets(ids: [String]) async throws -> [DeviceAsset] {
         var result: [DeviceAsset] = []
         for id in ids { if let asset = await PhotoLibraryService.assetInfo(localIdentifier: id) { result.append(asset) } }

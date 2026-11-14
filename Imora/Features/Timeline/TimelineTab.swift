@@ -3,6 +3,7 @@ import SwiftUI
 struct TimelineTab: View {
     @Environment(SessionStore.self) private var session
     @Bindable private var router = TimelineNavigationRouter.shared
+    @AppStorage("imora.photos.source") private var source = "cloud"
     @State private var showSettings = false
     @State private var showBackupSettings = false
 
@@ -16,48 +17,40 @@ struct TimelineTab: View {
 
     var body: some View {
         NavigationStack {
-            // no title: the tab bar already says Photos, and a large title
-            // snaps between expanded and collapsed as you scroll near the top,
-            // which jumps the grid by the height of that collapse.
-            TimelineScreen(
-                title: "",
-                filter: filter,
-                showsLargeTitle: false,
-                mergesLocalPhotos: true,
-                navigationTarget: $router.pendingTarget,
-                trailingItems: {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            NotificationRouter.shared.openInbox()
-                        } label: {
-                            Image(systemName: "bell")
-                        }
-                        // ios 26 renders toolbar badges; zero draws nothing.
+            Group {
+                if source == "local" {
+                    DeviceLibraryScreen(navigationTarget: $router.pendingTarget)
+                } else {
+                    CloudPhotosScreen(filter: filter, navigationTarget: $router.pendingTarget) {
+                        showBackupSettings = true
+                    }
+                    .id(filter)
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Picker("Photo Source", selection: $source) {
+                    Text("Cloud").tag("cloud")
+                    Text("On Device").tag("local")
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal).padding(.vertical, 8)
+                .background(.bar)
+                .accessibilityIdentifier("photos-source-picker")
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { NotificationRouter.shared.openInbox() } label: { Image(systemName: "bell") }
                         .badge(session.notifications?.unreadCount ?? 0)
                         .accessibilityIdentifier("notifications-open")
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            showSettings = true
-                        } label: {
-                            ProfileAvatar(size: 30)
-                        }
-                        .accessibilityIdentifier("profile-avatar")
-                    }
-                },
-                header: {
-                    VStack(spacing: 0) {
-                        BackupStatusBanner { showBackupSettings = true }
-                        if session.backup?.showsBackupReminder != true && session.backup?.syncHoldMessage == nil {
-                            LocalPhotosBanner()
-                        }
-                        MemoryLane()
-                    }
                 }
-            )
-            // the model keeps the filter it was built with, so a product
-            // detected after launch rebuilds the grid once.
-            .id(filter)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSettings = true } label: { ProfileAvatar(size: 30) }
+                        .accessibilityIdentifier("profile-avatar")
+                }
+            }
+            .onChange(of: router.pendingTarget, initial: true) { _, target in
+                if let target { source = target.assetID.hasPrefix("local-") ? "local" : "cloud" }
+            }
             .navigationDestination(isPresented: $showBackupSettings) {
                 BackupScreen()
             }
@@ -65,6 +58,35 @@ struct TimelineTab: View {
                 SettingsView()
             }
         }
+    }
+}
+
+private struct CloudPhotosScreen: View {
+    let filter: TimelineFilter
+    @Binding var navigationTarget: TimelineNavigationTarget?
+    let showBackup: () -> Void
+    @State private var model: TimelineModel
+
+    init(filter: TimelineFilter, navigationTarget: Binding<TimelineNavigationTarget?>, showBackup: @escaping () -> Void) {
+        self.filter = filter
+        _navigationTarget = navigationTarget
+        self.showBackup = showBackup
+        _model = State(initialValue: TimelineModel(filter: filter))
+    }
+
+    var body: some View {
+        TimelineScreen(title: "", filter: filter, showsLargeTitle: false, suppliedModel: model,
+            navigationTarget: $navigationTarget, header: {
+                VStack(spacing: 0) {
+                    BackupStatusBanner { showBackup() }
+                    if !model.sections.isEmpty {
+                        Text("\(model.sections.reduce(0) { $0 + $1.count }) cloud items")
+                            .font(.footnote).foregroundStyle(.secondary).padding(.vertical, 6)
+                            .accessibilityIdentifier("cloud-library-count")
+                    }
+                    MemoryLane()
+                }
+            })
     }
 }
 

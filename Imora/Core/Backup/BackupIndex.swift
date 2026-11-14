@@ -30,6 +30,8 @@ nonisolated struct BackupEntry: Codable, Sendable, Equatable {
     /// A known server copy was removed or trashed. Keep this independently of transient
     /// verification state so reconciliation never recreates it automatically.
     var remoteDeletionDetected: Bool? = nil
+    /// Display history persists across launches; it never grants cleanup authority.
+    var historicalBackupConfirmed: Bool? = nil
 
     var isUploadBlockedByRemoteRemoval: Bool {
         remoteDeletionDetected == true || verificationState == .trashed
@@ -57,7 +59,12 @@ nonisolated struct BackupEntry: Codable, Sendable, Equatable {
 
     /// true when every component the asset has is known to exist server-side.
     var isBackedUp: Bool {
-        verificationState == .verified && proof?.matches(self) == true
+        !isUploadBlockedByRemoteRemoval && verificationState == .verified && proof?.matches(self) == true
+    }
+
+    var hasHistoricalBackup: Bool {
+        !isUploadBlockedByRemoteRemoval && (historicalBackupConfirmed == true || isBackedUp)
+            && primaryRemoteId != nil && (!isLivePhoto || motionRemoteId != nil)
     }
 
     func hasSameResources(as other: BackupEntry) -> Bool {
@@ -115,6 +122,8 @@ actor BackupIndex {
 
     private nonisolated let evidenceEpoch = Mutex<UInt64>(0)
     nonisolated var evidenceVersion: UInt64 { evidenceEpoch.withLock { $0 } }
+    /// Known events revoke in-flight PhotoKit authority before any actor/SQLite work.
+    nonisolated func revokeCleanupAuthority() { evidenceEpoch.withLock { $0 &+= 1 } }
 
     private var fileURL: URL
     private let usesAccountFiles: Bool
@@ -206,6 +215,10 @@ actor BackupIndex {
         let legacyHost = URL(string: serverHost)?.host() ?? serverHost
         guard [serverHost, legacyHost].contains(snapshot.serverHost), snapshot.userId == userId else { return true }
         entries = snapshot.entries
+        // Migrate successful old-session evidence into display-only history before revoking it.
+        for id in Array(entries.keys) where entries[id]?.isBackedUp == true {
+            entries[id]?.historicalBackupConfirmed = true
+        }
         // A saved proof belongs to the session that observed it. Checksums and
         // candidate IDs survive launch; current completion does not.
         invalidateProofs()
@@ -265,7 +278,7 @@ actor BackupIndex {
         guard assets.allSatisfy({ asset in
             guard let entry = entries[asset.localIdentifier],
                   entry.matches(modificationDate: asset.modificationDate) else { return false }
-            return entry.isBackedUp || entry.unsupported
+            return entry.hasHistoricalBackup || entry.isUploadBlockedByRemoteRemoval || entry.unsupported
                 || entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes)
         }) else { return }
         guard backlogCheckpoint.map({ date > $0 }) ?? true else { return }
@@ -304,6 +317,7 @@ actor BackupIndex {
     }
 
     func invalidateProofs(localIds: Set<String>? = nil) {
+        var changed = false
         for id in Array(entries.keys) where localIds == nil || localIds!.contains(id) {
             guard var entry = entries[id] else { continue }
             entry.proof = nil
@@ -311,8 +325,9 @@ actor BackupIndex {
             if entry.verificationState != .trashed { entry.verificationState = .pending }
             entry.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
             entries[id] = entry
+            changed = true
         }
-        if !entries.isEmpty { markDirty() }
+        if changed { markDirty() }
     }
 
     func recordProof(localId: String, source: BackupEntry, proof: BackupProof) -> Bool {
@@ -320,6 +335,7 @@ actor BackupIndex {
               let entry = entries[localId], entry.hasSameResources(as: source),
               entry.verificationRevision == source.verificationRevision, proof.matches(entry)
         else { return false }
+        entries[localId]?.historicalBackupConfirmed = true
         entries[localId]?.proof = proof
         entries[localId]?.verificationState = .verified
         // An externally restored/recreated copy is recognized only after
@@ -427,6 +443,9 @@ actor BackupIndex {
         if let old {
             entry.remoteDeletionDetected = old.remoteDeletionDetected
             if old.verificationState == .trashed { entry.verificationState = .trashed }
+            if old.primaryChecksum == primaryChecksum && old.motionChecksum == motionChecksum && old.isLivePhoto == isLivePhoto {
+                entry.historicalBackupConfirmed = old.hasHistoricalBackup
+            }
             if old.primaryChecksum == primaryChecksum {
                 entry.primaryRemoteId = old.primaryRemoteId
                 entry.unsupported = old.unsupported
@@ -538,6 +557,7 @@ actor BackupIndex {
             remoteToLocal[stale] = nil
         }
         entry.primaryRemoteId = nil
+        entry.historicalBackupConfirmed = nil
         entry.proof = nil
         entry.verificationState = .missing
         entries[localId] = entry
@@ -565,6 +585,7 @@ actor BackupIndex {
     func clearMotionRemoteId(localId: String) {
         guard var entry = entries[localId] else { return }
         entry.motionRemoteId = nil
+        entry.historicalBackupConfirmed = nil
         entry.proof = nil
         entry.verificationState = .missing
         entries[localId] = entry
@@ -618,10 +639,13 @@ actor BackupIndex {
     /// be deleted along with the server one, it just no longer looks like it.
     /// returns true when this is news, so the caller can refresh and save.
     func markRemoteEdited(_ remoteIds: Set<String>) -> Bool {
-        let known = remoteIds.filter { remoteToLocal[$0] != nil }
-        guard !known.isSubset(of: editedRemoteIds) else { return false }
+        let localIDs = Set(entries.compactMap { localID, entry in
+            entry.primaryRemoteId.map(remoteIds.contains) == true || entry.motionRemoteId.map(remoteIds.contains) == true ? localID : nil
+        })
+        guard !localIDs.isEmpty else { return false }
+        let known = localIDs.compactMap { entries[$0]?.primaryRemoteId }
         editedRemoteIds.formUnion(known)
-        markDirty()
+        invalidateProofs(localIds: localIDs)
         return true
     }
 
@@ -630,7 +654,7 @@ actor BackupIndex {
     func backedUpRemoteIds() -> Set<String> {
         var ids: Set<String> = []
         ids.reserveCapacity(entries.count)
-        for entry in entries.values where entry.isBackedUp {
+        for entry in entries.values where entry.hasHistoricalBackup {
             if let remoteId = entry.primaryRemoteId {
                 ids.insert(remoteId)
             }
@@ -639,14 +663,15 @@ actor BackupIndex {
     }
 
     func localSnapshot() -> BackupIndexSnapshot {
+        let visiblePairings = remoteToLocal.filter { entries[$0.value]?.isUploadBlockedByRemoteRemoval != true }
         var remoteByLocal: [String: String] = [:]
-        remoteByLocal.reserveCapacity(remoteToLocal.count)
-        for (remoteId, localId) in remoteToLocal {
+        remoteByLocal.reserveCapacity(visiblePairings.count)
+        for (remoteId, localId) in visiblePairings {
             remoteByLocal[localId] = remoteId
         }
         var backedUpLocalRevisions: [String: Date?] = [:]
         var sizeExcludedRequestBytesByLocal: [String: Int64] = [:]
-        for (localId, entry) in entries where entry.isBackedUp {
+        for (localId, entry) in entries where entry.hasHistoricalBackup {
             backedUpLocalRevisions.updateValue(entry.modificationDate, forKey: localId)
         }
         for (localId, entry) in entries where !entry.isBackedUp {
@@ -655,12 +680,91 @@ actor BackupIndex {
             }
         }
         return BackupIndexSnapshot(
-            localByRemote: remoteToLocal,
+            localByRemote: visiblePairings,
             remoteByLocal: remoteByLocal,
-            renderableLocalByRemote: renderableRemoteToLocalMap(),
+            renderableLocalByRemote: renderableRemoteToLocalMap().filter { visiblePairings[$0.key] != nil },
             backedUpRemoteIds: backedUpRemoteIds(),
             backedUpLocalRevisions: backedUpLocalRevisions,
             sizeExcludedRequestBytesByLocal: sizeExcludedRequestBytesByLocal
         )
     }
+    func markHistoricallyPresent(localIDs: Set<String>) {
+        for id in localIDs {
+            guard let entry = entries[id], !entry.isUploadBlockedByRemoteRemoval, !entry.hasHistoricalBackup else { continue }
+            entries[id]?.historicalBackupConfirmed = true
+            entries[id]?.lastVerifiedAt = Date()
+            markDirty()
+        }
+    }
+
+    /// The caller has already recovered pending synchronization work and obtained explicit consent.
+    /// Clearing JSON first keeps the durable SQLite guard in place through this disk write.
+    func prepareForExplicitRebackup(localID: String, generation: UUID) throws {
+        guard loaded, self.generation == generation, let source = entries[localID] else { throw RemoteSyncError.unsafeHistory }
+        let previousMap = remoteToLocal
+        clearPrimaryRemoteId(localId: localID)
+        clearMotionRemoteId(localId: localID)
+        entries[localID]?.remoteDeletionDetected = nil
+        entries[localID]?.verificationState = .pending
+        entries[localID]?.verificationRevision = (source.verificationRevision ?? 0) &+ 1
+        entries[localID]?.pairRepairDenied = nil
+        markDirty()
+        guard flush() else {
+            entries[localID] = source
+            remoteToLocal = previousMap
+            markDirty()
+            throw RemoteSyncError.indexFlushFailed
+        }
+    }
+
+    func syncHistory(scope: SyncScope, generation: UUID) throws -> [SyncHistoricalPairing] {
+        guard loaded, self.generation == generation, serverHost == scope.serverIdentity, userId == scope.accountID else {
+            throw RemoteSyncError.unsafeHistory
+        }
+        return entries.compactMap { localID, entry in
+            guard entry.primaryRemoteId != nil || entry.motionRemoteId != nil || entry.isUploadBlockedByRemoteRemoval else { return nil }
+            return SyncHistoricalPairing(localID: localID, primaryRemoteID: entry.primaryRemoteId,
+                motionRemoteID: entry.motionRemoteId, primaryChecksum: entry.primaryChecksum,
+                motionChecksum: entry.motionChecksum, isLivePhoto: entry.isLivePhoto,
+                remoteDeleted: entry.isUploadBlockedByRemoteRemoval)
+        }
+    }
+
+    func applySyncOperations(_ operations: [RemoteIndexOperation], scope: SyncScope, generation: UUID) throws {
+        _ = try syncHistory(scope: scope, generation: generation)
+        for operation in operations {
+            switch operation {
+            case .invalidate(let remoteID):
+                for localID in Array(entries.keys) {
+                    guard let entry = entries[localID],
+                          entry.primaryRemoteId == remoteID || entry.motionRemoteId == remoteID else { continue }
+                    entries[localID]?.proof = nil
+                    entries[localID]?.verificationState = .pending
+                    entries[localID]?.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
+                    markDirty()
+                }
+            case .removed(let remoteID):
+                noteRemoteChange(ids: [remoteID], change: .deleted, generation: generation)
+            case .restoreLocal(let pairing):
+                guard let entry = entries[pairing.localID], entry.primaryChecksum == pairing.primaryChecksum,
+                      entry.motionChecksum == pairing.motionChecksum, entry.isLivePhoto == pairing.isLivePhoto else { continue }
+                if let id = pairing.primaryRemoteID { setPrimaryRemoteId(localId: pairing.localID, id) }
+                if let id = pairing.motionRemoteID { setMotionRemoteId(localId: pairing.localID, id) }
+                entries[pairing.localID]?.remoteDeletionDetected = nil
+                entries[pairing.localID]?.verificationState = .pending
+                entries[pairing.localID]?.historicalBackupConfirmed = true
+                entries[pairing.localID]?.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
+                markDirty()
+            case .protectLocal(let localID):
+                guard let entry = entries[localID], !entry.isUploadBlockedByRemoteRemoval else { continue }
+                entries[localID]?.remoteDeletionDetected = true
+                entries[localID]?.proof = nil
+                entries[localID]?.verificationState = .missing
+                entries[localID]?.verificationRevision = (entry.verificationRevision ?? 0) &+ 1
+                markDirty()
+            }
+        }
+        guard flush() else { throw RemoteSyncError.indexFlushFailed }
+    }
+
 }

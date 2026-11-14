@@ -12,6 +12,8 @@ struct RemoteImage: View {
     var placeholderImage: UIImage?
     var fallbackURL: URL?
     var fallbackTargetPixelSize: CGFloat?
+    var upgradeURL: URL?
+    var assetAspectRatio: Double = 1
     var contentMode: ContentMode = .fill
     /// false while the grid moves too fast for a fade per arriving tile to
     /// read as anything but flicker. the thumbhash step goes with it.
@@ -22,6 +24,8 @@ struct RemoteImage: View {
     @State private var image: KeyedImage?
     @State private var placeholder: KeyedImage?
     @State private var fallbackImage: KeyedImage?
+    @State private var failedKey: String?
+    @State private var retryAttempt = 0
 
     private struct KeyedImage {
         let key: String
@@ -78,7 +82,7 @@ struct RemoteImage: View {
         // one string build per pass instead of the five the computed keys used
         // to cost; a grid tile's key is a full url and this is its hot path.
         let key = requestKey
-        let taskID = "\(key)|\(thumbhash ?? "")|\(ImageLoadRecovery.shared.generation)"
+        let taskID = "\(key)|\(thumbhash ?? "")|\(ImageLoadRecovery.shared.generation)|\(retryAttempt)"
 
         ZStack {
             if let displayImage = displayImage(key: key) {
@@ -93,12 +97,22 @@ struct RemoteImage: View {
                 Color(.secondarySystemFill)
             }
         }
+        .overlay {
+            if failedKey == key {
+                Button { failedKey = nil; retryAttempt &+= 1 } label: {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .font(.title2).foregroundStyle(.white)
+                        .padding(8).background(.black.opacity(0.45), in: Circle())
+                }
+                .accessibilityLabel(String(localized: "Retry"))
+            }
+        }
         .onAppear {
             if let image = readyImage(key: key) { signalReady(image) }
         }
         .task(id: taskID) {
             guard image?.key != key else { return }
-            if let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize) {
+            if upgradeURL == nil, let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize) {
                 image = KeyedImage(key: requestKey, image: cached)
                 signalReady(cached)
                 return
@@ -106,11 +120,24 @@ struct RemoteImage: View {
 
             let key = requestKey
             let start = ContinuousClock.now
-            let loaded = try? await ImageLoader.shared.image(
-                for: url,
-                targetPixelSize: targetPixelSize
-            )
-            guard !Task.isCancelled, let loaded else { return }
+            let loaded: UIImage
+            do {
+                if let upgradeURL {
+                    loaded = try await ImageLoader.shared.gridThumbnail(
+                        thumbnailURL: url, previewURL: upgradeURL,
+                        targetPixelSize: targetPixelSize, aspectRatio: assetAspectRatio
+                    ) { preview in
+                        fallbackImage = KeyedImage(key: key, image: preview)
+                    }
+                } else {
+                    loaded = try await ImageLoader.shared.image(for: url, targetPixelSize: targetPixelSize)
+                }
+            } catch {
+                if !Task.isCancelled { failedKey = key }
+                return
+            }
+            guard !Task.isCancelled else { return }
+            failedKey = nil
             let keyed = KeyedImage(key: key, image: loaded)
 
             // a fade only earns its place over a flat placeholder: over the
@@ -176,6 +203,7 @@ struct RemoteImage: View {
 struct LocalPhotoImage: View {
     let localIdentifier: String
     var targetPixelSize: CGFloat = 640
+    var cacheScope: String = ""
     /// smaller render of the same asset, taken from the cache only. the viewer
     /// points it at the grid's size so a page opens on the tile's pixels
     /// instead of a placeholder while photokit produces the big one.
@@ -210,6 +238,8 @@ struct LocalPhotoImage: View {
     var onImage: ((UIImage) -> Void)?
     var onReady: (() -> Void)?
 
+    @State private var failedKey: String?
+    @State private var retryAttempt = 0
     @State private var image: KeyedImage?
     @State private var fallbackImage: KeyedImage?
     /// photokit's stored thumbnail, on screen only until something sharper is
@@ -222,12 +252,12 @@ struct LocalPhotoImage: View {
     }
 
     private var requestKey: String {
-        "\(localIdentifier)#\(Int(targetPixelSize))#\(requestContentMode.rawValue)\(coversTarget ? "#cover" : "")"
+        "\(cacheScope)|\(localIdentifier)#\(Int(targetPixelSize))#\(requestContentMode.rawValue)\(coversTarget ? "#cover" : "")"
     }
 
     private var fallbackKey: String? {
         guard let fallbackTargetPixelSize else { return nil }
-        return "\(localIdentifier)#\(Int(fallbackTargetPixelSize))#\(fallbackRequestContentMode.rawValue)"
+        return "\(cacheScope)|\(localIdentifier)#\(Int(fallbackTargetPixelSize))#\(fallbackRequestContentMode.rawValue)"
     }
 
     private var cachedFallback: UIImage? {
@@ -235,7 +265,8 @@ struct LocalPhotoImage: View {
         return LocalImageLoader.shared.cachedImage(
             localIdentifier: localIdentifier,
             targetPixelSize: fallbackTargetPixelSize,
-            contentMode: fallbackRequestContentMode
+            contentMode: fallbackRequestContentMode,
+            cacheScope: cacheScope
         )
     }
 
@@ -253,7 +284,8 @@ struct LocalPhotoImage: View {
             localIdentifier: localIdentifier,
             targetPixelSize: targetPixelSize,
             contentMode: requestContentMode,
-            coversTarget: coversTarget
+            coversTarget: coversTarget,
+            cacheScope: cacheScope
         ) {
             return cached
         }
@@ -270,7 +302,7 @@ struct LocalPhotoImage: View {
 
     private func availablePreview(key: String) -> UIImage? {
         if let previewImage, previewImage.key == key { return previewImage.image }
-        guard let cached = LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier),
+        guard let cached = LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier, cacheScope: cacheScope),
               Self.accepts(cached, aspectRatio: expectedAspectRatio) else { return nil }
         return cached
     }
@@ -291,7 +323,8 @@ struct LocalPhotoImage: View {
                 localIdentifier: localIdentifier,
                 targetPixelSize: targetPixelSize,
                 contentMode: requestContentMode,
-                coversTarget: coversTarget
+                coversTarget: coversTarget,
+            cacheScope: cacheScope
             )
             ?? (fallbackImage?.key == fallbackKey ? fallbackImage?.image : nil)
             ?? cachedFallback
@@ -309,11 +342,21 @@ struct LocalPhotoImage: View {
                 Color(.secondarySystemFill)
             }
         }
+        .overlay {
+            if failedKey == key {
+                Button { failedKey = nil; retryAttempt &+= 1 } label: {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .font(.title2).foregroundStyle(.white)
+                        .padding(8).background(.black.opacity(0.45), in: Circle())
+                }
+                .accessibilityLabel(String(localized: "Retry"))
+            }
+        }
         .onAppear {
             if display != nil { onReady?() }
             if let image = readyImage(key: key) { onImage?(image) }
         }
-        .task(id: "\(key)|\(allowsNetwork)|\(recoveryGeneration)") {
+        .task(id: "\(key)|\(allowsNetwork)|\(recoveryGeneration)|\(retryAttempt)") {
             guard image?.key != key else { return }
             let start = ContinuousClock.now
             var receivedFinal = false
@@ -323,7 +366,8 @@ struct LocalPhotoImage: View {
                 targetPixelSize: targetPixelSize,
                 contentMode: requestContentMode,
                 coversTarget: coversTarget,
-                allowsNetwork: allowsNetwork
+                allowsNetwork: allowsNetwork,
+                cacheScope: cacheScope
             )
             for await delivery in deliveries {
                 guard !Task.isCancelled else { return }
@@ -337,6 +381,7 @@ struct LocalPhotoImage: View {
                         previewImage = KeyedImage(key: key, image: preview)
                     }
                 case .final(let loaded):
+                    failedKey = nil
                     receivedFinal = true
                     let keyed = KeyedImage(key: key, image: loaded)
                     // the render lands in place whenever it replaces the same
@@ -361,6 +406,7 @@ struct LocalPhotoImage: View {
                 }
             }
             guard !Task.isCancelled, !receivedFinal, shouldTryAlternateSource else { return }
+            failedKey = key
             onUnavailable?()
         }
         .task(id: "\(fallbackKey ?? "")|\(recoveryGeneration)") {
@@ -373,18 +419,21 @@ struct LocalPhotoImage: View {
                       localIdentifier: localIdentifier,
                       targetPixelSize: targetPixelSize,
                       contentMode: requestContentMode,
-                      coversTarget: coversTarget
+                      coversTarget: coversTarget,
+            cacheScope: cacheScope
                   ) == nil,
                   LocalImageLoader.shared.cachedImage(
                       localIdentifier: localIdentifier,
                       targetPixelSize: fallbackTargetPixelSize,
-                      contentMode: fallbackRequestContentMode
+                      contentMode: fallbackRequestContentMode,
+            cacheScope: cacheScope
                   ) == nil
             else { return }
             let loaded = await LocalImageLoader.shared.image(
                 localIdentifier: localIdentifier,
                 targetPixelSize: fallbackTargetPixelSize,
-                contentMode: fallbackRequestContentMode
+                contentMode: fallbackRequestContentMode,
+            cacheScope: cacheScope
             )
             guard !Task.isCancelled, let loaded, image?.key != key else { return }
             fallbackImage = KeyedImage(key: fallbackKey, image: loaded)
@@ -432,6 +481,8 @@ struct AssetTile: View {
     /// stops asking and renders the server thumbnail instead.
     @State private var unavailableLocalIdentifier: String?
     @State private var unavailableGeneration = -1
+    @State private var remoteFallbackVisible = false
+    @State private var localReady = false
 
     /// the device copy is free, already decoded by photokit and needs no
     /// network, so it wins whenever the backup index pairs one with this
@@ -461,6 +512,50 @@ struct AssetTile: View {
         )
     }
 
+    private func localThumbnail(_ localId: String, source: AssetThumbnailSource,
+                                animatesLoads: Bool, recoveryGeneration: Int) -> some View {
+        LocalPhotoImage(
+            localIdentifier: localId,
+            targetPixelSize: targetPixelSize,
+            cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize),
+            requestContentMode: DeviceTileRender.contentMode,
+            coversTarget: DeviceTileRender.coversTile,
+            // Grid loads stay on-device; cloud-only originals
+            // keep their preview and expose a retry control.
+            allowsNetwork: false,
+            animatesLoads: animatesLoads,
+            placeholderImage: session.client.flatMap { serverThumbnail(client: $0, source: source) },
+            onUnavailable: {
+                remoteFallbackVisible = source.remoteIdentifier != nil
+            },
+            onImage: { _ in localReady = true; remoteFallbackVisible = false }
+        )
+        .overlay {
+            if remoteFallbackVisible, !localReady, let client = session.client,
+               let remoteID = source.remoteIdentifier {
+                RemoteImage(
+                    url: client.thumbnailURL(assetID: remoteID, cacheKey: asset.thumbhash),
+                    targetPixelSize: targetPixelSize, thumbhash: asset.thumbhash,
+                    placeholderImage: LocalImageLoader.shared.cachedPreview(localIdentifier: localId,
+                        cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize)),
+                    upgradeURL: client.thumbnailURL(assetID: remoteID, size: "preview", cacheKey: asset.thumbhash),
+                    assetAspectRatio: asset.ratio, animatesLoads: animatesLoads
+                )
+            }
+        }
+        .task(id: "\(asset.id)|\(localId)|\(Int(targetPixelSize))|\(asset.localImageVersion ?? asset.thumbhash ?? "")|\(session.client?.offlineAccountKey ?? "device")|\(recoveryGeneration)") {
+            localReady = LocalImageLoader.shared.cachedImage(
+                localIdentifier: localId, targetPixelSize: targetPixelSize,
+                contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
+                cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize)
+            ) != nil
+            remoteFallbackVisible = false
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, !localReady, source.remoteIdentifier != nil else { return }
+            remoteFallbackVisible = true
+        }
+    }
+
     var body: some View {
         let animatesLoads = motion?.isFast != true
         let recoveryGeneration = ImageLoadRecovery.shared.generation
@@ -472,22 +567,8 @@ struct AssetTile: View {
                     // the uncropped render the viewer opens on, cropped by the
                     // tile's own frame, so opening never swaps one crop for
                     // another.
-                    LocalPhotoImage(
-                        localIdentifier: localId,
-                        targetPixelSize: targetPixelSize,
-                        requestContentMode: DeviceTileRender.contentMode,
-                        coversTarget: DeviceTileRender.coversTile,
-                        // a device-only photo has nowhere else to come from;
-                        // a paired one falls back to the server thumbnail
-                        // rather than downloading its original from icloud.
-                        allowsNetwork: source.remoteIdentifier == nil,
-                        animatesLoads: animatesLoads,
-                        placeholderImage: session.client.flatMap { serverThumbnail(client: $0, source: source) },
-                        onUnavailable: {
-                            unavailableLocalIdentifier = localId
-                            unavailableGeneration = recoveryGeneration
-                        }
-                    )
+                    localThumbnail(localId, source: source, animatesLoads: animatesLoads,
+                                   recoveryGeneration: recoveryGeneration)
                 } else if let client = session.client, let serverIdentifier = source.remoteIdentifier {
                     RemoteImage(
                         url: client.thumbnailURL(assetID: serverIdentifier, cacheKey: asset.thumbhash),
@@ -496,6 +577,8 @@ struct AssetTile: View {
                         placeholderImage: source.localIdentifier.flatMap {
                             LocalImageLoader.shared.cachedPreview(localIdentifier: $0)
                         },
+                        upgradeURL: client.thumbnailURL(assetID: serverIdentifier, size: "preview", cacheKey: asset.thumbhash),
+                        assetAspectRatio: asset.ratio,
                         animatesLoads: animatesLoads
                     )
                 }
@@ -564,6 +647,7 @@ struct AssetTile: View {
     }
 
     private var backupAccessibilitySummary: String {
+        if isCloudDeleted { return String(localized: "Deleted in Cloud") }
         if hasVerifiedLocalBackup { return String(localized: "Backed up") }
         switch uploadState {
         case .uploading(let fraction):
@@ -581,13 +665,18 @@ struct AssetTile: View {
 
     // MARK: - backup status
 
+    private var isCloudDeleted: Bool {
+        guard let id = asset.localIdentifier else { return false }
+        return session.backup?.remoteRemovedLocalIDs.contains(id) == true
+    }
+
     private var uploadState: LocalUploadState? {
-        guard let localId = asset.localIdentifier else { return nil }
+        guard !isCloudDeleted, let localId = asset.localIdentifier else { return nil }
         return session.backup?.uploadStates[localId]
     }
 
     private var hasVerifiedLocalBackup: Bool {
-        guard asset.isLocal, let localId = asset.localIdentifier else { return false }
+        guard !isCloudDeleted, asset.isLocal, let localId = asset.localIdentifier else { return false }
         return asset.isLocalBackedUp
             || session.backup?.hasVerifiedBackup(localIdentifier: localId) == true
     }
@@ -598,7 +687,14 @@ struct AssetTile: View {
     }
 
     @ViewBuilder private var backupBadge: some View {
-        if hasVerifiedLocalBackup {
+        if isCloudDeleted {
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.gray)
+                .shadow(color: .black.opacity(0.6), radius: 2.5)
+                .padding(6)
+                .accessibilityIdentifier("badge-cloud-deleted")
+        } else if hasVerifiedLocalBackup {
             badgeIcon("checkmark.icloud")
         } else if uploadState == nil {
             if asset.isLocal {
