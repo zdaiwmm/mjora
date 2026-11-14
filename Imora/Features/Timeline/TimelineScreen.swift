@@ -809,6 +809,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 // group.
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Select") { enterSelection() }
+                        .tint(photosConfiguration == nil ? .accentColor : .primary)
                         .accessibilityIdentifier("timeline-select")
                 }
                 if hasTrailingItems {

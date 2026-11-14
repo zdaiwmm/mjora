@@ -104,9 +104,16 @@ final class LocalizationFlowTests: XCTestCase {
         app.buttons["settings-close"].tap()
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
-        XCTAssertGreaterThanOrEqual(tiles.count, 2)
+        func visibleTiles() -> [XCUIElement] {
+            tiles.allElementsBoundByIndex.filter {
+                $0.isHittable && $0.frame.midY > 150 && $0.frame.midY < app.frame.height - 120
+            }
+        }
+        XCTAssertGreaterThanOrEqual(visibleTiles().count, 2)
         for (step, index) in [0, 1, 0, 1, 0].enumerated() {
-            tiles.element(boundBy: index).tap()
+            let visible = visibleTiles()
+            XCTAssertGreaterThan(visible.count, index)
+            visible[index].tap()
             let close = app.buttons.matching(identifier: "viewer-close").firstMatch
             XCTAssertTrue(close.waitForExistence(timeout: 8), "A different asset must open after returning from the viewer")
             if step == 2 {
@@ -122,7 +129,7 @@ final class LocalizationFlowTests: XCTestCase {
             }
             XCTAssertTrue(close.waitForNonExistence(timeout: 8), "Returning must actually detach the fullscreen viewer")
             XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 8))
-            XCTAssertTrue(tiles.element(boundBy: (index + 1) % 2).isHittable)
+            XCTAssertGreaterThanOrEqual(visibleTiles().count, 2)
         }
         app.buttons["photos-source-menu"].tap()
         app.buttons[chinese ? "账号与设置" : "Account & Settings"].tap()

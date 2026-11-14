@@ -59,6 +59,7 @@ struct PhotosSourceMenu: View {
             }
             .fixedSize(horizontal: true, vertical: true)
             .dynamicTypeSize(...DynamicTypeSize.large)
+            .foregroundStyle(.primary)
             .contentShape(.rect)
         }
         .menuIndicator(.hidden)
@@ -117,6 +118,7 @@ struct PhotosBrowseMenu: View {
         }
         .accessibilityLabel("Sort and Filter")
         .accessibilityIdentifier("photos-sort-filter")
+        .tint(.primary)
     }
 }
 
@@ -152,5 +154,6 @@ struct PhotoPeriodControls: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 8)
+        .tint(.primary)
     }
 }

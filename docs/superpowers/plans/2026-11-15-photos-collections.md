@@ -64,7 +64,7 @@
 
 **Interfaces:** Existing local synthetic fixture, simulator build/signing helpers and enrolled Mac release scripts. New release version/build is chosen after checking the currently deployed app.
 
-- [ ] Run full unit suite, existing localization/viewer flows and new native Photos/Albums flows. Inspect screenshots for both system appearances, narrow/large text, menus, selection, empty/failed collection previews and nested album navigation.
-- [ ] Perform a fresh whole-change review, address important findings with focused regression tests and rerun required checks.
+- [x] Run full unit suite, existing localization/viewer flows and new native Photos/Albums flows. Inspect screenshots for both system appearances, narrow/large text, menus, selection, empty/failed collection previews and nested album navigation.
+- [x] Perform a fresh whole-change review, address important findings with focused regression tests and rerun required checks.
 - [ ] Commit, push, integrate into remote main, verify the integrated revision and prepare/sign the app from that revision.
 - [ ] Publish/install through the existing updater using the user's deployment authorization; verify installed version/build/source revision and retain release receipts privately.
