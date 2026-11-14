@@ -55,3 +55,28 @@ final class BackupReconcileCoordinator {
         worker?.cancel()
     }
 }
+
+/// Routine scheduling may use metadata/history; cleanup always obtains fresh BackupProof.
+nonisolated enum BackupRoutineRecheckPolicy {
+    static func requiresHash(asset: DeviceAsset, entry: BackupEntry?) -> Bool {
+        if entry?.isUploadBlockedByRemoteRemoval == true { return false }
+        return entry == nil || asset.modificationDate == nil || entry?.isLivePhoto != asset.isLivePhoto
+            || entry?.matches(modificationDate: asset.modificationDate) != true
+    }
+
+    static func recheckCandidates(assets: [DeviceAsset], entries: [String: BackupEntry],
+                                  skippable: Set<String>, requiresFreshProof: Bool) -> [DeviceAsset] {
+        assets.filter {
+            (requiresFreshProof || !skippable.contains($0.localIdentifier))
+                && (requiresFreshProof || entries[$0.localIdentifier]?.isUploadBlockedByRemoteRemoval != true)
+        }
+    }
+
+    static func hasUnchangedRevision(asset: DeviceAsset, entry: BackupEntry) -> Bool {
+        asset.modificationDate != nil && entry.matches(modificationDate: asset.modificationDate)
+            && entry.isLivePhoto == asset.isLivePhoto && !entry.isUploadBlockedByRemoteRemoval
+            && entry.verificationState != .verifying && entry.verificationState != .offline
+            && entry.verificationState != .failed && entry.verificationState != .pairPending
+            && entry.verificationState != .pairConflict && entry.verificationState != .pairPermissionDenied
+    }
+}

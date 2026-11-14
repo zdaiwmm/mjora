@@ -80,7 +80,7 @@ nonisolated struct RemoteSyncJSONLines {
 
 nonisolated struct RemoteSyncBatch: Sendable { let records: [RemoteSyncRecord] }
 nonisolated enum RemoteIndexOperation: Codable, Equatable, Sendable {
-    case invalidate(String), removed(String), protectLocal(String)
+    case invalidate(String), removed(String), protectLocal(String), restoreLocal(SyncHistoricalPairing)
 }
 nonisolated struct SyncHistoricalPairing: Codable, Equatable, Sendable {
     let localID: String
@@ -120,6 +120,7 @@ actor RemoteSyncClient {
             try await indexBridge.applyAndFlush(pending.operations, scope: scope)
             try await store.completeIndexWork(pending, scope: scope)
         }
+        guard credential == .session else { return }
         for pending in try await store.pending(scope: scope) {
             try await transport.acknowledge(pending.acks)
             try await store.markAcknowledged(pending.id, scope: scope)

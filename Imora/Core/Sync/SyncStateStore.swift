@@ -69,6 +69,7 @@ private nonisolated struct SyncSessionState: Codable {
     var baseline = false
     var rebuilding = false
     var caughtUp = false
+    var stagedAssetCount: Int? = nil
 }
 nonisolated struct LocalLibraryStoredSnapshot: Codable, Sendable {
     let assets: [DeviceAsset]
@@ -116,7 +117,8 @@ actor SyncStateStore {
         if state.baseline {
             let expected = try get(Int.self, scope.accountKey, "derivedIntegrity", "assetCount")
             let actual = try? all(SyncRemoteAsset.self, scope.accountKey, "assets").count
-            let stageValid = !state.rebuilding || (try? all(SyncRemoteAsset.self, scope.sessionKey, "stagedAssets")) != nil
+            let stagedCount = try? all(SyncRemoteAsset.self, scope.sessionKey, "stagedAssets").count
+            let stageValid = !state.rebuilding || (state.stagedAssetCount != nil && stagedCount == state.stagedAssetCount)
             if expected == nil || actual != expected || !stageValid {
                 state.baseline = false; state.rebuilding = false
                 try put(state, scope.sessionKey, "session", "state")
@@ -130,6 +132,7 @@ actor SyncStateStore {
                 try database.execute("INSERT INTO sync_state(namespace,kind,id,value) SELECT ?,?,id,value FROM sync_state WHERE namespace=? AND kind=?", values(scope.sessionKey, staged, scope.accountKey, active))
             }
             state.rebuilding = true; state.caughtUp = false
+            state.stagedAssetCount = try all(SyncRemoteAsset.self, scope.sessionKey, "stagedAssets").count
             try put(state, scope.sessionKey, "session", "state")
         }
         return false
@@ -140,6 +143,7 @@ actor SyncStateStore {
             try remove(scope.sessionKey, "stagedAlbums")
             try remove(scope.sessionKey, "stagedMemberships")
             var state = try session(scope); state.rebuilding = true; state.caughtUp = false
+            state.stagedAssetCount = 0
             try put(state, scope.sessionKey, "session", "state")
         }
     }
@@ -193,6 +197,57 @@ actor SyncStateStore {
         let motionDeleted = try history.motionRemoteID.map { try isRemoteDeleted($0, scope: scope) } ?? false
         return history.remoteDeleted || primaryDeleted || motionDeleted
     }
+    /// Explicit user intent is committed only after the JSON index clear has flushed.
+    /// Remote tombstones remain intact for other local photos sharing the retired IDs.
+    func clearDeletionProtectionForRebackup(localID: String, scope: SyncScope) throws {
+        try database.transaction {
+            try remove(scope.accountKey, "protectedLocal", localID)
+            if let old = try historicalPairing(localID: localID, scope: scope) {
+                try put(SyncHistoricalPairing(localID: localID, primaryRemoteID: nil, motionRemoteID: nil,
+                    primaryChecksum: old.primaryChecksum, motionChecksum: old.motionChecksum,
+                    isLivePhoto: old.isLivePhoto, remoteDeleted: false), scope.accountKey, "history", localID)
+            }
+        }
+    }
+
+    /// Socket deletion is protection immediately; only a completed sync can restore it.
+    func protectRemoteIDs(_ remoteIDs: Set<String>, scope: SyncScope) throws {
+        try database.transaction {
+            for id in remoteIDs { try put(true, scope.accountKey, "deleted", id) }
+            for history in try all(SyncHistoricalPairing.self, scope.accountKey, "history") {
+                if history.primaryRemoteID.map(remoteIDs.contains) == true || history.motionRemoteID.map(remoteIDs.contains) == true {
+                    try put(true, scope.accountKey, "protectedLocal", history.localID)
+                }
+            }
+            var state = try session(scope); state.caughtUp = false
+            try put(state, scope.sessionKey, "session", "state")
+        }
+    }
+
+    private func restoreCompletePairings(scope: SyncScope) throws -> [RemoteIndexOperation] {
+        var operations: [RemoteIndexOperation] = []
+        for history in try all(SyncHistoricalPairing.self, scope.accountKey, "history") {
+            guard try isLocalDeletionProtected(history.localID, scope: scope),
+                  let primaryID = history.primaryRemoteID,
+                  let primary = try remoteAsset(primaryID, scope: scope), !primary.deleted,
+                  primary.ownerID == scope.accountID, primary.checksum == history.primaryChecksum else { continue }
+            if history.isLivePhoto {
+                guard let motionID = history.motionRemoteID, primary.livePhotoVideoID == motionID,
+                      let motion = try remoteAsset(motionID, scope: scope), !motion.deleted,
+                      motion.ownerID == scope.accountID, motion.checksum == history.motionChecksum else { continue }
+            }
+            try remove(scope.accountKey, "deleted", primaryID)
+            if let motionID = history.motionRemoteID { try remove(scope.accountKey, "deleted", motionID) }
+            try remove(scope.accountKey, "protectedLocal", history.localID)
+            let restored = SyncHistoricalPairing(localID: history.localID, primaryRemoteID: history.primaryRemoteID,
+                motionRemoteID: history.motionRemoteID, primaryChecksum: history.primaryChecksum,
+                motionChecksum: history.motionChecksum, isLivePhoto: history.isLivePhoto, remoteDeleted: false)
+            try put(restored, scope.accountKey, "history", history.localID)
+            operations.append(.restoreLocal(restored))
+        }
+        return operations
+    }
+
     /// Events, pending JSON operations, and exact server acknowledgement strings share one transaction.
     func apply(batch: RemoteSyncBatch, scope: SyncScope) throws {
         guard batch.records.count <= 128 else { throw RemoteSyncError.invalidRecord }
@@ -252,6 +307,7 @@ actor SyncStateStore {
                         try put(try all(SyncRemoteAsset.self, scope.accountKey, "assets").count, scope.accountKey, "derivedIntegrity", "assetCount")
                         state.baseline = true; state.rebuilding = false
                     }
+                    operations += try restoreCompletePairings(scope: scope)
                     completes = true
                 default: break
                 }
@@ -261,6 +317,7 @@ actor SyncStateStore {
                 try put(SyncPendingBatch(id: id, accountKey: scope.accountKey, originSessionKey: scope.sessionKey, operations: operations, acks: batch.records.map(\.ack), indexFlushed: false, completes: completes), scope.sessionKey, "pending", id)
             }
             state.caughtUp = false
+            state.stagedAssetCount = state.rebuilding ? try all(SyncRemoteAsset.self, scope.sessionKey, "stagedAssets").count : nil
             try put(state, scope.sessionKey, "session", "state")
         }
     }

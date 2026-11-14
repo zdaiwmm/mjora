@@ -130,6 +130,8 @@ final class BackupManager {
     var userId: String? {
         didSet {
             if oldValue != userId {
+                cloudSyncReady = false
+                remoteSyncClient = nil
                 activeTransfers.removeAll()
                 sizeExcludedRequestBytesByLocal = [:]
                 sizeExcludedLocalIdentifiers = []
@@ -166,10 +168,152 @@ final class BackupManager {
     private(set) var remoteRemovedLocalIDs: Set<String> = []
     var loginSessionKey: String?
     private var forceFullReconciliation = false
+    @ObservationIgnored private var syncStore: SyncStateStore?
+    @ObservationIgnored private var remoteSyncClient: RemoteSyncClient?
+    @ObservationIgnored private var cloudSyncTask: Task<Void, Error>?
+    private var cloudSyncReady = false
+    private var syncInvalidationEpoch: UInt64 = 0
+    var syncCredential: RemoteSyncClient.Credential = .session
+    private var usesCompatibilityReconciliation = false
+    private var compatibilityCheckedAssets: [String: DeviceAsset] = [:]
+    private(set) var syncStatusMessage: String?
+    var isConnectionOffline: Bool { networkStatusKnown && !conditions.connected }
+    var reconciliationMessage: String? {
+        guard syncStatusMessage != nil else { return nil }
+        return usesCompatibilityReconciliation && (cloudSyncReady || cloudSyncTask != nil)
+            ? String(localized: "Checking an older server")
+            : syncStatusMessage
+    }
+    @ObservationIgnored private lazy var reconcileCoordinator = BackupReconcileCoordinator { [weak self] request in
+        await self?.reconcile(request)
+    }
+
+    func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = []) {
+        guard !isShutDown else { return }
+        if reason == .remoteChange { cloudSyncReady = false; syncInvalidationEpoch &+= 1 }
+        reconcileCoordinator.request(reason, localIDs: localIDs, remoteIDs: remoteIDs)
+    }
+
+    private func syncScope() throws -> SyncScope {
+        guard let userId, let loginSessionKey, !loginSessionKey.isEmpty else { throw RemoteSyncError.unsafeHistory }
+        return SyncScope(serverIdentity: client.serverKey, accountID: userId, loginSessionKey: loginSessionKey)
+    }
+
+    private func initializeSync() throws -> (SyncStateStore, RemoteSyncClient, SyncScope) {
+        let scope = try syncScope()
+        let store: SyncStateStore
+        if let syncStore { store = syncStore }
+        else {
+            store = try SyncStateStore(fileURL: SyncStateStore.defaultFileURL)
+            syncStore = store
+        }
+        let sync: RemoteSyncClient
+        if let remoteSyncClient { sync = remoteSyncClient }
+        else {
+            sync = RemoteSyncClient(store: store, transport: ImoraClientRemoteSyncTransport(client: client),
+                indexBridge: BackupIndexSyncBridge(index: index, generation: client.context.id), credential: syncCredential)
+            remoteSyncClient = sync
+        }
+        return (store, sync, scope)
+    }
+
+    /// All automatic/manual/receipt paths share the same recovery and catch-up barrier.
+    private func synchronizeBeforeBackup() async throws {
+        if let cloudSyncTask { try await cloudSyncTask.value; return }
+        if cloudSyncReady { return }
+        let (_, sync, scope) = try initializeSync()
+        let epoch = syncInvalidationEpoch
+        let task = Task { @MainActor in
+            try await sync.recoverPending(scope: scope)
+            do {
+                let summary = try await sync.catchUp(scope: scope)
+                guard summary.completed else { throw RemoteSyncError.incompleteStream }
+                self.usesCompatibilityReconciliation = false
+                self.syncStatusMessage = nil
+                self.compatibilityCheckedAssets = [:]
+            } catch RemoteSyncError.compatibilityRequired {
+                self.usesCompatibilityReconciliation = true
+                self.syncStatusMessage = String(localized: "Checking an older server")
+                // A compatibility wake has one controlled full check, before receipts/uploads.
+                let assets = try await PhotoLibraryService.scanForBackup().filter(self.includesInBackup)
+                try await self.hashPhase(assets)
+                _ = try await self.checkPhase(assets, updatesPhase: false, requiresFreshProof: true)
+                self.compatibilityCheckedAssets = Dictionary(uniqueKeysWithValues: assets.map { ($0.localIdentifier, $0) })
+            }
+            try Task.checkCancellation()
+            guard !self.isShutDown, self.client.context.isActive, try self.syncScope() == scope else { throw BackupVerificationError.stale }
+            guard self.syncInvalidationEpoch == epoch else { throw RemoteSyncError.incompleteStream }
+            self.cloudSyncReady = true
+        }
+        cloudSyncTask = task
+        defer { cloudSyncTask = nil }
+        do { try await task.value }
+        catch { cloudSyncReady = false; throw error }
+    }
+
+    private func reconcile(_ request: BackupReconcileRequest) async {
+        guard !isShutDown, PhotoLibraryService.hasFullAccess, !requiresExplicitResume,
+              networkStatusKnown, conditionsAllowWork else { return }
+        do {
+            if userId == nil { userId = try await client.currentUser().id }
+            guard let userId, await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { throw RemoteSyncError.unsafeHistory }
+            if !request.localIDs.isEmpty { await index.invalidateProofs(localIds: request.localIDs) }
+            cloudSyncReady = false
+            try await synchronizeBeforeBackup()
+            if request.requiresFullCheck, !usesCompatibilityReconciliation { forceFullReconciliation = true }
+            await refreshLocalSnapshots()
+            startReconciledRun()
+            while let task = runTask { await task.value }
+        } catch {
+            guard !isShutDown, !(error is CancellationError) else { return }
+            cloudSyncReady = false
+            syncStatusMessage = Self.safeSyncFailureMessage(error)
+            phase = .error(error.localizedDescription)
+        }
+    }
+
+    /// No proof is minted here. SQLite validates the complete, caught-up cloud snapshot once per batch.
+    private func routineSkippableIDs(_ assets: [DeviceAsset], entries: [String: BackupEntry]) async throws -> Set<String> {
+        guard cloudSyncReady, !forceFullReconciliation else { return [] }
+        if usesCompatibilityReconciliation {
+            return Set(assets.compactMap { asset in
+                guard compatibilityCheckedAssets[asset.localIdentifier] == asset,
+                      let entry = entries[asset.localIdentifier], entry.isBackedUp,
+                      BackupRoutineRecheckPolicy.hasUnchangedRevision(asset: asset, entry: entry) else { return nil }
+                return asset.localIdentifier
+            })
+        }
+        let (store, _, scope) = try initializeSync()
+        let pairings = assets.compactMap { asset -> SyncHistoricalPairing? in
+            guard let entry = entries[asset.localIdentifier],
+                  BackupRoutineRecheckPolicy.hasUnchangedRevision(asset: asset, entry: entry) else { return nil }
+            return SyncHistoricalPairing(localID: asset.localIdentifier, primaryRemoteID: entry.primaryRemoteId,
+                motionRemoteID: entry.motionRemoteId, primaryChecksum: entry.primaryChecksum,
+                motionChecksum: entry.motionChecksum, isLivePhoto: entry.isLivePhoto, remoteDeleted: entry.isUploadBlockedByRemoteRemoval)
+        }
+        return try await store.skippableLocalIDs(pairings: pairings, scope: scope)
+    }
+
+    private func uploadAuthorization(localID: String) -> @Sendable () async throws -> Void {
+        { [weak self] in
+            guard let self else { throw BackupVerificationError.stale }
+            try await self.validateSyncForUpload(localID: localID)
+        }
+    }
+
+    private func validateSyncForUpload(localID: String) async throws {
+        guard !isShutDown, client.context.isActive, cloudSyncReady else { throw RemoteSyncError.incompleteStream }
+        let (store, _, scope) = try initializeSync()
+        guard try await !store.isLocalDeletionProtected(localID, scope: scope) else { throw BackupVerificationError.stale }
+        if !usesCompatibilityReconciliation {
+            guard try await store.isCaughtUp(scope: scope) else { throw RemoteSyncError.incompleteStream }
+        }
+        guard cloudSyncReady, !isShutDown else { throw RemoteSyncError.incompleteStream }
+    }
+
 
     func requestFullReconciliation() {
-        forceFullReconciliation = true
-        startIfIdle()
+        request(.manualFullCheck)
     }
     /// Current work is independent of verified summary counts. Preparing an
     /// original never masquerades as a zero-percent network upload.
@@ -522,6 +666,9 @@ final class BackupManager {
     /// called by sessionstore on logout. the manager must not outlive its client.
     func shutdown() {
         isShutDown = true
+        reconcileCoordinator.shutdown()
+        cloudSyncReady = false
+        cloudSyncTask?.cancel()
         activeTransfers.removeAll()
         remoteReconciliationTask?.cancel()
         remoteReconciliationTask = nil
@@ -580,6 +727,10 @@ final class BackupManager {
     /// automatic preparation also waits for a permitted connection because
     /// hashing may download originals from iCloud.
     private func startAutomatically() {
+        request(.recovery)
+    }
+
+    private func startReconciledRun() {
         // do not start an iCloud-backed hash pass before the path monitor has
         // identified the connection, or while the user's data plan is gated.
         guard networkStatusKnown, conditionsAllowWork, !requiresExplicitResume else { return }
@@ -718,6 +869,7 @@ final class BackupManager {
               automaticBackupMayResume else { return false }
         await primeLocalState()
         startAutomatically()
+        await reconcileCoordinator.waitUntilIdle()
         while let task = runTask { await task.value }
         guard !Task.isCancelled, !hasUnfinishedBackup, case .done(let result) = phase else { return false }
         return result.failed == 0
@@ -731,21 +883,11 @@ final class BackupManager {
     /// otherwise, so assets already on the server are recognized - after a
     /// reinstall or an upload from another device - without sending anything.
     func startIfIdle() {
-        let runWasActive = runTask != nil
         networkWatcher?.refresh()
         guard PhotoLibraryService.hasFullAccess, !requiresExplicitResume else { return }
         localChanged()
-        if runTask != nil {
-            // a healthy run picks new captures up itself; only a run stopped
-            // by an expired budget needs a successor once it has drained.
-            if runWasActive && isStopping && recoverAfterExpiration {
-                recoveryRequested = true
-            }
-            recentAttempted = [:]
-            requestRecentBackup()
-            return
-        }
-        startAutomatically()
+        if runTask != nil, isStopping, recoverAfterExpiration { recoveryRequested = true }
+        request(.foreground)
     }
 
     private func enableAndStart() async {
@@ -766,13 +908,7 @@ final class BackupManager {
     private func networkChanged(connected: Bool, metered: Bool, wifi: Bool, cellular: Bool) {
         guard !isShutDown else { return }
         let wasAllowed = conditionsAllowWork
-        if !connected {
-            Task { [weak self] in
-                guard let self, !self.isShutDown else { return }
-                await self.index.invalidateProofs()
-                await self.refreshLocalSnapshots()
-            }
-        }
+        if !connected { cloudSyncReady = false; syncInvalidationEpoch &+= 1 }
         conditions.updateNetwork(connected: connected, metered: metered, wifi: wifi, cellular: cellular)
         conditionsChanged(recovered: !wasAllowed && conditionsAllowWork)
     }
@@ -817,14 +953,8 @@ final class BackupManager {
     private func libraryChanged() {
         LocalImageLoader.shared.noteLibraryChange()
         localChanged()
-        // keyed on the task, not the phase: a change landing while the run
-        // winds down must not be lost.
-        if runTask != nil {
-            rerunRequested = true
-            requestRecentBackup()
-        } else {
-            startIfIdle()
-        }
+        request(.localChange)
+        if runTask != nil { requestRecentBackup() }
     }
 
     // MARK: - recent captures
@@ -863,15 +993,22 @@ final class BackupManager {
             // empty checks stay silent: inserting/removing a status row for
             // each scan makes both backup screens flash and shift their layout.
             // publish status only when a candidate is actually being backed up.
-            let scanned = await PhotoLibraryService.scan()
+            let scanned: [DeviceAsset]
+            do {
+                try await synchronizeBeforeBackup()
+                scanned = try await PhotoLibraryService.scanForBackup()
+            } catch { syncStatusMessage = Self.safeSyncFailureMessage(error); return }
             let entries = await index.allEntries()
+            let skippable: Set<String>
+            do { skippable = try await routineSkippableIDs(scanned, entries: entries) }
+            catch { syncStatusMessage = Self.safeSyncFailureMessage(error); return }
             let candidates = scanned.filter { asset in
                 guard includesInBackup(asset), let created = asset.creationDate, created > checkpoint,
                       !activeBacklogIDs.contains(asset.localIdentifier),
                       recentAttempted[asset.localIdentifier] != asset else { return false }
+                if entries[asset.localIdentifier]?.isUploadBlockedByRemoteRemoval == true || skippable.contains(asset.localIdentifier) { return false }
                 if let entry = entries[asset.localIdentifier],
-                   entry.matches(modificationDate: asset.modificationDate),
-                   entry.isBackedUp || entry.unsupported { return false }
+                   entry.matches(modificationDate: asset.modificationDate), entry.unsupported { return false }
                 return true
             }
             for asset in candidates {
@@ -890,6 +1027,8 @@ final class BackupManager {
     }
 
     private func backUpRecentAsset(_ asset: DeviceAsset) async {
+        do { try await synchronizeBeforeBackup(); try await validateSyncForUpload(localID: asset.localIdentifier) }
+        catch { syncStatusMessage = Self.safeSyncFailureMessage(error); return }
         let localId = asset.localIdentifier
         let transfer = beginActiveTransfer(localIdentifier: localId)
         uploadStates[localId] = .uploading(0)
@@ -908,6 +1047,7 @@ final class BackupManager {
             guard let current, includesInBackup(current) else { return }
             try Task.checkCancellation()
             let entry = await index.entry(for: localId)
+            if entry?.isUploadBlockedByRemoteRemoval == true { return }
             if entry == nil || current.modificationDate == nil || entry?.isLivePhoto != current.isLivePhoto || entry?.matches(modificationDate: current.modificationDate) != true {
                 let preparation = transfer.reporter.component()
                 let hashes = try await PhotoLibraryService.hash(
@@ -937,7 +1077,8 @@ final class BackupManager {
                 deviceId: DeviceID.current,
                 account: accountKey, maximumRequestBytes: maximumRequestBytes, chunking: chunking,
                 lifetime: runLifetime,
-                progressReporter: transfer.reporter
+                progressReporter: transfer.reporter,
+                authorization: uploadAuthorization(localID: current.localIdentifier)
             ) { [weak self] id, fraction in
                 Task { @MainActor [weak self] in self?.noteUploadProgress(id, fraction) }
             }
@@ -1065,29 +1206,34 @@ final class BackupManager {
     /// pixels. the pairing itself survives - deletes still cascade - but grids
     /// and the viewer go back to the server render for them.
     func requestRemoteReconciliation() {
-        guard !isShutDown, remoteReconciliationTask == nil else { return }
-        remoteReconciliationTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(750))
-            guard let self, !self.isShutDown, !Task.isCancelled else { return }
-            self.remoteReconciliationTask = nil
-            if self.runTask != nil { self.rerunRequested = true }
-            self.startIfIdle()
-        }
+        request(.reconnect)
     }
 
     func noteRemoteChange(_ remoteIDs: Set<String>, change: BackupRemoteChange) {
         guard change != .hidden, !isShutDown else { return }
+        cloudSyncReady = false
+        syncInvalidationEpoch &+= 1
         Task { [weak self] in
             guard let self, !self.isShutDown else { return }
+            do {
+                let (store, _, scope) = try self.initializeSync()
+                try await store.importHistory(self.index.syncHistory(scope: scope, generation: self.client.context.id), scope: scope)
+                if change == .deleted || change == .trashed { try await store.protectRemoteIDs(remoteIDs, scope: scope) }
+            } catch {
+                self.syncStatusMessage = Self.safeSyncFailureMessage(error)
+                // JSON still applies the deletion; every upload remains behind the failed sync barrier.
+            }
             await self.index.noteRemoteChange(ids: remoteIDs, change: change, generation: self.client.context.id)
             guard !self.isShutDown else { return }
             await self.refreshLocalSnapshots()
-            self.requestRemoteReconciliation()
+            self.request(.remoteChange, remoteIDs: remoteIDs)
         }
     }
 
     func noteRemoteEdits(_ remoteIds: Set<String>) {
         guard !remoteIds.isEmpty else { return }
+        cloudSyncReady = false
+        request(.remoteChange, remoteIDs: remoteIds)
         for id in remoteIds { localIdentifierByRemoteId[id] = nil }
         Task { [weak self] in
             guard let self, await self.index.markRemoteEdited(remoteIds) else { return }
@@ -1103,7 +1249,7 @@ final class BackupManager {
         await refreshLocalSnapshots()
         updateChangeObserver()
         adoptBackgroundUploads()
-        await BackgroundUploader.shared.replayReceipts()
+        request(.recovery)
     }
 
     // MARK: - background uploads
@@ -1135,6 +1281,7 @@ final class BackupManager {
     ) async -> [BackgroundUploader.Completion] {
         guard let userId, !isShutDown else { return [] }
         guard await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { return [] }
+        do { try await synchronizeBeforeBackup() } catch { return [] }
         var settled: [BackgroundUploader.Completion] = []
         var applied: [BackgroundUploader.Completion] = []
         for completion in completions {
@@ -1166,6 +1313,12 @@ final class BackupManager {
         guard !isShutDown, completion.ticket.account == accountKey else { return .retained }
         guard current.modificationDate == source.modificationDate,
               current.isLivePhoto == source.isLivePhoto else { return .settled }
+        do { try await validateSyncForUpload(localID: completion.ticket.localId) }
+        catch {
+            // A proven removal consumes the obsolete receipt without restoring its old pairing.
+            if await index.entry(for: completion.ticket.localId)?.isUploadBlockedByRemoteRemoval == true { return .settled }
+            return .retained
+        }
         return await index.applyReceipt(completion, persist: false) ? .applied : .retained
     }
 
@@ -1178,12 +1331,19 @@ final class BackupManager {
         async let scanned = PhotoLibraryService.scan()
         guard await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { return [] }
         let entries = await index.allEntries()
-        return await scanned.map { asset in
+        let assets = await scanned.sorted {
+            let lhs = $0.creationDate ?? $0.modificationDate ?? .distantPast
+            let rhs = $1.creationDate ?? $1.modificationDate ?? .distantPast
+            return lhs == rhs ? $0.localIdentifier < $1.localIdentifier : lhs > rhs
+        }
+        return assets.map { asset in
             let entry = entries[asset.localIdentifier]
             return LocalTimelineItem(
                 device: asset,
                 remoteId: entry?.primaryRemoteId,
-                backedUp: entry?.isBackedUp ?? false
+                backedUp: entry?.hasHistoricalBackup == true && asset.modificationDate != nil
+                    && entry?.matches(modificationDate: asset.modificationDate) == true
+                    && entry?.isLivePhoto == asset.isLivePhoto
             )
         }
     }
@@ -1287,11 +1447,12 @@ final class BackupManager {
                 throw SingleAssetBackupError.failed(String(localized: "Could not save backup recovery state."))
             }
 
+            try await synchronizeBeforeBackup()
             adoptBackgroundUploads()
             await BackgroundUploader.shared.replayReceipts()
             try Task.checkCancellation()
             let checkpoint = await index.ensureBacklogCheckpoint(at: startedAt)
-            let allAssets = await PhotoLibraryService.scan()
+            let allAssets = try await PhotoLibraryService.scanForBackup()
             try Task.checkCancellation()
             // exclusion changes backup selection, never the library or index ownership.
             await index.prune(keeping: Set(allAssets.map(\.localIdentifier)))
@@ -1307,7 +1468,9 @@ final class BackupManager {
             requestRecentBackup()
 
             try await hashPhase(backlog)
-            let pending = try await checkPhase(backlog)
+            let fullCheck = forceFullReconciliation
+            forceFullReconciliation = false
+            let pending = try await checkPhase(backlog, requiresFreshProof: fullCheck)
             localChanged()
             // read again so a backup asked for during scan, hash or check
             // upgrades this run instead of waiting for the next one, and so
@@ -1329,7 +1492,7 @@ final class BackupManager {
                 let complete = scanned.allSatisfy { asset in
                     guard let entry = entries[asset.localIdentifier],
                           entry.matches(modificationDate: asset.modificationDate) else { return false }
-                    return entry.isBackedUp || entry.unsupported
+                    return entry.hasHistoricalBackup || entry.isUploadBlockedByRemoteRemoval || entry.unsupported
                         || entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes)
                 }
                 if complete {
@@ -1420,13 +1583,26 @@ final class BackupManager {
         policyInterruptedRun = false
         if rerunRequested || shouldRecover {
             rerunRequested = false
-            startIfIdle()
+            request(.localChange)
         }
     }
 
     /// transport failures that mean the server never saw the request - offline,
     /// dns, timeouts. a run ending on one of these happens on every automatic
     /// retry while the network is away, so it is not an outcome to announce.
+    private nonisolated static func safeSyncFailureMessage(_ error: any Error) -> String {
+        if case ImoraError.http(let code, _) = error {
+            if code == 401 { return String(localized: "Sign in again to verify cloud copies.") }
+            if code == 403 { return String(localized: "This account cannot verify cloud copies.") }
+        }
+        return String(localized: "Cloud verification is paused. Reconnect and try again.")
+    }
+
+    private nonisolated static func isAccountFailure(_ error: any Error) -> Bool {
+        if case ImoraError.http(let code, _) = error { return code == 401 || code == 403 }
+        return false
+    }
+
     private nonisolated static func isUnreachable(_ error: any Error) -> Bool {
         if case ImoraError.unreachable = error { return true }
         guard let urlError = error as? URLError else { return false }
@@ -1460,7 +1636,7 @@ final class BackupManager {
         var toHash: [DeviceAsset] = []
         for asset in scanned {
             let entry = entries[asset.localIdentifier]
-            if entry == nil || asset.modificationDate == nil || entry?.isLivePhoto != asset.isLivePhoto || entry?.matches(modificationDate: asset.modificationDate) != true {
+            if BackupRoutineRecheckPolicy.requiresHash(asset: asset, entry: entry) {
                 toHash.append(asset)
             }
         }
@@ -1469,6 +1645,7 @@ final class BackupManager {
             if !isStopping { policyInterruptedRun = true }
             throw CancellationError()
         }
+        guard !toHash.isEmpty else { return }
         downloadedOriginalsFromICloud = false
         phaseMediaTotal = MediaCounts(assets: toHash)
         phaseMediaCompleted = MediaCounts()
@@ -1567,17 +1744,24 @@ final class BackupManager {
     /// asks the server about every hashed component we cannot prove yet, then
     /// returns the assets that still need uploads.
     private func checkPhase(_ scanned: [DeviceAsset], updatesPhase: Bool = true, requiresFreshProof: Bool = false) async throws -> [DeviceAsset] {
+        guard !isShutDown, client.context.isActive else { throw BackupVerificationError.stale }
+        let initialEntries = await index.allEntries()
+        let skippable = requiresFreshProof ? Set<String>() : try await routineSkippableIDs(scanned, entries: initialEntries)
+        await index.markHistoricallyPresent(localIDs: skippable)
+        let checked = BackupRoutineRecheckPolicy.recheckCandidates(assets: scanned, entries: initialEntries,
+            skippable: skippable, requiresFreshProof: requiresFreshProof)
+        guard !checked.isEmpty else { return [] }
         if updatesPhase {
             checkingCompleted = 0
             checkingTotal = 0
             phase = .checking
         }
-        guard !isShutDown, client.context.isActive else { throw BackupVerificationError.stale }
-        await index.invalidateProofs(localIds: Set(scanned.map(\.localIdentifier)))
+        await index.invalidateProofs(localIds: Set(checked.map(\.localIdentifier)))
         let sources = await index.allEntries()
-        let devices = Dictionary(uniqueKeysWithValues: scanned.map { ($0.localIdentifier, $0) })
+        let devices = Dictionary(uniqueKeysWithValues: checked.map { ($0.localIdentifier, $0) })
         var items: [BulkUploadCheckItem] = []
-        for asset in scanned {
+        for asset in checked {
+            if !requiresFreshProof, usesCompatibilityReconciliation, compatibilityCheckedAssets[asset.localIdentifier] == asset { continue }
             guard let entry = sources[asset.localIdentifier], !entry.unsupported,
                   entry.matches(modificationDate: asset.modificationDate), entry.isLivePhoto == asset.isLivePhoto else { continue }
             items.append(BulkUploadCheckItem(id: asset.localIdentifier, checksum: entry.primaryChecksum))
@@ -1585,7 +1769,7 @@ final class BackupManager {
                 items.append(BulkUploadCheckItem(id: asset.localIdentifier + Self.motionSuffix, checksum: checksum))
             }
         }
-        if updatesPhase { checkingTotal = items.count + scanned.count }
+        if updatesPhase { checkingTotal = items.count + checked.count }
         func noteCheckedWork() {
             guard updatesPhase else { return }
             checkingCompleted += 1
@@ -1606,7 +1790,7 @@ final class BackupManager {
         let entries = await index.allEntries()
         var queue: [DeviceAsset] = []
         var verify: [(DeviceAsset, BackupEntry)] = []
-        for asset in scanned {
+        for asset in checked {
             guard let entry = entries[asset.localIdentifier], entry.matches(modificationDate: asset.modificationDate) else {
                 noteCheckedWork()
                 continue
@@ -1624,10 +1808,11 @@ final class BackupManager {
         defer {
             for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
         }
+        var barrierFailure: (any Error)?
         await withTaskGroup(of: (DeviceAsset, BackupEntry, (any Error)?).self) { group in
             var next = 0
             @MainActor func addNext() {
-                guard next < verify.count, !Task.isCancelled else { return }
+                guard next < verify.count, barrierFailure == nil, !Task.isCancelled else { return }
                 let (asset, entry) = verify[next]
                 next += 1
                 let transfer = updatesPhase ? beginActiveTransfer(localIdentifier: asset.localIdentifier) : nil
@@ -1645,12 +1830,17 @@ final class BackupManager {
             }
             for _ in 0..<min(Self.verificationWorkers, verify.count) { addNext() }
             while let (asset, source, error) = await group.next() {
-                defer { noteCheckedWork() }
+                defer { noteCheckedWork(); addNext() }
                 if let attempt = attempts.removeValue(forKey: asset.localIdentifier) {
                     activeTransfers.finish(localIdentifier: asset.localIdentifier, attempt: attempt)
                 }
                 guard !isShutDown, client.context.isActive, !Task.isCancelled else { group.cancelAll(); continue }
                 if let error {
+                    if Self.isUnreachable(error) || Self.isAccountFailure(error) {
+                        barrierFailure = error
+                        group.cancelAll()
+                        continue
+                    }
                     let state = (error as? BackupVerificationError)?.state ?? .failed
                     await index.recordVerificationFailure(localId: asset.localIdentifier, source: source, generation: client.context.id, state: state)
                     if state == .trashed {
@@ -1670,9 +1860,9 @@ final class BackupManager {
                         if lastFailure == nil { lastFailure = error.localizedDescription }
                     }
                 } else { summary.duplicateMedia.add(asset) }
-                addNext()
             }
         }
+        if let barrierFailure { cloudSyncReady = false; throw barrierFailure }
         try Task.checkCancellation()
         guard client.context.isActive else { throw BackupVerificationError.stale }
         return queue
@@ -1771,6 +1961,7 @@ final class BackupManager {
                 let lifetime = runLifetime
                 let requestLimit = maximumRequestBytes
                 let chunking = chunking
+                let authorization = uploadAuthorization(localID: asset.localIdentifier)
                 group.addTask {
                     let outcome = await Self.uploadOne(
                         asset: asset, client: client, index: index,
@@ -1779,6 +1970,7 @@ final class BackupManager {
                         chunking: chunking,
                         lifetime: lifetime,
                         progressReporter: transfer.reporter,
+                        authorization: authorization,
                         onProgress: progress
                     )
                     return (asset, outcome)
@@ -1844,6 +2036,7 @@ final class BackupManager {
     /// Backup screen retain repeated failures until the asset is verified.
     private func markUploadFailed(_ asset: DeviceAsset, reason: String, kind: RepeatedBackupFailureKind = .other) {
         let localId = asset.localIdentifier
+        guard !remoteRemovedLocalIDs.contains(localId), cloudSyncReady else { uploadStates[localId] = nil; return }
         if !isShutDown, userId != nil, repeatedFailureLedger.recordFailure(
                 account: accountKey,
                 localIdentifier: localId,
@@ -1887,6 +2080,7 @@ final class BackupManager {
         chunking: ChunkedAssetUpload.Policy?,
         lifetime: BackgroundUploader.RunLifetime? = nil,
         progressReporter: BackupTransferProgressReporter? = nil,
+        authorization: @escaping @Sendable () async throws -> Void,
         onProgress: @escaping @Sendable (String, Double) -> Void
     ) async -> UploadOutcome {
         // everything up to the hand-off, the export and the request body, has
@@ -1902,7 +2096,9 @@ final class BackupManager {
         guard let current = await PhotoLibraryService.assetInfo(localIdentifier: asset.localIdentifier) else {
             return .skipped
         }
+        do { try await authorization() } catch { return .skipped }
         var entry = await index.entry(for: asset.localIdentifier)
+        if entry?.isUploadBlockedByRemoteRemoval == true { return .skipped }
         if entry == nil || current.modificationDate == nil || entry?.isLivePhoto != current.isLivePhoto || entry?.matches(modificationDate: current.modificationDate) != true {
             do {
                 let preparation = progressReporter?.component()
@@ -1927,9 +2123,7 @@ final class BackupManager {
             }
         }
         guard let entry else { return .failed(String(localized: "no index entry")) }
-        if entry.isUploadBlockedByRemoteRemoval {
-            return .failed(BackupVerificationError.component("", entry.verificationState == .trashed ? .trashed : .missing).localizedDescription)
-        }
+        if entry.isUploadBlockedByRemoteRemoval { return .skipped }
         if entry.unsupported { return .failed(String(localized: "this file format is not supported by the server.")) }
         if entry.isBackedUp { return .duplicate }
         if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes),
@@ -1959,7 +2153,7 @@ final class BackupManager {
                 let result = try await send(
                     upload, motion: true, client: client, index: index, chunking: chunking, account: account,
                     source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
-                    progressReporter: progressReporter
+                    progressReporter: progressReporter, authorization: authorization
                 ) { fraction in
                     onProgress(current.localIdentifier, fraction)
                 }
@@ -1986,7 +2180,7 @@ final class BackupManager {
                 let result = try await send(
                     upload, motion: false, client: client, index: index, chunking: chunking, account: account,
                     source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
-                    progressReporter: progressReporter
+                    progressReporter: progressReporter, authorization: authorization
                 ) { fraction in
                     onProgress(current.localIdentifier, fraction)
                 }
@@ -2002,6 +2196,22 @@ final class BackupManager {
             return uploadedSomething ? .uploaded : .duplicate
         } catch is CancellationError {
             return .skipped
+        } catch is RemoteSyncError {
+            return .skipped
+        } catch BackupVerificationError.stale {
+            return .skipped
+        } catch let error as BackupVerificationError {
+            if error.state == .missing || error.state == .trashed {
+                if let source = await index.entry(for: current.localIdentifier) {
+                    await index.recordVerificationFailure(localId: current.localIdentifier, source: source,
+                        generation: client.context.id, state: error.state)
+                    if case .component(let id, .missing) = error {
+                        await index.clearMissingComponent(localId: current.localIdentifier, source: source, remoteID: id, generation: client.context.id)
+                    }
+                }
+                return .skipped
+            }
+            return .failed(error.localizedDescription, kind: .init(error: error))
         } catch UploadSizeLimit.exceeded(let actualBytes, let maximumBytes) {
             await index.markSizeExcluded(localId: current.localIdentifier,
                                          revision: current.modificationDate,
@@ -2042,10 +2252,12 @@ final class BackupManager {
         lease: ProcessLease,
         lifetime: BackgroundUploader.RunLifetime?,
         progressReporter: BackupTransferProgressReporter?,
+        authorization: @escaping @Sendable () async throws -> Void,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssetUploadResult {
         let validate: @Sendable () async throws -> Void = {
             try Task.checkCancellation()
+            try await authorization()
             guard client.context.isActive,
                   await index.permitsUpload(localId: upload.deviceAssetId, source: source, generation: client.context.id)
             else { throw BackupVerificationError.stale }
@@ -2123,11 +2335,15 @@ final class BackupManager {
         guard await index.load(serverHost: client.serverKey, userId: user.id, generation: client.context.id) else {
             throw SingleAssetBackupError.failed(String(localized: "Backup state is unavailable. Unlock the device and try again."))
         }
+        try await synchronizeBeforeBackup()
         adoptBackgroundUploads()
         await BackgroundUploader.shared.replayReceipts()
 
         if case .uploading = uploadStates[localIdentifier] {
             try await waitForUpload(localIdentifier: localIdentifier)
+        }
+        if await index.entry(for: localIdentifier)?.isUploadBlockedByRemoteRemoval == true {
+            throw SingleAssetBackupError.failed(String(localized: "The cloud copy was removed. Confirm Back Up Again to create a new copy."))
         }
         if let entry = await index.entry(for: localIdentifier),
            entry.isBackedUp,
@@ -2155,6 +2371,7 @@ final class BackupManager {
             maximumRequestBytes: maximumRequestBytes,
             chunking: chunking,
             progressReporter: transfer.reporter,
+            authorization: uploadAuthorization(localID: asset.localIdentifier),
             onProgress: progress
         )
 
@@ -2186,6 +2403,24 @@ final class BackupManager {
         return remoteID
     }
 
+    /// Call only after the photo detail confirmation explains that this creates a new cloud copy.
+    func rebackupAfterConfirmation(localIdentifier: String) async throws -> String {
+        guard let userId, await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { throw RemoteSyncError.unsafeHistory }
+        cloudSyncReady = false
+        try await synchronizeBeforeBackup()
+        // Recover old work and consume obsolete receipts while removal protection is still present.
+        adoptBackgroundUploads()
+        await BackgroundUploader.shared.replayReceipts()
+        let (store, sync, scope) = try initializeSync()
+        try await sync.recoverPending(scope: scope)
+        try await index.prepareForExplicitRebackup(localID: localIdentifier, generation: client.context.id)
+        try await store.clearDeletionProtectionForRebackup(localID: localIdentifier, scope: scope)
+        repeatedFailureLedger.clear(account: accountKey, localIdentifier: localIdentifier)
+        saveRepeatedFailures()
+        await refreshLocalSnapshots()
+        return try await backUp(localIdentifier: localIdentifier)
+    }
+
     /// backs up several device assets picked in the grid. setup runs once and
     /// uploads share the worker pool of a full run, so every tile keeps its
     /// own progress overlay. like the single-asset path, this ignores the
@@ -2200,6 +2435,7 @@ final class BackupManager {
         guard await index.load(serverHost: client.serverKey, userId: user.id, generation: client.context.id) else {
             throw SingleAssetBackupError.failed(String(localized: "Backup state is unavailable. Unlock the device and try again."))
         }
+        try await synchronizeBeforeBackup()
         adoptBackgroundUploads()
         await BackgroundUploader.shared.replayReceipts()
 
@@ -2211,6 +2447,7 @@ final class BackupManager {
                 outcome.skipped += 1
                 continue
             }
+            if await index.entry(for: localId)?.isUploadBlockedByRemoteRemoval == true { outcome.skipped += 1; continue }
             if let entry = await index.entry(for: localId), entry.isBackedUp {
                 outcome.alreadyBackedUp += 1
                 continue
@@ -2251,6 +2488,7 @@ final class BackupManager {
                 attempts[asset.localIdentifier] = transfer.attempt
                 let requestLimit = maximumRequestBytes
                 let chunking = chunking
+                let authorization = uploadAuthorization(localID: asset.localIdentifier)
                 group.addTask {
                     let result = await Self.uploadOne(
                         asset: asset, client: client, index: index,
@@ -2258,6 +2496,7 @@ final class BackupManager {
                         maximumRequestBytes: requestLimit,
                         chunking: chunking,
                         progressReporter: transfer.reporter,
+                        authorization: authorization,
                         onProgress: progress
                     )
                     return (asset, result)
@@ -2413,6 +2652,7 @@ final class BackupManager {
         guard !isShutDown, client.context.isActive else { throw CleanupVerificationError.changed }
         userId = user.id
         guard await index.load(serverHost: client.serverKey, userId: user.id, generation: client.context.id) else { throw CleanupVerificationError.changed }
+        try await synchronizeBeforeBackup()
         let scanned: [DeviceAsset]
         if let selectedLocalIDs {
             // A scoped request never scans or uploads unrelated library items.
@@ -2420,7 +2660,7 @@ final class BackupManager {
             guard scanned.count == selectedLocalIDs.count,
                   Set(scanned.map(\.localIdentifier)) == selectedLocalIDs else { throw CleanupVerificationError.changed }
         } else {
-            scanned = await PhotoLibraryService.scan()
+            scanned = try await PhotoLibraryService.scanForBackup()
         }
         try Task.checkCancellation()
         guard !isShutDown, client.context.isActive else { throw CleanupVerificationError.changed }
