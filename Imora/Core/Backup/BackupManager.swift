@@ -168,6 +168,7 @@ final class BackupManager {
     private(set) var remoteRemovedLocalIDs: Set<String> = []
     var loginSessionKey: String?
     private var forceFullReconciliation = false
+    private let syncConfiguration: BackupSyncConfiguration
     @ObservationIgnored private var syncStore: SyncStateStore?
     @ObservationIgnored private var remoteSyncClient: RemoteSyncClient?
     @ObservationIgnored private var cloudSyncTask: Task<Void, Error>?
@@ -182,8 +183,12 @@ final class BackupManager {
     var reconciliationMessage: String? {
         guard syncStatusMessage != nil else { return nil }
         return usesCompatibilityReconciliation && (cloudSyncReady || cloudSyncTask != nil)
-            ? String(localized: "Checking an older server")
+            ? compatibilityStatusMessage
             : syncStatusMessage
+    }
+    private var compatibilityStatusMessage: String {
+        syncConfiguration.incrementalEnabled ? String(localized: "Checking an older server")
+            : String(localized: "Checking backup status...")
     }
     @ObservationIgnored private lazy var reconcileCoordinator = BackupReconcileCoordinator { [weak self] request in
         await self?.reconcile(request)
@@ -252,6 +257,9 @@ final class BackupManager {
         let task = Task { @MainActor in
             try await sync.recoverPending(scope: scope)
             do {
+                // Operator rollback uses the same conservative boundary as normal recovery:
+                // pending deletion work must be durably flushed and acknowledged first.
+                try self.syncConfiguration.requireIncremental()
                 let summary = try await sync.catchUp(scope: scope)
                 guard summary.completed else { throw RemoteSyncError.incompleteStream }
                 self.usesCompatibilityReconciliation = false
@@ -259,7 +267,7 @@ final class BackupManager {
                 self.compatibilityCheckedAssets = [:]
             } catch RemoteSyncError.compatibilityRequired {
                 self.usesCompatibilityReconciliation = true
-                self.syncStatusMessage = String(localized: "Checking an older server")
+                self.syncStatusMessage = self.compatibilityStatusMessage
                 // A compatibility wake has one controlled full check, before receipts/uploads.
                 let assets = try await PhotoLibraryService.scanForBackup().filter(self.includesInBackup)
                 try await self.hashPhase(assets)
@@ -673,7 +681,9 @@ final class BackupManager {
         FileManager.default.temporaryDirectory.appending(path: "backup")
     }
 
-    init(client: ImoraClient, index: BackupIndex = BackupIndex(), syncStore: SyncStateStore? = nil) {
+    init(client: ImoraClient, index: BackupIndex = BackupIndex(), syncStore: SyncStateStore? = nil,
+         incrementalSyncEnabled: Bool? = nil) {
+        self.syncConfiguration = BackupSyncConfiguration(incrementalSyncEnabled: incrementalSyncEnabled)
         self.client = client
         self.syncStore = syncStore
         self.autoBackup = UserDefaults.standard.bool(forKey: Self.autoBackupKey)
