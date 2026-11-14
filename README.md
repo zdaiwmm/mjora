@@ -6,7 +6,7 @@ This modified version adds Simplified Chinese, immutable account/request boundar
 
 The repository starts from a reviewed publication snapshot. Local implementation/audit history containing private server settings is not published. The app's display name and original upstream notices are retained.
 
-Latest local validation: **223 tests, 222 passed, 1 physical-device check skipped, 0 failures**, including server-removal protection, reconnect membership refresh, pinned TLS LAN routing, real multipart upload and receipt replay, background continuation policy, local Immich 3.4.1 integration, and English/Chinese UI flows with repeated viewer return checks. See [remote-removal validation](docs/validation/2026-11-14-remote-removal-validation.md), [background investigation](docs/validation/2026-11-14-background-runtime-validation.md), and [publication notes](PUBLICATION.md). Physical background stability remains unresolved. The separately reported fullscreen-return interaction issue was clarified as PC Web behavior and requires validation in the server repository.
+Latest local validation: **239 tests, 238 passed, 1 physical-device check skipped, 0 failures**, including confirmed-update boundaries, version UI, server-removal protection, reconnect membership refresh, pinned TLS LAN routing, real multipart upload and receipt replay, background continuation policy, local Immich 3.4.1 integration, and English/Chinese UI flows with repeated viewer return checks. See [wireless update validation](docs/validation/2026-11-14-wireless-update-validation.md), [remote-removal validation](docs/validation/2026-11-14-remote-removal-validation.md), [background investigation](docs/validation/2026-11-14-background-runtime-validation.md), and [publication notes](PUBLICATION.md). Physical background stability remains unresolved. The separately reported fullscreen-return interaction issue was clarified as PC Web behavior and requires validation in the server repository.
 
 ## Build and test
 
@@ -18,6 +18,10 @@ IMORA_TEST_DESTINATION='platform=iOS Simulator,name=iPhone 17' scripts/test-ios.
 ```
 
 `IMORA_XCODEGEN_PATH`, `IMORA_DERIVED_DATA`, and `IMORA_PACKAGE_CACHE` can override local tool/cache paths. Integration/UI tests use only a dedicated local synthetic fixture; see [fixture setup](tests/integration/README.md).
+
+## App version and updates
+
+Settings → About & Updates shows the installed app version and build. Private enrolled builds check an authenticated Mac HTTPS host for a prepared release and request wireless installation only after explicit confirmation. Signed personal packages stay private on the Mac; GitHub contains source. See [wireless update setup and behavior](docs/wireless-updates.md). Existing automatic re-signing remains separate from installing a new version.
 
 ## Upstream features
 

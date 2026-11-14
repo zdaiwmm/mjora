@@ -22,5 +22,6 @@ build/
 !.env.example
 __pycache__/
 Imora/Resources/LocalServerIdentity.json
+Imora/Resources/AppUpdateHost.json
 *.pyc
 .superpowers/

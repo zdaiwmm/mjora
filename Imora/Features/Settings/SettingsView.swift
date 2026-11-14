@@ -134,6 +134,15 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings-backup")
                 }
 
+                Section {
+                    NavigationLink {
+                        AppUpdatesScreen()
+                    } label: {
+                        Label("About & Updates", systemImage: "info.circle")
+                    }
+                    .accessibilityIdentifier("settings-app-updates")
+                }
+
                 Section("Server") {
                     LabeledContent("Address") {
                         Text(session.client?.apiURL.host() ?? "")

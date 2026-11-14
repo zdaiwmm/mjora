@@ -125,7 +125,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:350"
+      "comment": "Imora/Core/Backup/BackupManager.swift:358"
     },
     "%@ KB/s": {
       "extractionState": "manual",
@@ -142,7 +142,8 @@
             "value": "%@ KB/秒"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:95"
     },
     "%@ MB/s": {
       "extractionState": "manual",
@@ -159,7 +160,8 @@
             "value": "%@ MB/秒"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:92"
     },
     "%@ Results": {
       "extractionState": "manual",
@@ -213,7 +215,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2206"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2214"
     },
     "%@ and %@": {
       "extractionState": "manual",
@@ -267,7 +269,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:785"
+      "comment": "Imora/Core/Backup/BackupManager.swift:843"
     },
     "%@ by %@": {
       "extractionState": "manual",
@@ -446,7 +448,8 @@
             "value": "%@ 没有可读取的待处理记录。这些副本可能来自较早的分享，或分享扩展仍在准备的文件；丢弃待处理分享时会保留这些副本。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:136"
     },
     "%@ in %@ s": {
       "extractionState": "manual",
@@ -554,7 +557,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserDetailScreen.swift:162\nImora/Features/Settings/StorageScreen.swift:39\nImora/Features/Settings/StorageScreen.swift:50"
+      "comment": "Imora/Features/Admin/AdminUserDetailScreen.swift:162\nImora/Features/Settings/StorageScreen.swift:50\nImora/Features/Settings/StorageScreen.swift:61"
     },
     "%@ or %lld more": {
       "extractionState": "manual",
@@ -860,7 +863,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2249"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2512"
     },
     "%@ uploads": {
       "extractionState": "manual",
@@ -1165,7 +1168,8 @@
             "value": "%@。"
           }
         }
-      }
+      },
+      "comment": "Imora/DesignSystem/OptimisticAction.swift:95"
     },
     "%@. The server is not available.": {
       "extractionState": "manual",
@@ -1183,7 +1187,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1859"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1861"
     },
     "%@: %@": {
       "extractionState": "manual",
@@ -1219,7 +1223,7 @@
           }
         }
       },
-      "comment": "Imora/DesignSystem/RemoteImage.swift:523\nImora/Features/Albums/AlbumDetailScreen.swift:450\nImora/Features/Albums/AlbumDetailScreen.swift:452\nImora/Features/Backup/BackupScreen.swift:162\nImora/Features/Library/LibraryPeoplePreviewCells.swift:32\nImora/Features/Viewer/PhotoEditorControls.swift:160\nImora/Features/Viewer/PhotoEditorControls.swift:75"
+      "comment": "Imora/DesignSystem/RemoteImage.swift:523\nImora/Features/Albums/AlbumDetailScreen.swift:450\nImora/Features/Albums/AlbumDetailScreen.swift:452\nImora/Features/Backup/BackupScreen.swift:186\nImora/Features/Library/LibraryPeoplePreviewCells.swift:32\nImora/Features/Viewer/PhotoEditorControls.swift:160\nImora/Features/Viewer/PhotoEditorControls.swift:75"
     },
     "%lld %@": {
       "extractionState": "manual",
@@ -1237,7 +1241,7 @@
           }
         }
       },
-      "comment": "Imora/Features/People/PersonScreen.swift:404\nImora/Features/Search/SearchFilterSheets.swift:904"
+      "comment": "Imora/Features/People/PersonScreen.swift:404"
     },
     "%lld People": {
       "extractionState": "manual",
@@ -1364,24 +1368,6 @@
         }
       },
       "comment": "Imora/Features/Admin/AdminUserDetailScreen.swift:332"
-    },
-    "%lld failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld failed"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld 个失败"
-          }
-        }
-      },
-      "comment": "Imora/Core/Notifications/LocalNotifications.swift:90"
     },
     "%lld has the most.": {
       "extractionState": "manual",
@@ -1572,7 +1558,8 @@
             "value": "%lld 项待处理分享占用 %@。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:123"
     },
     "%lld percent": {
       "extractionState": "manual",
@@ -1590,7 +1577,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3079"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3082"
     },
     "%lld photos": {
       "extractionState": "manual",
@@ -1656,7 +1643,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:271"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:295"
     },
     "%lld stars": {
       "extractionState": "manual",
@@ -1674,25 +1661,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetInfoSheet.swift:1073"
-    },
-    "%lld uploaded": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld uploaded"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已上传 %lld 个项目"
-          }
-        }
-      },
-      "comment": "Imora/Core/Notifications/LocalNotifications.swift:89"
+      "comment": "Imora/Features/Search/SearchFilterSheets.swift:904\nImora/Features/Viewer/AssetInfoSheet.swift:1073"
     },
     "%lld uploads on %@": {
       "extractionState": "manual",
@@ -2226,7 +2195,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:271"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:295"
     },
     "1 screenshot or screen recording, %@.": {
       "extractionState": "manual",
@@ -2262,7 +2231,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetInfoSheet.swift:1073"
+      "comment": "Imora/Features/Search/SearchFilterSheets.swift:904\nImora/Features/Viewer/AssetInfoSheet.swift:1073"
     },
     "1 upload": {
       "extractionState": "manual",
@@ -2514,7 +2483,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1848"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1850"
     },
     "A video has failed to back up %lld times. Review it in Backup Settings.": {
       "extractionState": "manual",
@@ -2587,6 +2556,24 @@
         }
       },
       "comment": "Imora/Features/Cleanup/CleanupScreen.swift:187"
+    },
+    "About & Updates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About & Updates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于与更新"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:95\nImora/Features/Settings/SettingsView.swift:141"
     },
     "Accept Suggestions, Free %@": {
       "extractionState": "manual",
@@ -2748,7 +2735,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:64\nImora/Features/Backup/BackupScreen.swift:311"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:71\nImora/Features/Backup/BackupScreen.swift:335"
     },
     "Active Mode keeps your screen awake on a dark screen while Imora indexes and backs up your library. Auto-Lock resumes when the backup finishes or you leave it.": {
       "extractionState": "manual",
@@ -2766,7 +2753,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:315"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:339"
     },
     "Active links": {
       "extractionState": "manual",
@@ -2910,7 +2897,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:66"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:70"
     },
     "Add Members": {
       "extractionState": "manual",
@@ -2964,7 +2951,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:72"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:76"
     },
     "Add Passkey": {
       "extractionState": "manual",
@@ -3126,7 +3113,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumsTab.swift:407\nImora/Features/Timeline/TimelineScreen.swift:1307\nImora/Features/Timeline/TimelineSelection.swift:121\nImora/Features/Timeline/TimelineSelection.swift:95\nImora/Features/Viewer/AddToAlbumSheet.swift:80\nImora/Features/Viewer/AssetInfoSheet.swift:1110\nImora/Features/Viewer/AssetViewerScreen.swift:2849\nImora/Features/Viewer/AssetViewerScreen.swift:3065\nImora/Features/Viewer/AssetViewerScreen.swift:3123"
+      "comment": "Imora/Features/Albums/AlbumsTab.swift:407\nImora/Features/Timeline/TimelineScreen.swift:1309\nImora/Features/Timeline/TimelineSelection.swift:121\nImora/Features/Timeline/TimelineSelection.swift:95\nImora/Features/Viewer/AddToAlbumSheet.swift:80\nImora/Features/Viewer/AssetInfoSheet.swift:1110\nImora/Features/Viewer/AssetViewerScreen.swift:2852\nImora/Features/Viewer/AssetViewerScreen.swift:3068\nImora/Features/Viewer/AssetViewerScreen.swift:3126"
     },
     "Add to Favorites": {
       "extractionState": "manual",
@@ -3144,7 +3131,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2536\nImora/Features/Viewer/AssetViewerScreen.swift:2625\nImora/Features/Viewer/AssetViewerScreen.swift:2726"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2539\nImora/Features/Viewer/AssetViewerScreen.swift:2628\nImora/Features/Viewer/AssetViewerScreen.swift:2729"
     },
     "Add to Imora": {
       "extractionState": "manual",
@@ -3252,7 +3239,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:138"
+      "comment": "Imora/Features/Settings/SettingsView.swift:147"
     },
     "Adds it as a filter.": {
       "extractionState": "manual",
@@ -3378,7 +3365,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminScreen.swift:34\nImora/Features/Settings/SettingsView.swift:157"
+      "comment": "Imora/Features/Admin/AdminScreen.swift:34\nImora/Features/Settings/SettingsView.swift:166"
     },
     "Advanced": {
       "extractionState": "manual",
@@ -3396,7 +3383,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:185"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:209"
     },
     "After": {
       "extractionState": "manual",
@@ -3630,7 +3617,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:333\nImora/Features/Viewer/AssetViewerScreen.swift:3529"
+      "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:333\nImora/Features/Viewer/AssetViewerScreen.swift:3535"
     },
     "Album invites and server alerts show up here.": {
       "extractionState": "manual",
@@ -3846,7 +3833,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:242\nImora/Features/Timeline/LocalPhotosBanner.swift:30"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:266\nImora/Features/Timeline/LocalPhotosBanner.swift:30"
     },
     "Allow Notifications": {
       "extractionState": "manual",
@@ -4082,6 +4069,42 @@
       },
       "comment": "Imora/Features/Viewer/AssetInfoSheet.swift:986"
     },
+    "App Update Available": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Update Available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有可用的 App 更新"
+          }
+        }
+      },
+      "comment": "Imora/App/ImoraApp.swift:96"
+    },
+    "App Version": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 版本"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:10"
+    },
     "Appears In": {
       "extractionState": "manual",
       "localizations": {
@@ -4206,7 +4229,7 @@
           }
         }
       },
-      "comment": "Imora/App/MainTabView.swift:105\nImora/Features/Library/LibraryTab.swift:298\nImora/Features/Library/LibraryTab.swift:40\nImora/Features/Search/SearchControls.swift:75\nImora/Features/Timeline/TimelineScreen.swift:1341\nImora/Features/Timeline/TimelineSelection.swift:115\nImora/Features/Viewer/AssetViewerScreen.swift:2933"
+      "comment": "Imora/App/MainTabView.swift:105\nImora/Features/Library/LibraryTab.swift:298\nImora/Features/Library/LibraryTab.swift:40\nImora/Features/Search/SearchControls.swift:75\nImora/Features/Timeline/TimelineScreen.swift:1343\nImora/Features/Timeline/TimelineSelection.swift:115\nImora/Features/Viewer/AssetViewerScreen.swift:2936"
     },
     "Aspect Ratio": {
       "extractionState": "manual",
@@ -4295,7 +4318,8 @@
             "value": "自动使用已验证的局域网服务器"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:125"
     },
     "Automatically classify and tag photos.": {
       "extractionState": "manual",
@@ -4349,7 +4373,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:757\nImora/Features/Timeline/TimelineSelection.swift:47"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:758\nImora/Features/Timeline/TimelineSelection.swift:47"
     },
     "Back Up Automatically": {
       "extractionState": "manual",
@@ -4367,7 +4391,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:77"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:101"
     },
     "Back Up Missing": {
       "extractionState": "manual",
@@ -4385,7 +4409,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:757"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:758"
     },
     "Back Up Now": {
       "extractionState": "manual",
@@ -4403,7 +4427,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:332\nImora/Features/Backup/BackupScreen.swift:345\nImora/Features/Timeline/TimelineScreen.swift:1462"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:356\nImora/Features/Backup/BackupScreen.swift:369\nImora/Features/Timeline/TimelineScreen.swift:1464"
     },
     "Back up now?": {
       "extractionState": "manual",
@@ -4421,7 +4445,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:341"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:54\nImora/Features/Backup/BackupScreen.swift:365\nImora/Features/Backup/BackupScreen.swift:55"
     },
     "Backed Up": {
       "extractionState": "manual",
@@ -4439,7 +4463,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1434\nImora/Features/Viewer/AssetViewerScreen.swift:3060\nImora/Features/Viewer/AssetViewerScreen.swift:3109"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1436\nImora/Features/Viewer/AssetViewerScreen.swift:3063\nImora/Features/Viewer/AssetViewerScreen.swift:3112"
     },
     "Backed up": {
       "extractionState": "manual",
@@ -4457,7 +4481,7 @@
           }
         }
       },
-      "comment": "Imora/DesignSystem/RemoteImage.swift:567\nImora/DesignSystem/RemoteImage.swift:578\nImora/Features/Timeline/TimelineTileRow.swift:844\nImora/Features/Timeline/TimelineTileRow.swift:856\nImora/Features/Viewer/AssetViewerScreen.swift:3071\nImora/Features/Viewer/AssetViewerScreen.swift:3129\nImora/Features/Viewer/AssetViewerScreen.swift:3716"
+      "comment": "Imora/DesignSystem/RemoteImage.swift:567\nImora/DesignSystem/RemoteImage.swift:578\nImora/Features/Timeline/TimelineTileRow.swift:844\nImora/Features/Timeline/TimelineTileRow.swift:856\nImora/Features/Viewer/AssetViewerScreen.swift:3074\nImora/Features/Viewer/AssetViewerScreen.swift:3132\nImora/Features/Viewer/AssetViewerScreen.swift:3722"
     },
     "Background App Refresh is available. iOS chooses when automatic recovery runs.": {
       "extractionState": "manual",
@@ -4474,7 +4498,8 @@
             "value": "后台 App 刷新已开启，自动恢复备份的时间由 iOS 决定。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:51"
     },
     "Background App Refresh is off. Enable it in Settings > General > Background App Refresh to allow automatic recovery opportunities.": {
       "extractionState": "manual",
@@ -4491,7 +4516,8 @@
             "value": "后台 App 刷新已关闭。可前往“设置 > 通用 > 后台 App 刷新”开启，让系统有机会自动恢复备份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:41"
     },
     "Background Backup": {
       "extractionState": "manual",
@@ -4508,7 +4534,8 @@
             "value": "后台备份"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackupScreen.swift:33"
     },
     "Background Tasks": {
       "extractionState": "manual",
@@ -4543,7 +4570,8 @@
             "value": "当前安装的 App 无法使用后台备份。保持 Imora 打开可继续备份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:81"
     },
     "Background request accepted. Waiting to start whole-library backup.": {
       "extractionState": "manual",
@@ -4560,7 +4588,8 @@
             "value": "后台请求已接受，正在等待开始备份整个图库。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:69"
     },
     "Background time is unavailable. Check Background App Refresh and power settings. Keep Imora open to continue.": {
       "extractionState": "manual",
@@ -4577,7 +4606,8 @@
             "value": "暂时无法在后台运行。请检查后台 App 刷新和电源设置，保持 Imora 打开可继续备份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:79"
     },
     "Backing Up… %lld%%": {
       "extractionState": "manual",
@@ -4595,7 +4625,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1441"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1443"
     },
     "Backing up": {
       "extractionState": "manual",
@@ -4613,25 +4643,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2236\nImora/Features/Backup/BackupScreen.swift:370\nImora/Features/Viewer/AssetViewerScreen.swift:3078"
-    },
-    "Backing up a new %@... %@ saved": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Backing up a new %@... %@ saved"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在备份新%@… 已保存%@"
-          }
-        }
-      },
-      "comment": "Imora/Core/Backup/BackupManager.swift:829"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2496\nImora/Features/Backup/ActiveBackupScreen.swift:161\nImora/Features/Backup/BackupScreen.swift:394\nImora/Features/Viewer/AssetViewerScreen.swift:3081"
     },
     "Backing up now can use a large amount of cellular data.": {
       "extractionState": "manual",
@@ -4649,7 +4661,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:369"
+      "comment": "Imora/Core/Backup/BackupManager.swift:377"
     },
     "Backing up now may use data on this metered Wi-Fi connection.": {
       "extractionState": "manual",
@@ -4667,7 +4679,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:367"
+      "comment": "Imora/Core/Backup/BackupManager.swift:375"
     },
     "Backing up now may use data on this metered connection.": {
       "extractionState": "manual",
@@ -4685,7 +4697,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:371"
+      "comment": "Imora/Core/Backup/BackupManager.swift:379"
     },
     "Backing up the new item. %@ saved.": {
       "extractionState": "manual",
@@ -4702,7 +4714,8 @@
             "value": "正在备份新项目。已保存%@。"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/BackupManager.swift:888"
     },
     "Backing up, %lld percent": {
       "extractionState": "manual",
@@ -4738,7 +4751,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:37\nImora/Features/Settings/SettingsView.swift:130"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:53\nImora/Features/Settings/SettingsView.swift:130"
     },
     "Backup Database": {
       "extractionState": "manual",
@@ -4792,7 +4805,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:167"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:191"
     },
     "Backup Selection and Limits": {
       "extractionState": "manual",
@@ -4810,7 +4823,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:124"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:148"
     },
     "Backup Settings": {
       "extractionState": "manual",
@@ -4846,7 +4859,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1457"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1459"
     },
     "Backup cancelled": {
       "extractionState": "manual",
@@ -4864,7 +4877,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2235"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2495"
     },
     "Backup cancelled.": {
       "extractionState": "manual",
@@ -4882,7 +4895,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:397"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:424"
     },
     "Backup check complete": {
       "extractionState": "manual",
@@ -4900,7 +4913,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2247"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2510"
     },
     "Backup check complete.": {
       "extractionState": "manual",
@@ -4918,7 +4931,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:402"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:429"
     },
     "Backup complete": {
       "extractionState": "manual",
@@ -4936,7 +4949,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2233"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2493"
     },
     "Backup failed": {
       "extractionState": "manual",
@@ -4972,7 +4985,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3084"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3087"
     },
     "Backup incomplete": {
       "extractionState": "manual",
@@ -4990,7 +5003,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2232"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2492"
     },
     "Backup incomplete. %@.": {
       "extractionState": "manual",
@@ -5026,7 +5039,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2012\nImora/Features/Timeline/TimelineScreen.swift:2306"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2019\nImora/Features/Timeline/TimelineScreen.swift:2314"
     },
     "Backup needs attention": {
       "extractionState": "manual",
@@ -5062,7 +5075,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:83"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:90"
     },
     "Backup state is unavailable. Unlock the device and try again.": {
       "extractionState": "manual",
@@ -5080,7 +5093,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1182\nImora/Core/Backup/BackupManager.swift:1894\nImora/Core/Backup/BackupManager.swift:1968\nImora/Core/Backup/BackupManager.swift:2108"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1268\nImora/Core/Backup/BackupManager.swift:2103\nImora/Core/Backup/BackupManager.swift:2180\nImora/Core/Backup/BackupManager.swift:2330"
     },
     "Backup stopped": {
       "extractionState": "manual",
@@ -5098,7 +5111,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2234\nImora/Core/Notifications/LocalNotifications.swift:81"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2494\nImora/Core/Notifications/LocalNotifications.swift:81"
     },
     "Backups are not enabled": {
       "extractionState": "manual",
@@ -5134,7 +5147,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:149"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:173"
     },
     "Battery is at %lld%% or less. Allow backup this time; low-battery protection resets after the charge rises above this threshold.": {
       "extractionState": "manual",
@@ -5152,7 +5165,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:373"
+      "comment": "Imora/Core/Backup/BackupManager.swift:381"
     },
     "Battery is at %lld%% or less. Waiting for more charge.": {
       "extractionState": "manual",
@@ -5170,7 +5183,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:352"
+      "comment": "Imora/Core/Backup/BackupManager.swift:360"
     },
     "Beach days": {
       "extractionState": "manual",
@@ -5334,6 +5347,24 @@
       },
       "comment": "Imora/Features/Map/MapScreen.swift:155"
     },
+    "Build": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Build"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "构建号"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:12"
+    },
     "Bursts": {
       "extractionState": "manual",
       "localizations": {
@@ -5367,25 +5398,8 @@
             "value": "CA 证书 SHA-256 指纹"
           }
         }
-      }
-    },
-    "Cached data is re-downloadable and separate from your backed up photos.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cached data is re-downloadable and separate from your backed up photos."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "缓存数据可以重新下载，与已备份的照片分开存储。"
-          }
-        }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:98"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:132"
     },
     "Cached data is re-downloadable and separate from your backed up photos. Videos in use are cleared when playback finishes.": {
       "extractionState": "manual",
@@ -5402,7 +5416,8 @@
             "value": "缓存数据可以重新下载，与已备份的照片分开保存。正在使用的视频会在播放结束后清理。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:109"
     },
     "Camera": {
       "extractionState": "manual",
@@ -5546,7 +5561,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminQueuesScreen.swift:440\nImora/Features/Admin/AdminUserActions.swift:272\nImora/Features/Admin/AdminUserFormSheet.swift:154\nImora/Features/Albums/AlbumAddAssetsSheet.swift:84\nImora/Features/Albums/AlbumEditSheet.swift:50\nImora/Features/Albums/AlbumPeopleSheets.swift:56\nImora/Features/Albums/AlbumsTab.swift:129\nImora/Features/Albums/AlbumsTab.swift:419\nImora/Features/Albums/AlbumsTab.swift:450\nImora/Features/Auth/LoginFlowView.swift:68\nImora/Features/Backup/BackupScreen.swift:319\nImora/Features/Backup/BackupScreen.swift:349\nImora/Features/Backup/BackupScreen.swift:457\nImora/Features/Cleanup/CleanupSupport.swift:193\nImora/Features/Locked/LockedFolderSettingsScreen.swift:116\nImora/Features/Locked/LockedFolderSettingsScreen.swift:137\nImora/Features/Locked/LockedFolderSettingsScreen.swift:173\nImora/Features/Map/MapScreen.swift:129\nImora/Features/Notifications/NotificationsScreen.swift:112\nImora/Features/People/PeopleScreen.swift:175\nImora/Features/People/PersonAccessSheet.swift:309\nImora/Features/People/PersonScreen.swift:45\nImora/Features/People/PersonScreen.swift:92\nImora/Features/People/PersonSheets.swift:147\nImora/Features/People/PersonSheets.swift:66\nImora/Features/Search/SearchFilterSheets.swift:121\nImora/Features/Settings/AccountSecurityScreen.swift:134\nImora/Features/Settings/AccountSecurityScreen.swift:144\nImora/Features/Settings/AccountSecurityScreen.swift:164\nImora/Features/Settings/AccountSecurityScreen.swift:476\nImora/Features/Settings/FaceSharingScreen.swift:204\nImora/Features/Settings/FaceSharingScreen.swift:366\nImora/Features/Settings/FaceSharingScreen.swift:438\nImora/Features/Settings/LocalNetworkScreen.swift:102\nImora/Features/Share/AssetShareSheet.swift:1102\nImora/Features/Spaces/SpaceManagement.swift:325\nImora/Features/Spaces/SpaceManagement.swift:48\nImora/Features/Spaces/SpacesScreen.swift:456\nImora/Features/Spaces/UserGroupsScreen.swift:242\nImora/Features/Spaces/UserGroupsScreen.swift:336\nImora/Features/Spaces/UserGroupsScreen.swift:62\nImora/Features/Viewer/AddToAlbumSheet.swift:84\nImora/Features/Viewer/AddToAlbumSheet.swift:94\nImora/Features/Viewer/AssetAdjustSheets.swift:289\nImora/Features/Viewer/AssetAdjustSheets.swift:92\nImora/Features/Viewer/AssetEditScreen.swift:1442\nImora/Features/Viewer/AssetInfoSheet.swift:211\nImora/Features/Viewer/AssetViewerScreen.swift:3274\nImora/Features/Viewer/FaceTagSheet.swift:181\nImora/Features/Viewer/FaceTagSheet.swift:98\nImora/Features/Viewer/PhotoEditorControls.swift:543\nImoraShare/ShareViewController.swift:89"
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:127\nImora/Features/Admin/AdminQueuesScreen.swift:440\nImora/Features/Admin/AdminUserActions.swift:272\nImora/Features/Admin/AdminUserFormSheet.swift:154\nImora/Features/Albums/AlbumAddAssetsSheet.swift:84\nImora/Features/Albums/AlbumEditSheet.swift:50\nImora/Features/Albums/AlbumPeopleSheets.swift:56\nImora/Features/Albums/AlbumsTab.swift:129\nImora/Features/Albums/AlbumsTab.swift:419\nImora/Features/Albums/AlbumsTab.swift:450\nImora/Features/Auth/LoginFlowView.swift:68\nImora/Features/Backup/ActiveBackupScreen.swift:56\nImora/Features/Backup/BackupScreen.swift:343\nImora/Features/Backup/BackupScreen.swift:373\nImora/Features/Backup/BackupScreen.swift:484\nImora/Features/Backup/BackupScreen.swift:59\nImora/Features/Cleanup/CleanupSupport.swift:193\nImora/Features/Locked/LockedFolderSettingsScreen.swift:116\nImora/Features/Locked/LockedFolderSettingsScreen.swift:137\nImora/Features/Locked/LockedFolderSettingsScreen.swift:173\nImora/Features/Map/MapScreen.swift:129\nImora/Features/Notifications/NotificationsScreen.swift:112\nImora/Features/People/PeopleScreen.swift:175\nImora/Features/People/PersonAccessSheet.swift:309\nImora/Features/People/PersonScreen.swift:45\nImora/Features/People/PersonScreen.swift:92\nImora/Features/People/PersonSheets.swift:147\nImora/Features/People/PersonSheets.swift:66\nImora/Features/Search/SearchFilterSheets.swift:121\nImora/Features/Settings/AccountSecurityScreen.swift:134\nImora/Features/Settings/AccountSecurityScreen.swift:144\nImora/Features/Settings/AccountSecurityScreen.swift:164\nImora/Features/Settings/AccountSecurityScreen.swift:476\nImora/Features/Settings/FaceSharingScreen.swift:204\nImora/Features/Settings/FaceSharingScreen.swift:366\nImora/Features/Settings/FaceSharingScreen.swift:438\nImora/Features/Settings/LocalNetworkScreen.swift:102\nImora/Features/Settings/ManualServerRouteSection.swift:100\nImora/Features/Share/AssetShareSheet.swift:1102\nImora/Features/Spaces/SpaceManagement.swift:325\nImora/Features/Spaces/SpaceManagement.swift:48\nImora/Features/Spaces/SpacesScreen.swift:456\nImora/Features/Spaces/UserGroupsScreen.swift:242\nImora/Features/Spaces/UserGroupsScreen.swift:336\nImora/Features/Spaces/UserGroupsScreen.swift:62\nImora/Features/Viewer/AddToAlbumSheet.swift:84\nImora/Features/Viewer/AddToAlbumSheet.swift:94\nImora/Features/Viewer/AssetAdjustSheets.swift:289\nImora/Features/Viewer/AssetAdjustSheets.swift:92\nImora/Features/Viewer/AssetEditScreen.swift:1442\nImora/Features/Viewer/AssetInfoSheet.swift:211\nImora/Features/Viewer/AssetViewerScreen.swift:3277\nImora/Features/Viewer/FaceTagSheet.swift:181\nImora/Features/Viewer/FaceTagSheet.swift:98\nImora/Features/Viewer/PhotoEditorControls.swift:543\nImoraShare/ShareViewController.swift:89"
     },
     "Cancel Selection": {
       "extractionState": "manual",
@@ -5564,7 +5579,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1149\nImora/Features/Timeline/TimelineScreen.swift:774"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1151\nImora/Features/Timeline/TimelineScreen.swift:775"
     },
     "Cancel Verification": {
       "extractionState": "manual",
@@ -5582,7 +5597,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:436"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:463"
     },
     "Cast": {
       "extractionState": "manual",
@@ -5600,7 +5615,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2890\nImora/Features/Viewer/AssetViewerScreen.swift:2899"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2893\nImora/Features/Viewer/AssetViewerScreen.swift:2902"
     },
     "Cat": {
       "extractionState": "manual",
@@ -5636,7 +5651,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:359"
+      "comment": "Imora/Core/Backup/BackupManager.swift:367"
     },
     "Change PIN": {
       "extractionState": "manual",
@@ -5674,6 +5689,24 @@
       },
       "comment": "Imora/Features/Settings/AccountSecurityScreen.swift:39\nImora/Features/Settings/AccountSecurityScreen.swift:472"
     },
+    "Check for Updates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for Updates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查更新"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:76"
+    },
     "Check your connection and try again. Your search and filters are kept.": {
       "extractionState": "manual",
       "localizations": {
@@ -5707,7 +5740,8 @@
             "value": "正在检查局域网地址…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:42"
     },
     "Checking backup status...": {
       "extractionState": "manual",
@@ -5725,7 +5759,25 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:389"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:416"
+    },
+    "Checking for Updates...": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking for Updates..."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查更新…"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:73"
     },
     "Checking with your server...": {
       "extractionState": "manual",
@@ -5743,7 +5795,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2244"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2507"
     },
     "Checking...": {
       "extractionState": "manual",
@@ -5761,7 +5813,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:121"
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:119"
     },
     "Checksum Mismatch": {
       "extractionState": "manual",
@@ -5941,7 +5993,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:441"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:468"
     },
     "Cleanup": {
       "extractionState": "manual",
@@ -5977,7 +6029,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:501"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:528"
     },
     "Clear": {
       "extractionState": "manual",
@@ -6013,7 +6065,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:85"
+      "comment": "Imora/Features/Settings/StorageScreen.swift:96"
     },
     "Clear All": {
       "extractionState": "manual",
@@ -6049,7 +6101,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:76\nImora/Features/Settings/StorageScreen.swift:89"
+      "comment": "Imora/Features/Settings/StorageScreen.swift:100\nImora/Features/Settings/StorageScreen.swift:87"
     },
     "Clear Failed Jobs": {
       "extractionState": "manual",
@@ -6193,7 +6245,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/FaceSharingScreen.swift:450\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:531\nImora/Features/Viewer/AssetViewerScreen.swift:2455\nImora/Features/Viewer/AssetViewerScreen.swift:3305"
+      "comment": "Imora/Features/Settings/FaceSharingScreen.swift:450\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:531\nImora/Features/Viewer/AssetViewerScreen.swift:2458\nImora/Features/Viewer/AssetViewerScreen.swift:3308"
     },
     "Color": {
       "extractionState": "manual",
@@ -6228,7 +6280,8 @@
             "value": "对%2$@执行“%1$@”命令失败"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Admin/AdminQueueDetailScreen.swift:97\nImora/Features/Admin/AdminQueuesScreen.swift:362"
     },
     "Comments": {
       "extractionState": "manual",
@@ -6246,7 +6299,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumActivitySheet.swift:115\nImora/Features/Viewer/AssetViewerScreen.swift:2487"
+      "comment": "Imora/Features/Albums/AlbumActivitySheet.swift:115\nImora/Features/Viewer/AssetViewerScreen.swift:2490"
     },
     "Comments and Likes": {
       "extractionState": "manual",
@@ -6317,7 +6370,8 @@
             "value": "配置局域网地址"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:68"
     },
     "Configure verified automatic selection below, or choose Use Local Now. Both addresses use the same account and photo cache.": {
       "extractionState": "manual",
@@ -6334,7 +6388,8 @@
             "value": "可在下方配置经过身份验证的自动选择，也可点按“立即使用局域网地址”。两个地址共用同一账号和照片缓存。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:33"
     },
     "Confirm Local Address": {
       "extractionState": "manual",
@@ -6351,7 +6406,8 @@
             "value": "确认局域网地址"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:46"
     },
     "Confirm PIN": {
       "extractionState": "manual",
@@ -6476,7 +6532,8 @@
             "value": "已确认：%lld。失败：%lld。"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Notifications/LocalNotifications.swift:90"
     },
     "Connect to Wi-Fi to select the local address.": {
       "extractionState": "manual",
@@ -6493,7 +6550,8 @@
             "value": "连接 Wi-Fi 后即可选择局域网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:87"
     },
     "Connect to a different server?": {
       "extractionState": "manual",
@@ -6528,25 +6586,8 @@
             "value": "连接电源并保持此页面打开可在前台备份，也可在下方申请转到后台继续备份。"
           }
         }
-      }
-    },
-    "Connect to power and leave this screen open. Locking your phone or switching apps lets iOS limit how long indexing and backup can continue.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connect to power and leave this screen open. Locking your phone or switching apps lets iOS limit how long indexing and backup can continue."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请连接电源并保持此屏幕打开。锁定手机或切换应用后，iOS 可能会限制索引和备份继续运行的时间。"
-          }
-        }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:109"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:121"
     },
     "Connect to the Wi-Fi network your server is on, then try again.": {
       "extractionState": "manual",
@@ -6600,7 +6641,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:90"
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:23"
     },
     "Continue": {
       "extractionState": "manual",
@@ -6635,7 +6676,8 @@
             "value": "在后台继续备份"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:55\nImora/Features/Backup/BackgroundBackupControls.swift:18\nImora/Features/Backup/BackupScreen.swift:57"
     },
     "Continue with OAuth": {
       "extractionState": "manual",
@@ -6653,7 +6695,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Auth/LoginFlowView.swift:282"
+      "comment": "Imora/Features/Auth/LoginFlowView.swift:284"
     },
     "Contrast": {
       "extractionState": "manual",
@@ -6868,7 +6910,8 @@
             "value": "无法申请后台运行时间。请保持 Imora 打开后重试。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:85"
     },
     "Could not save backup recovery state.": {
       "extractionState": "manual",
@@ -6886,7 +6929,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1186"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1272"
     },
     "Could not save backup recovery state. Check available device storage and try again.": {
       "extractionState": "manual",
@@ -6904,7 +6947,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:617"
+      "comment": "Imora/Core/Backup/BackupManager.swift:660\nImora/Core/Backup/BackupManager.swift:667"
     },
     "Could still free %@.": {
       "extractionState": "manual",
@@ -7300,7 +7343,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1937"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1939"
     },
     "Couldn't back up": {
       "extractionState": "manual",
@@ -7318,7 +7361,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2019\nImora/Features/Timeline/TimelineScreen.swift:2321"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2026\nImora/Features/Timeline/TimelineScreen.swift:2329"
     },
     "Couldn't back up %lld items.": {
       "extractionState": "manual",
@@ -7336,7 +7379,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2331"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2339"
     },
     "Couldn't back up 1 item.": {
       "extractionState": "manual",
@@ -7354,7 +7397,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2330"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2338"
     },
     "Couldn't back up this photo": {
       "extractionState": "manual",
@@ -7372,7 +7415,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3718"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3724"
     },
     "Couldn't cancel the invite": {
       "extractionState": "manual",
@@ -7518,6 +7561,24 @@
       },
       "comment": "Imora/Features/Spaces/SpacesScreen.swift:282"
     },
+    "Couldn't check for updates. Make sure your Mac is awake and reachable, then try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't check for updates. Make sure your Mac is awake and reachable, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法检查更新。请确保 Mac 已唤醒且可以连接，然后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Core/Updates/AppUpdateStore.swift:89"
+    },
     "Couldn't check the locked folder": {
       "extractionState": "manual",
       "localizations": {
@@ -7606,7 +7667,25 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:49"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:73"
+    },
+    "Couldn't confirm the installation request. Check the update status before trying again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't confirm the installation request. Check the update status before trying again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认安装请求。请先检查更新状态，然后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Core/Updates/AppUpdateStore.swift:116"
     },
     "Couldn't create the album.": {
       "extractionState": "manual",
@@ -7750,7 +7829,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1982\nImora/Features/Timeline/TimelineScreen.swift:2051\nImora/Features/Timeline/TimelineScreen.swift:2094\nImora/Features/Viewer/AssetViewerScreen.swift:3470\nImora/Features/Viewer/AssetViewerScreen.swift:3655\nImora/Features/Viewer/AssetViewerScreen.swift:3682\nImora/Features/Viewer/AssetViewerScreen.swift:3728"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1989\nImora/Features/Timeline/TimelineScreen.swift:2060\nImora/Features/Timeline/TimelineScreen.swift:2102\nImora/Features/Viewer/AssetViewerScreen.swift:3476\nImora/Features/Viewer/AssetViewerScreen.swift:3661\nImora/Features/Viewer/AssetViewerScreen.swift:3688\nImora/Features/Viewer/AssetViewerScreen.swift:3752"
     },
     "Couldn't delete permanently": {
       "extractionState": "manual",
@@ -7768,7 +7847,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2111"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2119"
     },
     "Couldn't delete the album.": {
       "extractionState": "manual",
@@ -7966,7 +8045,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3620"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3626"
     },
     "Couldn't dismiss the group.": {
       "extractionState": "manual",
@@ -8002,7 +8081,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2033"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2040"
     },
     "Couldn't download this photo": {
       "extractionState": "manual",
@@ -8020,7 +8099,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3702"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3708"
     },
     "Couldn't empty the trash": {
       "extractionState": "manual",
@@ -8038,7 +8117,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Cleanup/CleanupScreen.swift:236\nImora/Features/Timeline/TimelineScreen.swift:1853"
+      "comment": "Imora/Features/Cleanup/CleanupScreen.swift:236\nImora/Features/Timeline/TimelineScreen.swift:1855"
     },
     "Couldn't enable %@": {
       "extractionState": "manual",
@@ -8326,7 +8405,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1527"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1529"
     },
     "Couldn't load %@": {
       "extractionState": "manual",
@@ -8650,7 +8729,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3597"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3603"
     },
     "Couldn't move to the locked folder": {
       "extractionState": "manual",
@@ -8668,7 +8747,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1935\nImora/Features/Timeline/TimelineScreen.swift:1993\nImora/Features/Viewer/AssetViewerScreen.swift:3486"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1937\nImora/Features/Timeline/TimelineScreen.swift:2000\nImora/Features/Viewer/AssetViewerScreen.swift:3492"
     },
     "Couldn't move to trash": {
       "extractionState": "manual",
@@ -8686,7 +8765,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2111"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2119"
     },
     "Couldn't open the passkey page.": {
       "extractionState": "manual",
@@ -8830,7 +8909,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2203"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2211"
     },
     "Couldn't remove from the album": {
       "extractionState": "manual",
@@ -8848,7 +8927,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2162"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2170"
     },
     "Couldn't remove from the locked folder": {
       "extractionState": "manual",
@@ -8866,7 +8945,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1939\nImora/Features/Viewer/AssetViewerScreen.swift:3503"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1941\nImora/Features/Viewer/AssetViewerScreen.swift:3509"
     },
     "Couldn't remove from the space": {
       "extractionState": "manual",
@@ -8884,7 +8963,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2278"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2286"
     },
     "Couldn't remove the like": {
       "extractionState": "manual",
@@ -8974,7 +9053,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2202"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2210"
     },
     "Couldn't remove this person": {
       "extractionState": "manual",
@@ -9010,7 +9089,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3555"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3561"
     },
     "Couldn't remove this photo from the album. The change was undone.": {
       "extractionState": "manual",
@@ -9028,7 +9107,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3546"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3552"
     },
     "Couldn't rename the key.": {
       "extractionState": "manual",
@@ -9226,7 +9305,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2141"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2149"
     },
     "Couldn't restore the photos": {
       "extractionState": "manual",
@@ -9262,7 +9341,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1852"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1854"
     },
     "Couldn't restore the user": {
       "extractionState": "manual",
@@ -9298,7 +9377,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3569"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3575"
     },
     "Couldn't resume the paused queues": {
       "extractionState": "manual",
@@ -9586,7 +9665,7 @@
           }
         }
       },
-      "comment": "Imora/Features/People/PersonScreen.swift:275\nImora/Features/Viewer/AssetViewerScreen.swift:3518"
+      "comment": "Imora/Features/People/PersonScreen.swift:275\nImora/Features/Viewer/AssetViewerScreen.swift:3524"
     },
     "Couldn't set the featured photo. The server is not available.": {
       "extractionState": "manual",
@@ -9766,7 +9845,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2258"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2266"
     },
     "Couldn't start facial recognition again": {
       "extractionState": "manual",
@@ -9856,7 +9935,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1941"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1943"
     },
     "Couldn't undo": {
       "extractionState": "manual",
@@ -9982,7 +10061,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:230"
+      "comment": "Imora/Features/Settings/SettingsView.swift:241"
     },
     "Couldn't update %@. The server is not available.": {
       "extractionState": "manual",
@@ -10000,7 +10079,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:223"
+      "comment": "Imora/Features/Settings/SettingsView.swift:234"
     },
     "Couldn't update album activity.": {
       "extractionState": "manual",
@@ -10072,7 +10151,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1896"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1898"
     },
     "Couldn't update favorites. The server is not available.": {
       "extractionState": "manual",
@@ -10090,7 +10169,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1888"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1890"
     },
     "Couldn't update shared people edits": {
       "extractionState": "manual",
@@ -10108,7 +10187,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:205"
+      "comment": "Imora/Features/Settings/SettingsView.swift:216"
     },
     "Couldn't update shared people edits. The server is not available.": {
       "extractionState": "manual",
@@ -10126,7 +10205,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:199"
+      "comment": "Imora/Features/Settings/SettingsView.swift:210"
     },
     "Couldn't update the archive": {
       "extractionState": "manual",
@@ -10144,7 +10223,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3453"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3456"
     },
     "Couldn't update the favorite": {
       "extractionState": "manual",
@@ -10162,7 +10241,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3438"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3441"
     },
     "Couldn't update the members.": {
       "extractionState": "manual",
@@ -10216,7 +10295,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:520"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:547"
     },
     "Counting": {
       "extractionState": "manual",
@@ -10449,7 +10528,8 @@
             "value": "当前连接"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:73"
     },
     "Current Files": {
       "extractionState": "manual",
@@ -10466,7 +10546,8 @@
             "value": "当前文件"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:21"
     },
     "Current password": {
       "extractionState": "manual",
@@ -10646,7 +10727,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserActions.swift:261\nImora/Features/Admin/AdminUserActions.swift:64\nImora/Features/Albums/AlbumActivitySheet.swift:65\nImora/Features/Albums/AlbumActivitySheet.swift:81\nImora/Features/Albums/AlbumShareLinksSheet.swift:182\nImora/Features/Cleanup/CleanupBurstsScreen.swift:230\nImora/Features/Cleanup/CleanupBurstsScreen.swift:270\nImora/Features/Cleanup/CleanupBurstsScreen.swift:276\nImora/Features/Cleanup/CleanupDeck.swift:154\nImora/Features/Cleanup/CleanupDeck.swift:64\nImora/Features/Cleanup/CleanupRewindScreen.swift:211\nImora/Features/Notifications/NotificationsScreen.swift:87\nImora/Features/Settings/AccountSecurityScreen.swift:102\nImora/Features/Settings/AccountSecurityScreen.swift:175\nImora/Features/Settings/AccountSecurityScreen.swift:191\nImora/Features/Viewer/AssetViewerScreen.swift:2826"
+      "comment": "Imora/Features/Admin/AdminUserActions.swift:261\nImora/Features/Admin/AdminUserActions.swift:64\nImora/Features/Albums/AlbumActivitySheet.swift:65\nImora/Features/Albums/AlbumActivitySheet.swift:81\nImora/Features/Albums/AlbumShareLinksSheet.swift:182\nImora/Features/Cleanup/CleanupBurstsScreen.swift:230\nImora/Features/Cleanup/CleanupBurstsScreen.swift:270\nImora/Features/Cleanup/CleanupBurstsScreen.swift:276\nImora/Features/Cleanup/CleanupDeck.swift:154\nImora/Features/Cleanup/CleanupDeck.swift:64\nImora/Features/Cleanup/CleanupRewindScreen.swift:211\nImora/Features/Notifications/NotificationsScreen.swift:87\nImora/Features/Settings/AccountSecurityScreen.swift:102\nImora/Features/Settings/AccountSecurityScreen.swift:175\nImora/Features/Settings/AccountSecurityScreen.swift:191\nImora/Features/Viewer/AssetViewerScreen.swift:2829"
     },
     "Delete \"%@\"?": {
       "extractionState": "manual",
@@ -10682,7 +10763,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3206"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3209"
     },
     "Delete %lld": {
       "extractionState": "manual",
@@ -10772,7 +10853,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Cleanup/CleanupQueueScreen.swift:163\nImora/Features/Cleanup/CleanupSupport.swift:171\nImora/Features/Timeline/TimelineScreen.swift:1414\nImora/Features/Timeline/TimelineSelection.swift:270\nImora/Features/Timeline/TimelineSelection.swift:285\nImora/Features/Viewer/AssetViewerScreen.swift:2589\nImora/Features/Viewer/AssetViewerScreen.swift:2764\nImora/Features/Viewer/AssetViewerScreen.swift:2987\nImora/Features/Viewer/AssetViewerScreen.swift:3253"
+      "comment": "Imora/Features/Cleanup/CleanupQueueScreen.swift:163\nImora/Features/Cleanup/CleanupSupport.swift:171\nImora/Features/Timeline/TimelineScreen.swift:1416\nImora/Features/Timeline/TimelineSelection.swift:270\nImora/Features/Timeline/TimelineSelection.swift:285\nImora/Features/Viewer/AssetViewerScreen.swift:2592\nImora/Features/Viewer/AssetViewerScreen.swift:2767\nImora/Features/Viewer/AssetViewerScreen.swift:2990\nImora/Features/Viewer/AssetViewerScreen.swift:3256"
     },
     "Delete Permanently?": {
       "extractionState": "manual",
@@ -10844,7 +10925,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3257"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3260"
     },
     "Delete from This Device": {
       "extractionState": "manual",
@@ -10862,7 +10943,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1396\nImora/Features/Viewer/AssetViewerScreen.swift:2808\nImora/Features/Viewer/AssetViewerScreen.swift:2968"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1398\nImora/Features/Viewer/AssetViewerScreen.swift:2811\nImora/Features/Viewer/AssetViewerScreen.swift:2971"
     },
     "Delete from This Device?": {
       "extractionState": "manual",
@@ -10880,7 +10961,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3207"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3210"
     },
     "Delete this passkey?": {
       "extractionState": "manual",
@@ -10988,7 +11069,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:499"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:526"
     },
     "Deleted 1 photo permanently": {
       "extractionState": "manual",
@@ -11042,7 +11123,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3669"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3675"
     },
     "Deleted from this device, but couldn't move the server copy to trash": {
       "extractionState": "manual",
@@ -11060,7 +11141,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2115"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2123"
     },
     "Deleted from this device, but couldn't move to the locked folder": {
       "extractionState": "manual",
@@ -11078,7 +11159,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1994\nImora/Features/Viewer/AssetViewerScreen.swift:3487"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2001\nImora/Features/Viewer/AssetViewerScreen.swift:3493"
     },
     "Deleted from this device, but couldn't permanently delete the server copy": {
       "extractionState": "manual",
@@ -11096,7 +11177,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2113"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2121"
     },
     "Deleted items can be restored from the trash later.": {
       "extractionState": "manual",
@@ -11276,7 +11357,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:478"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:505"
     },
     "Devices": {
       "extractionState": "manual",
@@ -11312,7 +11393,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Auth/LoginFlowView.swift:242"
+      "comment": "Imora/Features/Auth/LoginFlowView.swift:244"
     },
     "Disabled": {
       "extractionState": "manual",
@@ -11359,7 +11440,8 @@
             "value": "要丢弃 %lld 项待处理分享及其本地临时副本吗？"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:150"
     },
     "Discard Changes": {
       "extractionState": "manual",
@@ -11412,7 +11494,8 @@
             "value": "丢弃待处理分享"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:145\nImora/Features/Settings/StorageScreen.swift:154"
     },
     "Discover": {
       "extractionState": "manual",
@@ -11628,7 +11711,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2025"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2032"
     },
     "Download to Device": {
       "extractionState": "manual",
@@ -11646,7 +11729,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1382\nImora/Features/Viewer/AssetViewerScreen.swift:3008\nImora/Features/Viewer/AssetViewerScreen.swift:3115"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1384\nImora/Features/Viewer/AssetViewerScreen.swift:3011\nImora/Features/Viewer/AssetViewerScreen.swift:3118"
     },
     "Downloading original from iCloud…": {
       "extractionState": "manual",
@@ -11663,7 +11746,8 @@
             "value": "正在从 iCloud 下载原件…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:83"
     },
     "Downloading some originals from iCloud": {
       "extractionState": "manual",
@@ -11681,7 +11765,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:89"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:96"
     },
     "Downloading…": {
       "extractionState": "manual",
@@ -11699,7 +11783,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1377\nImora/Features/Viewer/AssetViewerScreen.swift:3003\nImora/Features/Viewer/AssetViewerScreen.swift:3115"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1379\nImora/Features/Viewer/AssetViewerScreen.swift:3006\nImora/Features/Viewer/AssetViewerScreen.swift:3118"
     },
     "Duplicate Detection": {
       "extractionState": "manual",
@@ -11807,7 +11891,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserActions.swift:48\nImora/Features/Timeline/TimelineScreen.swift:1302\nImora/Features/Viewer/AssetViewerScreen.swift:2567\nImora/Features/Viewer/AssetViewerScreen.swift:2655\nImora/Features/Viewer/AssetViewerScreen.swift:2750\nImora/Features/Viewer/AssetViewerScreen.swift:2842"
+      "comment": "Imora/Features/Admin/AdminUserActions.swift:48\nImora/Features/Timeline/TimelineScreen.swift:1304\nImora/Features/Viewer/AssetViewerScreen.swift:2570\nImora/Features/Viewer/AssetViewerScreen.swift:2658\nImora/Features/Viewer/AssetViewerScreen.swift:2753\nImora/Features/Viewer/AssetViewerScreen.swift:2845"
     },
     "Edit Access": {
       "extractionState": "manual",
@@ -12005,7 +12089,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3416\nImora/Features/Viewer/AssetViewerScreen.swift:3424"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3419\nImora/Features/Viewer/AssetViewerScreen.swift:3427"
     },
     "Email": {
       "extractionState": "manual",
@@ -12023,7 +12107,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserActions.swift:249\nImora/Features/Admin/AdminUserDetailScreen.swift:121\nImora/Features/Admin/AdminUserFormSheet.swift:98\nImora/Features/Auth/LoginFlowView.swift:160\nImora/Features/Settings/NotificationSettingsScreen.swift:99"
+      "comment": "Imora/Features/Admin/AdminUserActions.swift:249\nImora/Features/Admin/AdminUserDetailScreen.swift:121\nImora/Features/Admin/AdminUserFormSheet.swift:98\nImora/Features/Auth/LoginFlowView.swift:161\nImora/Features/Settings/NotificationSettingsScreen.swift:99"
     },
     "Email Notifications": {
       "extractionState": "manual",
@@ -12148,7 +12232,8 @@
             "value": "启用并保存局域网地址后，即可在此选择。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:85"
     },
     "End": {
       "extractionState": "manual",
@@ -12256,7 +12341,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:51"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:53"
     },
     "Enter the same PIN again.": {
       "extractionState": "manual",
@@ -12310,7 +12395,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:396"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:423"
     },
     "Especially helpful for your first backup": {
       "extractionState": "manual",
@@ -12328,7 +12413,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:104"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:116"
     },
     "Estimated original download": {
       "extractionState": "manual",
@@ -12345,7 +12430,8 @@
             "value": "预计原件下载量"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:104"
     },
     "Every face in the photos of everyone in the group is grouped into people again, from scratch. The people of all members are deleted first, so the names and birthdays set so far are lost.": {
       "extractionState": "manual",
@@ -12416,7 +12502,8 @@
             "value": "移除设备副本前，将从你的服务器下载并核验所有所选原件。实况照片需要同时核验照片和视频。服务器副本会保留。"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:102"
     },
     "Everyone Is Here": {
       "extractionState": "manual",
@@ -12542,7 +12629,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1451\nImora/Features/Viewer/AssetViewerScreen.swift:3089"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1453\nImora/Features/Viewer/AssetViewerScreen.swift:3092"
     },
     "Excluded from backup by the upload size limit": {
       "extractionState": "manual",
@@ -12560,7 +12647,7 @@
           }
         }
       },
-      "comment": "Imora/DesignSystem/RemoteImage.swift:575\nImora/Features/Timeline/TimelineTileRow.swift:854\nImora/Features/Viewer/AssetViewerScreen.swift:3095"
+      "comment": "Imora/DesignSystem/RemoteImage.swift:575\nImora/Features/Timeline/TimelineTileRow.swift:854\nImora/Features/Viewer/AssetViewerScreen.swift:3098"
     },
     "Exit Active Mode": {
       "extractionState": "manual",
@@ -12578,7 +12665,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:119"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:142"
     },
     "Expiration": {
       "extractionState": "manual",
@@ -12686,7 +12773,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:120"
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:118"
     },
     "External Libraries": {
       "extractionState": "manual",
@@ -12902,7 +12989,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:210"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:234"
     },
     "Favorite": {
       "extractionState": "manual",
@@ -12920,7 +13007,7 @@
           }
         }
       },
-      "comment": "Imora/DesignSystem/RemoteImage.swift:561\nImora/Features/Cleanup/CleanupDeck.swift:169\nImora/Features/Cleanup/CleanupDeck.swift:246\nImora/Features/Cleanup/CleanupDeck.swift:63\nImora/Features/Cleanup/CleanupRewindScreen.swift:209\nImora/Features/Library/LibraryTab.swift:171\nImora/Features/People/PeopleScreen.swift:247\nImora/Features/People/PersonScreen.swift:138\nImora/Features/People/PersonScreen.swift:325\nImora/Features/Timeline/TimelineScreen.swift:1294\nImora/Features/Timeline/TimelineSelection.swift:73\nImora/Features/Timeline/TimelineSelection.swift:90\nImora/Features/Timeline/TimelineTileRow.swift:832"
+      "comment": "Imora/DesignSystem/RemoteImage.swift:561\nImora/Features/Cleanup/CleanupDeck.swift:169\nImora/Features/Cleanup/CleanupDeck.swift:246\nImora/Features/Cleanup/CleanupDeck.swift:63\nImora/Features/Cleanup/CleanupRewindScreen.swift:209\nImora/Features/Library/LibraryTab.swift:171\nImora/Features/People/PeopleScreen.swift:247\nImora/Features/People/PersonScreen.swift:138\nImora/Features/People/PersonScreen.swift:325\nImora/Features/Timeline/TimelineScreen.swift:1296\nImora/Features/Timeline/TimelineSelection.swift:73\nImora/Features/Timeline/TimelineSelection.swift:90\nImora/Features/Timeline/TimelineTileRow.swift:832"
     },
     "Favorite moments from %@": {
       "extractionState": "manual",
@@ -13028,7 +13115,7 @@
           }
         }
       },
-      "comment": "Imora/Features/People/PersonScreen.swift:273\nImora/Features/Viewer/AssetViewerScreen.swift:3516"
+      "comment": "Imora/Features/People/PersonScreen.swift:273\nImora/Features/Viewer/AssetViewerScreen.swift:3522"
     },
     "Features": {
       "extractionState": "manual",
@@ -13082,7 +13169,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:157"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:181"
     },
     "Files go directly to your configured server. Keep this sheet open during the transfer.": {
       "extractionState": "manual",
@@ -13388,7 +13475,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:240\nImora/Features/Backup/BackupScreen.swift:251"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:264\nImora/Features/Backup/BackupScreen.swift:275"
     },
     "Full photo library access is required to remove verified device copies.": {
       "extractionState": "manual",
@@ -13640,7 +13727,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2578\nImora/Features/Viewer/AssetViewerScreen.swift:2644\nImora/Features/Viewer/AssetViewerScreen.swift:2739\nImora/Features/Viewer/AssetViewerScreen.swift:2791\nImora/Features/Viewer/AssetViewerScreen.swift:2836"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2581\nImora/Features/Viewer/AssetViewerScreen.swift:2647\nImora/Features/Viewer/AssetViewerScreen.swift:2742\nImora/Features/Viewer/AssetViewerScreen.swift:2794\nImora/Features/Viewer/AssetViewerScreen.swift:2839"
     },
     "Hide Person": {
       "extractionState": "manual",
@@ -13676,7 +13763,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3050"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3053"
     },
     "Highest Rated": {
       "extractionState": "manual",
@@ -13748,7 +13835,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:63"
+      "comment": "Imora/Features/Settings/StorageScreen.swift:74"
     },
     "Imora": {
       "extractionState": "manual",
@@ -13820,42 +13907,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:89"
-    },
-    "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Imora needs precise location access to read the Wi-Fi name for automatic selection. You can still choose Use Local Now on Wi-Fi."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Imora 需要精确位置权限才能读取 Wi-Fi 名称并自动选择地址。连接 Wi-Fi 后，仍可点按“立即使用局域网地址”。"
-          }
-        }
-      }
-    },
-    "Imora needs precise location access to read the Wi-Fi name. Without it, the external address is always used.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Imora needs precise location access to read the Wi-Fi name. Without it, the external address is always used."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Imora 需要精确位置访问权限才能读取 Wi-Fi 名称。未授权时，将始终使用外部地址。"
-          }
-        }
-      },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:85"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:113"
     },
     "Imora only raises a banner when a backup stops on an error. Album invites and server messages stay in the in-app notification inbox.": {
       "extractionState": "manual",
@@ -13945,7 +13997,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:99"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:123"
     },
     "Include screenshots in automatic backup and Back Up Now. When off, screenshots stay in your gallery and can still be selected for manual backup. The upload size limit is off by default. It applies to each request, including form data, for automatic and manual backup. For a 100 MB proxy limit, 95 MB leaves room for variation. Files over the limit show an exclusion icon and are not uploaded from this device. If a server copy is confirmed, they show the backed-up cloud. Transfers already in progress may finish.": {
       "extractionState": "manual",
@@ -13963,7 +14015,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:126"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:150"
     },
     "Indexing %@": {
       "extractionState": "manual",
@@ -13981,7 +14033,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2243"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2506"
     },
     "Indexing and uploads pause at this battery level, including while charging. Sync This Time allows backup until the battery rises above the threshold. The metered-connection override ends when an unmetered connection is available. Transfers already handed to iOS may finish while backup is paused.": {
       "extractionState": "manual",
@@ -13999,7 +14051,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:151"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:175"
     },
     "Indexing checks your files against the server so photos and videos already backed up don't upload again.": {
       "extractionState": "manual",
@@ -14017,7 +14069,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:107"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:119"
     },
     "Indexing library": {
       "extractionState": "manual",
@@ -14035,7 +14087,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2228"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2488"
     },
     "Indexing your files to identify what's already on your server. Missing photos and videos upload after indexing and matching; new captures can back up while the older library is indexed.": {
       "extractionState": "manual",
@@ -14053,7 +14105,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:278"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:302"
     },
     "Indexing your library...": {
       "extractionState": "manual",
@@ -14071,7 +14123,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:371"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:162\nImora/Features/Backup/BackupScreen.swift:395"
     },
     "Info": {
       "extractionState": "manual",
@@ -14089,7 +14141,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3302"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3305"
     },
     "Information": {
       "extractionState": "manual",
@@ -14108,6 +14160,78 @@
         }
       },
       "comment": "Imora/Features/Viewer/AssetInfoSheet.swift:219"
+    },
+    "Install App Update?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install App Update?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装 App 更新？"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:100"
+    },
+    "Install version %@ (build %@) using your Mac? Keep your Mac awake and logged in, and this phone reachable. Apple sign-in or unlocking the phone may be required.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install version %@ (build %@) using your Mac? Keep your Mac awake and logged in, and this phone reachable. Apple sign-in or unlocking the phone may be required."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要通过 Mac 安装版本 %1$@（构建号 %2$@）吗？请保持 Mac 唤醒并已登录，同时确保此手机可以连接。可能需要登录 Apple 账户或解锁手机。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:138"
+    },
+    "Install with Mac": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install with Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过 Mac 安装"
+          }
+        }
+      },
+      "comment": "Imora/App/ImoraApp.swift:100\nImora/Features/Settings/AppUpdatesScreen.swift:104\nImora/Features/Settings/AppUpdatesScreen.swift:50"
+    },
+    "Installation Needs Attention": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installation Needs Attention"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装需要处理"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:120"
     },
     "Integrity Checks": {
       "extractionState": "manual",
@@ -14142,7 +14266,8 @@
             "value": "服务器身份无效"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:141"
     },
     "Invert": {
       "extractionState": "manual",
@@ -14376,7 +14501,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3227"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3230"
     },
     "It will be permanently deleted from the server. This cannot be undone.": {
       "extractionState": "manual",
@@ -14394,7 +14519,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3228"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3231"
     },
     "It will be removed from every album and only show in the locked folder.": {
       "extractionState": "manual",
@@ -14412,7 +14537,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3237"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3240"
     },
     "It will be removed from every album and only show in the locked folder. The copy in your device photo library will be deleted.": {
       "extractionState": "manual",
@@ -14430,7 +14555,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3236"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3239"
     },
     "It will move to the server trash and can be restored from there.": {
       "extractionState": "manual",
@@ -14448,7 +14573,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3224"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3227"
     },
     "It will move to the server trash and the copy in your device photo library will be deleted.": {
       "extractionState": "manual",
@@ -14466,7 +14591,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3220\nImora/Features/Viewer/AssetViewerScreen.swift:3223"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3223\nImora/Features/Viewer/AssetViewerScreen.swift:3226"
     },
     "It will show in your library again.": {
       "extractionState": "manual",
@@ -14484,7 +14609,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3239"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3242"
     },
     "Job Queues": {
       "extractionState": "manual",
@@ -14754,7 +14879,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:74"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:76"
     },
     "Keep Everything Shown": {
       "extractionState": "manual",
@@ -14897,7 +15022,8 @@
             "value": "核验所选原件时，请保持此页面打开。你可以在移除前取消核验。"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:119"
     },
     "Keep this sheet open until sharing finishes. System interruptions can pause it; open Imora to resume. Files already sent stay on the server.": {
       "extractionState": "manual",
@@ -15169,6 +15295,24 @@
       },
       "comment": "Imora/Features/Settings/AccountSecurityScreen.swift:379"
     },
+    "Later": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Later"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "稍后"
+          }
+        }
+      },
+      "comment": "Imora/App/ImoraApp.swift:107\nImora/Features/Settings/AppUpdatesScreen.swift:108"
+    },
     "Leave \"%@\"?": {
       "extractionState": "manual",
       "localizations": {
@@ -15365,7 +15509,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:66"
+      "comment": "Imora/Features/Settings/StorageScreen.swift:77"
     },
     "Like": {
       "extractionState": "manual",
@@ -15437,7 +15581,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:107"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:131"
     },
     "Link OAuth Account": {
       "extractionState": "manual",
@@ -15545,7 +15689,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:122\nImora/Features/Settings/LocalNetworkScreen.swift:48"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:50\nImora/Features/Settings/ManualServerRouteSection.swift:125"
     },
     "Local Address (Manual)": {
       "extractionState": "manual",
@@ -15562,7 +15706,8 @@
             "value": "局域网地址（手动）"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:125"
     },
     "Local Connection Paused": {
       "extractionState": "manual",
@@ -15579,7 +15724,8 @@
             "value": "局域网连接已暂停"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:120"
     },
     "Local Network": {
       "extractionState": "manual",
@@ -15597,7 +15743,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:94\nImora/Features/Settings/SettingsView.swift:145"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:94\nImora/Features/Settings/SettingsView.swift:154"
     },
     "Local address unavailable. The connection was not changed. Check the saved address and Wi-Fi connection.": {
       "extractionState": "manual",
@@ -15614,7 +15760,8 @@
             "value": "局域网地址不可用，连接未更改。请检查已保存的地址和 Wi-Fi 连接。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:155"
     },
     "Local connections are paused. The external address will not be used.": {
       "extractionState": "manual",
@@ -15631,7 +15778,8 @@
             "value": "局域网连接已暂停，不会使用外网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:141"
     },
     "Location": {
       "extractionState": "manual",
@@ -15810,7 +15958,8 @@
             "value": "低电量模式会关闭后台 App 刷新，并限制自动恢复备份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:40"
     },
     "MB": {
       "extractionState": "manual",
@@ -15828,7 +15977,43 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:119"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:143"
+    },
+    "Mac Is Installing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac Is Installing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 正在安装"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:118"
+    },
+    "Mac Reports Installation Complete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac Reports Installation Complete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 报告安装已完成"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:119"
     },
     "Make": {
       "extractionState": "manual",
@@ -15866,23 +16051,6 @@
       },
       "comment": "Imora/Features/Admin/AdminScreen.swift:31"
     },
-    "Manual choices reset when the network, account, or local settings change, or when you return to the app. Manual local connections do not switch to the external address on failure.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Manual choices reset when the network, account, or local settings change, or when you return to the app. Manual local connections do not switch to the external address on failure."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "网络、账号或局域网设置变化，或返回 App 时，手动选择会重置。手动局域网连接失败时，不会自动切换到外网地址。"
-          }
-        }
-      }
-    },
     "Manual local mode stays selected until you choose the external address, change local settings, sign out, or restart the app. It never switches to the external address on failure.": {
       "extractionState": "manual",
       "localizations": {
@@ -15898,7 +16066,8 @@
             "value": "手动局域网模式会一直保持，直到你选择外网地址、更改局域网设置、退出账号或重新启动 App。连接失败时不会自动切换到外网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:89"
     },
     "Map": {
       "extractionState": "manual",
@@ -16078,7 +16247,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:393"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:420"
     },
     "Maximum size": {
       "extractionState": "manual",
@@ -16096,7 +16265,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:113"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:137"
     },
     "Measuring upload speed…": {
       "extractionState": "manual",
@@ -16113,7 +16282,8 @@
             "value": "正在测量上传速度…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:29"
     },
     "Media": {
       "extractionState": "manual",
@@ -16149,7 +16319,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:176"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:200"
     },
     "Media Type": {
       "extractionState": "manual",
@@ -16221,7 +16391,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminModels.swift:66\nImora/Features/Settings/SettingsView.swift:257\nImora/Features/Settings/SettingsView.swift:50\nImora/Features/Timeline/MemoryLane.swift:18"
+      "comment": "Imora/Features/Admin/AdminModels.swift:66\nImora/Features/Settings/SettingsView.swift:268\nImora/Features/Settings/SettingsView.swift:50\nImora/Features/Timeline/MemoryLane.swift:18"
     },
     "Memory": {
       "extractionState": "manual",
@@ -16473,7 +16643,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserDetailScreen.swift:383\nImora/Features/Albums/AlbumDetailScreen.swift:242\nImora/Features/Cleanup/CleanupBurstsScreen.swift:90\nImora/Features/Cleanup/CleanupRewindScreen.swift:280\nImora/Features/Library/LibraryTab.swift:534\nImora/Features/People/PeopleScreen.swift:119\nImora/Features/People/PersonScreen.swift:53\nImora/Features/Spaces/SpacesScreen.swift:263\nImora/Features/Viewer/AssetEditScreen.swift:500\nImora/Features/Viewer/AssetViewerScreen.swift:2491\nImora/Features/Viewer/VideoTrimEditor.swift:284"
+      "comment": "Imora/Features/Admin/AdminUserDetailScreen.swift:383\nImora/Features/Albums/AlbumDetailScreen.swift:242\nImora/Features/Cleanup/CleanupBurstsScreen.swift:90\nImora/Features/Cleanup/CleanupRewindScreen.swift:280\nImora/Features/Library/LibraryTab.swift:534\nImora/Features/People/PeopleScreen.swift:119\nImora/Features/People/PersonScreen.swift:53\nImora/Features/Spaces/SpacesScreen.swift:263\nImora/Features/Viewer/AssetEditScreen.swift:500\nImora/Features/Viewer/AssetViewerScreen.swift:2494\nImora/Features/Viewer/VideoTrimEditor.swift:284"
     },
     "More Actions": {
       "extractionState": "manual",
@@ -16509,7 +16679,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:187"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:211"
     },
     "Mountains": {
       "extractionState": "manual",
@@ -16545,7 +16715,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineSelection.swift:181\nImora/Features/Viewer/AssetViewerScreen.swift:3262"
+      "comment": "Imora/Features/Timeline/TimelineSelection.swift:181\nImora/Features/Viewer/AssetViewerScreen.swift:3265"
     },
     "Move %@ to Locked Folder?": {
       "extractionState": "manual",
@@ -16563,7 +16733,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineSelection.swift:169\nImora/Features/Viewer/AssetViewerScreen.swift:3208"
+      "comment": "Imora/Features/Timeline/TimelineSelection.swift:169\nImora/Features/Viewer/AssetViewerScreen.swift:3211"
     },
     "Move %@ to Trash Everywhere?": {
       "extractionState": "manual",
@@ -16581,7 +16751,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3205"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3208"
     },
     "Move %@ to Trash?": {
       "extractionState": "manual",
@@ -16599,7 +16769,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineSelection.swift:252\nImora/Features/Viewer/AssetViewerScreen.swift:3204"
+      "comment": "Imora/Features/Timeline/TimelineSelection.swift:252\nImora/Features/Viewer/AssetViewerScreen.swift:3207"
     },
     "Move and resize the box over the face.": {
       "extractionState": "manual",
@@ -16635,7 +16805,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1350\nImora/Features/Timeline/TimelineSelection.swift:153\nImora/Features/Viewer/AssetViewerScreen.swift:2943"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1352\nImora/Features/Timeline/TimelineSelection.swift:153\nImora/Features/Viewer/AssetViewerScreen.swift:2946"
     },
     "Move to Trash": {
       "extractionState": "manual",
@@ -16653,7 +16823,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Cleanup/CleanupQueueScreen.swift:163\nImora/Features/Cleanup/CleanupSupport.swift:171\nImora/Features/Timeline/TimelineScreen.swift:1405\nImora/Features/Timeline/TimelineSelection.swift:270\nImora/Features/Timeline/TimelineSelection.swift:285\nImora/Features/Viewer/AssetViewerScreen.swift:2817\nImora/Features/Viewer/AssetViewerScreen.swift:2977\nImora/Features/Viewer/AssetViewerScreen.swift:3248"
+      "comment": "Imora/Features/Cleanup/CleanupBurstsScreen.swift:230\nImora/Features/Cleanup/CleanupQueueScreen.swift:163\nImora/Features/Cleanup/CleanupSupport.swift:171\nImora/Features/Timeline/TimelineScreen.swift:1407\nImora/Features/Timeline/TimelineSelection.swift:270\nImora/Features/Timeline/TimelineSelection.swift:285\nImora/Features/Viewer/AssetViewerScreen.swift:2820\nImora/Features/Viewer/AssetViewerScreen.swift:2980\nImora/Features/Viewer/AssetViewerScreen.swift:3251"
     },
     "Move to Trash Everywhere": {
       "extractionState": "manual",
@@ -16671,7 +16841,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1405\nImora/Features/Viewer/AssetViewerScreen.swift:2817\nImora/Features/Viewer/AssetViewerScreen.swift:2977\nImora/Features/Viewer/AssetViewerScreen.swift:3248"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1407\nImora/Features/Viewer/AssetViewerScreen.swift:2820\nImora/Features/Viewer/AssetViewerScreen.swift:2980\nImora/Features/Viewer/AssetViewerScreen.swift:3251"
     },
     "Move to Trash?": {
       "extractionState": "manual",
@@ -16779,7 +16949,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:221"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:245"
     },
     "Needs attention. Share this item again from its original source.": {
       "extractionState": "manual",
@@ -16796,7 +16966,8 @@
             "value": "需要处理。请从原始来源重新分享此项目。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:129"
     },
     "Never": {
       "extractionState": "manual",
@@ -17048,7 +17219,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3296"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3299"
     },
     "Next frame": {
       "extractionState": "manual",
@@ -17139,6 +17310,24 @@
         }
       },
       "comment": "Imora/Features/Search/SearchDiscoveryView.swift:351\nImora/Features/Search/SearchFilterSheets.swift:307"
+    },
+    "No Newer Prepared Version": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Newer Prepared Version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已准备的新版本"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:55"
     },
     "No Notifications": {
       "extractionState": "manual",
@@ -17263,7 +17452,8 @@
             "value": "尚未安装服务器身份"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:141"
     },
     "No Shared Spaces": {
       "extractionState": "manual",
@@ -17641,7 +17831,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Search/SearchTab.swift:302\nImora/Features/Timeline/TimelineScreen.swift:367\nImora/Features/Timeline/TimelineScreen.swift:457"
+      "comment": "Imora/Features/Search/SearchTab.swift:302\nImora/Features/Timeline/TimelineScreen.swift:367\nImora/Features/Timeline/TimelineScreen.swift:458"
     },
     "No places": {
       "extractionState": "manual",
@@ -17713,7 +17903,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:1276"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:1278"
     },
     "Nobody else has access yet.": {
       "extractionState": "manual",
@@ -17893,7 +18083,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3101"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3104"
     },
     "Not currently syncing": {
       "extractionState": "manual",
@@ -17929,7 +18119,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:381"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:408"
     },
     "Not in Any Album": {
       "extractionState": "manual",
@@ -18127,7 +18317,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2250"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2513"
     },
     "Notifications": {
       "extractionState": "manual",
@@ -18253,7 +18443,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:96"
+      "comment": "Imora/Features/Settings/StorageScreen.swift:107"
     },
     "On Wi-Fi, Imora checks the server against this saved certificate before using the local address. It does not need the Wi-Fi name. Automatic mode uses the external address when the verified local server is unavailable. Manual local mode stays selected and never switches to the external address.": {
       "extractionState": "manual",
@@ -18270,25 +18460,8 @@
             "value": "连接 Wi-Fi 时，Imora 会先使用此已保存的证书验证服务器，再使用局域网地址，无需读取 Wi-Fi 名称。自动模式会在已验证的局域网服务器不可用时使用外网地址。手动局域网模式会保持选中，不会自动切换到外网地址。"
           }
         }
-      }
-    },
-    "On the Wi-Fi networks below, Imora connects to the local address when the server answers there, and to %@ everywhere else.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "On the Wi-Fi networks below, Imora connects to the local address when the server answers there, and to %@ everywhere else."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "连接到下列 Wi-Fi 网络时，若服务器可通过本地地址访问，Imora 将使用本地地址；其他情况下将连接到%@。"
-          }
-        }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:33"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:149"
     },
     "On this day in %@": {
       "extractionState": "manual",
@@ -18395,7 +18568,8 @@
             "value": "打开设置"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:45\nImora/Features/Backup/BackupScreen.swift:278\nImora/Features/Map/MapScreen.swift:126\nImora/Features/Settings/LocalNetworkScreen.swift:82\nImora/Features/Settings/NotificationSettingsScreen.swift:37\nImora/Features/Settings/NotificationSettingsScreen.swift:51"
     },
     "Open in Browser": {
       "extractionState": "manual",
@@ -18413,7 +18587,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1388\nImora/Features/Viewer/AssetViewerScreen.swift:2883\nImora/Features/Viewer/AssetViewerScreen.swift:2924"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1390\nImora/Features/Viewer/AssetViewerScreen.swift:2886\nImora/Features/Viewer/AssetViewerScreen.swift:2927"
     },
     "Open your locked folder": {
       "extractionState": "manual",
@@ -18593,7 +18767,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:486"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:513"
     },
     "Overexposed": {
       "extractionState": "manual",
@@ -18755,7 +18929,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserFormSheet.swift:176\nImora/Features/Albums/AlbumShareLinksSheet.swift:400\nImora/Features/Auth/LoginFlowView.swift:174"
+      "comment": "Imora/Features/Admin/AdminUserFormSheet.swift:176\nImora/Features/Albums/AlbumShareLinksSheet.swift:400\nImora/Features/Auth/LoginFlowView.swift:175"
     },
     "Password Reset": {
       "extractionState": "manual",
@@ -18935,7 +19109,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:144"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:168"
     },
     "Pause on Low Battery": {
       "extractionState": "manual",
@@ -18953,7 +19127,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:136"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:160"
     },
     "Paused": {
       "extractionState": "manual",
@@ -19006,7 +19180,8 @@
             "value": "待处理分享"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:177"
     },
     "Pending share storage is unavailable. Unlock the device and try again.": {
       "extractionState": "manual",
@@ -19023,7 +19198,8 @@
             "value": "无法读取待处理分享的存储空间。请解锁设备后重试。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:162"
     },
     "People": {
       "extractionState": "manual",
@@ -19041,7 +19217,7 @@
           }
         }
       },
-      "comment": "Imora/App/MainTabView.swift:98\nImora/Features/Admin/AdminModels.swift:67\nImora/Features/Albums/AlbumPeopleSheets.swift:208\nImora/Features/Library/LibraryTab.swift:85\nImora/Features/People/PeopleScreen.swift:69\nImora/Features/People/PeopleScreen.swift:91\nImora/Features/Search/SearchControls.swift:7\nImora/Features/Search/SearchDiscoveryView.swift:339\nImora/Features/Search/SearchFilterSheets.swift:203\nImora/Features/Settings/SettingsView.swift:258\nImora/Features/Settings/SettingsView.swift:51\nImora/Features/Spaces/SpaceManagement.swift:300\nImora/Features/Viewer/AssetInfoSheet.swift:486"
+      "comment": "Imora/App/MainTabView.swift:98\nImora/Features/Admin/AdminModels.swift:67\nImora/Features/Albums/AlbumPeopleSheets.swift:208\nImora/Features/Library/LibraryTab.swift:85\nImora/Features/People/PeopleScreen.swift:69\nImora/Features/People/PeopleScreen.swift:91\nImora/Features/Search/SearchControls.swift:7\nImora/Features/Search/SearchDiscoveryView.swift:339\nImora/Features/Search/SearchFilterSheets.swift:203\nImora/Features/Settings/SettingsView.swift:269\nImora/Features/Settings/SettingsView.swift:51\nImora/Features/Spaces/SpaceManagement.swift:300\nImora/Features/Viewer/AssetInfoSheet.swift:486"
     },
     "People Identity Maintenance": {
       "extractionState": "manual",
@@ -19329,7 +19505,7 @@
           }
         }
       },
-      "comment": "Imora/DesignSystem/RemoteImage.swift:556\nImora/Features/Backup/BackupScreen.swift:230\nImora/Features/Map/MapScreen.swift:331\nImora/Features/People/PersonScreen.swift:404\nImora/Features/Timeline/TimelineTileRow.swift:827\nImora/Features/Viewer/AssetViewerScreen.swift:3200"
+      "comment": "Imora/DesignSystem/RemoteImage.swift:556\nImora/Features/Backup/BackupScreen.swift:254\nImora/Features/Map/MapScreen.swift:331\nImora/Features/People/PersonScreen.swift:404\nImora/Features/Timeline/TimelineTileRow.swift:827\nImora/Features/Viewer/AssetViewerScreen.swift:3203"
     },
     "Photo Location": {
       "extractionState": "manual",
@@ -19455,7 +19631,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/StorageScreen.swift:93"
+      "comment": "Imora/Features/Settings/StorageScreen.swift:104"
     },
     "Photos must have every tag you select. A parent tag includes its children.": {
       "extractionState": "manual",
@@ -19491,7 +19667,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:18"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:19"
     },
     "Photos with at least one of the people you selected.": {
       "extractionState": "manual",
@@ -19689,7 +19865,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3299"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3302"
     },
     "Please provide the temporary password to the user and inform them they will need to change the password at their next login.": {
       "extractionState": "manual",
@@ -19726,6 +19902,42 @@
         }
       },
       "comment": "Imora/Features/Viewer/AssetEditScreen.swift:739"
+    },
+    "Prepared Build": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepared Build"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的构建号"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:20"
+    },
+    "Prepared Version": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepared Version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的版本"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:19"
     },
     "Preparing Item...": {
       "extractionState": "manual",
@@ -19778,7 +19990,8 @@
             "value": "正在准备设备副本核验…"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:96"
     },
     "Preparing original…": {
       "extractionState": "manual",
@@ -19795,7 +20008,8 @@
             "value": "正在准备原件…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:82"
     },
     "Previous Day": {
       "extractionState": "manual",
@@ -19831,7 +20045,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3293"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3296"
     },
     "Previous frame": {
       "extractionState": "manual",
@@ -19867,7 +20081,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Share/ShareUploadCoordinator.swift:22"
+      "comment": "Imora/Core/Share/ShareUploadCoordinator.swift:42"
     },
     "Primary": {
       "extractionState": "manual",
@@ -19903,7 +20117,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:41\nImora/Features/Settings/SettingsView.swift:103"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:43\nImora/Features/Settings/SettingsView.swift:103"
     },
     "Processing Item...": {
       "extractionState": "manual",
@@ -20154,7 +20368,8 @@
             "value": "按网络名称选择地址时，需要精确位置权限才能读取 Wi-Fi 名称。经过身份验证的自动选择和“立即使用局域网地址”无需此权限。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:89"
     },
     "Reading file details…": {
       "extractionState": "manual",
@@ -20171,7 +20386,8 @@
             "value": "正在读取文件信息…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:42"
     },
     "Reading original resources from iCloud may also be needed and can use additional data and time. You can cancel or remove these copies later.": {
       "extractionState": "manual",
@@ -20188,7 +20404,8 @@
             "value": "还可能需要从 iCloud 读取原始资源，并产生额外流量和等待时间。你可以取消，稍后再移除这些副本。"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:107"
     },
     "Reading the Wi-Fi name needs location access. Wi-Fi names and ping responses select a saved route; they do not verify server identity. HTTP sends photos and account credentials without transport encryption.": {
       "extractionState": "manual",
@@ -20206,7 +20423,25 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:86"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:90"
+    },
+    "Ready": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ready"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "就绪"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:116"
     },
     "Ready to index and back up.": {
       "extractionState": "manual",
@@ -20224,7 +20459,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:387"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:414"
     },
     "Ready to resume": {
       "extractionState": "manual",
@@ -20457,7 +20692,8 @@
             "value": "刷新待处理分享"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:172"
     },
     "Remove": {
       "extractionState": "manual",
@@ -20475,7 +20711,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Search/SearchDiscoveryView.swift:327\nImora/Features/Search/SearchDiscoveryView.swift:331\nImora/Features/Spaces/SpaceManagement.swift:120\nImora/Features/Spaces/UserGroupsScreen.swift:194\nImora/Features/Timeline/TimelineSelection.swift:177\nImora/Features/Viewer/AssetInfoSheet.swift:606\nImora/Features/Viewer/AssetViewerScreen.swift:3267"
+      "comment": "Imora/Features/Search/SearchDiscoveryView.swift:327\nImora/Features/Search/SearchDiscoveryView.swift:331\nImora/Features/Spaces/SpaceManagement.swift:120\nImora/Features/Spaces/UserGroupsScreen.swift:194\nImora/Features/Timeline/TimelineSelection.swift:177\nImora/Features/Viewer/AssetInfoSheet.swift:606\nImora/Features/Viewer/AssetViewerScreen.swift:3270"
     },
     "Remove %@ filter: %@": {
       "extractionState": "manual",
@@ -20511,7 +20747,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineSelection.swift:168\nImora/Features/Viewer/AssetViewerScreen.swift:3209"
+      "comment": "Imora/Features/Timeline/TimelineSelection.swift:168\nImora/Features/Viewer/AssetViewerScreen.swift:3212"
     },
     "Remove %@?": {
       "extractionState": "manual",
@@ -20547,7 +20783,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:76"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:78"
     },
     "Remove Custom Range": {
       "extractionState": "manual",
@@ -20600,7 +20836,8 @@
             "value": "移除设备副本"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:123"
     },
     "Remove Failed Jobs": {
       "extractionState": "manual",
@@ -20636,7 +20873,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:75"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:77"
     },
     "Remove Memory": {
       "extractionState": "manual",
@@ -20690,7 +20927,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumPeopleSheets.swift:283\nImora/Features/Albums/AlbumPeopleSheets.swift:311\nImora/Features/Timeline/TimelineScreen.swift:1313\nImora/Features/Timeline/TimelineSelection.swift:100\nImora/Features/Viewer/AssetViewerScreen.swift:2855"
+      "comment": "Imora/Features/Albums/AlbumPeopleSheets.swift:283\nImora/Features/Albums/AlbumPeopleSheets.swift:311\nImora/Features/Timeline/TimelineScreen.swift:1315\nImora/Features/Timeline/TimelineSelection.swift:100\nImora/Features/Viewer/AssetViewerScreen.swift:2858"
     },
     "Remove from Favorites": {
       "extractionState": "manual",
@@ -20708,7 +20945,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2536\nImora/Features/Viewer/AssetViewerScreen.swift:2625\nImora/Features/Viewer/AssetViewerScreen.swift:2726"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2539\nImora/Features/Viewer/AssetViewerScreen.swift:2628\nImora/Features/Viewer/AssetViewerScreen.swift:2729"
     },
     "Remove from Locked Folder": {
       "extractionState": "manual",
@@ -20726,7 +20963,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1359\nImora/Features/Timeline/TimelineSelection.swift:79\nImora/Features/Viewer/AssetViewerScreen.swift:2953"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1361\nImora/Features/Timeline/TimelineSelection.swift:79\nImora/Features/Viewer/AssetViewerScreen.swift:2956"
     },
     "Remove from Saved": {
       "extractionState": "manual",
@@ -20762,7 +20999,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1322\nImora/Features/Timeline/TimelineSelection.swift:142"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1324\nImora/Features/Timeline/TimelineSelection.swift:142"
     },
     "Remove from Stack": {
       "extractionState": "manual",
@@ -20834,7 +21071,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3551"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3557"
     },
     "Removes device copies of photos and videos already backed up to your server. Anything not verified as backed up stays on this device.": {
       "extractionState": "manual",
@@ -20852,7 +21089,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:480"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:507"
     },
     "Rename": {
       "extractionState": "manual",
@@ -20962,6 +21199,24 @@
       },
       "comment": "Imora/Features/Settings/SettingsView.swift:69"
     },
+    "Reopen the app to verify the installed version above.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reopen the app to verify the installed version above."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新打开 App，以确认上方显示的已安装版本。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:36"
+    },
     "Repair and recalculate the links between people, their identities and shared spaces. This normally runs on its own and is safe to rerun.": {
       "extractionState": "manual",
       "localizations": {
@@ -20998,6 +21253,24 @@
       },
       "comment": "Imora/Features/Admin/AdminQueuesScreen.swift:322"
     },
+    "Requesting Installation...": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requesting Installation..."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在请求安装…"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:45"
+    },
     "Requesting background time for whole-library backup...": {
       "extractionState": "manual",
       "localizations": {
@@ -21013,7 +21286,8 @@
             "value": "正在为整个图库的备份申请后台运行时间…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:67"
     },
     "Require password change on first login": {
       "extractionState": "manual",
@@ -21193,7 +21467,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminUserActions.swift:113\nImora/Features/Admin/AdminUserActions.swift:58\nImora/Features/Timeline/TimelineScreen.swift:1285\nImora/Features/Timeline/TimelineSelection.swift:229\nImora/Features/Viewer/AssetViewerScreen.swift:2557\nImora/Features/Viewer/AssetViewerScreen.swift:2680"
+      "comment": "Imora/Features/Admin/AdminUserActions.swift:113\nImora/Features/Admin/AdminUserActions.swift:58\nImora/Features/Timeline/TimelineScreen.swift:1287\nImora/Features/Timeline/TimelineSelection.swift:229\nImora/Features/Viewer/AssetViewerScreen.swift:2560\nImora/Features/Viewer/AssetViewerScreen.swift:2683"
     },
     "Restore %@?": {
       "extractionState": "manual",
@@ -21265,7 +21539,7 @@
           }
         }
       },
-      "comment": "Imora/App/ImoraApp.swift:68"
+      "comment": "Imora/App/ImoraApp.swift:70"
     },
     "Resume": {
       "extractionState": "manual",
@@ -21319,7 +21593,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumAddAssetsSheet.swift:42\nImora/Features/Albums/AlbumsTab.swift:100\nImora/Features/Timeline/TimelineScreen.swift:1531"
+      "comment": "Imora/Features/Albums/AlbumAddAssetsSheet.swift:42\nImora/Features/Albums/AlbumsTab.swift:100\nImora/Features/Timeline/TimelineScreen.swift:1533"
     },
     "Retry Backup": {
       "extractionState": "manual",
@@ -21337,7 +21611,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1446"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1448"
     },
     "Revert to Original": {
       "extractionState": "manual",
@@ -21660,7 +21934,8 @@
             "value": "已保存服务器身份"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:129"
     },
     "Saved to your photo library": {
       "extractionState": "manual",
@@ -21678,7 +21953,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3700"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3706"
     },
     "Saving": {
       "extractionState": "manual",
@@ -21768,7 +22043,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2242\nImora/Features/Backup/BackupScreen.swift:391"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2505\nImora/Features/Backup/BackupScreen.swift:418"
     },
     "Score photos for sharpness and exposure, and detect screenshots, for Library Cleanup.": {
       "extractionState": "manual",
@@ -22200,7 +22475,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:783"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:784"
     },
     "Select %@": {
       "extractionState": "manual",
@@ -22416,7 +22691,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:137\nImora/Features/Settings/StorageScreen.swift:34\nImora/Features/Settings/StorageScreen.swift:46"
+      "comment": "Imora/Features/Settings/SettingsView.swift:146\nImora/Features/Settings/StorageScreen.swift:45\nImora/Features/Settings/StorageScreen.swift:57"
     },
     "Server Identity": {
       "extractionState": "manual",
@@ -22433,7 +22708,8 @@
             "value": "服务器身份"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:128"
     },
     "Server Statistics": {
       "extractionState": "manual",
@@ -22486,7 +22762,8 @@
             "value": "服务器连接地址"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:103"
     },
     "Set": {
       "extractionState": "manual",
@@ -22576,7 +22853,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1331\nImora/Features/Timeline/TimelineSelection.swift:106\nImora/Features/Viewer/AssetViewerScreen.swift:2861"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1333\nImora/Features/Timeline/TimelineSelection.swift:106\nImora/Features/Viewer/AssetViewerScreen.swift:2864"
     },
     "Set as Featured Photo": {
       "extractionState": "manual",
@@ -22594,7 +22871,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2909"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2912"
     },
     "Set as Primary": {
       "extractionState": "manual",
@@ -22630,7 +22907,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2916"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2919"
     },
     "Settings": {
       "extractionState": "manual",
@@ -22648,7 +22925,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:179"
+      "comment": "Imora/Features/Settings/SettingsView.swift:190"
     },
     "Share": {
       "extractionState": "manual",
@@ -22666,7 +22943,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumShareLinksSheet.swift:194\nImora/Features/People/PersonAccessSheet.swift:312\nImora/Features/People/PersonAccessSheet.swift:74\nImora/Features/Timeline/TimelineScreen.swift:1368\nImora/Features/Timeline/TimelineSelection.swift:233\nImora/Features/Viewer/AssetViewerScreen.swift:2526\nImora/Features/Viewer/AssetViewerScreen.swift:2610\nImora/Features/Viewer/AssetViewerScreen.swift:2711\nImora/Features/Viewer/AssetViewerScreen.swift:2779"
+      "comment": "Imora/Features/Albums/AlbumShareLinksSheet.swift:194\nImora/Features/People/PersonAccessSheet.swift:312\nImora/Features/People/PersonAccessSheet.swift:74\nImora/Features/Timeline/TimelineScreen.swift:1370\nImora/Features/Timeline/TimelineSelection.swift:233\nImora/Features/Viewer/AssetViewerScreen.swift:2529\nImora/Features/Viewer/AssetViewerScreen.swift:2613\nImora/Features/Viewer/AssetViewerScreen.swift:2714\nImora/Features/Viewer/AssetViewerScreen.swift:2782"
     },
     "Share (%lld)": {
       "extractionState": "manual",
@@ -22756,7 +23033,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:197\nImora/Features/Albums/AlbumShareLinksSheet.swift:85\nImora/Features/Viewer/AssetViewerScreen.swift:2874"
+      "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:197\nImora/Features/Albums/AlbumShareLinksSheet.swift:85\nImora/Features/Viewer/AssetViewerScreen.swift:2877"
     },
     "Share Temporary Copies": {
       "extractionState": "manual",
@@ -22773,7 +23050,8 @@
             "value": "分享临时副本"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:120"
     },
     "Share With": {
       "extractionState": "manual",
@@ -22881,7 +23159,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:21\nImora/Features/Settings/PrivacyScreen.swift:36"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:23\nImora/Features/Settings/PrivacyScreen.swift:38"
     },
     "Shared People Edits": {
       "extractionState": "manual",
@@ -22989,7 +23267,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:87"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:89"
     },
     "Shared photos and videos are rewritten without their location. Everything else is kept.": {
       "extractionState": "manual",
@@ -23007,7 +23285,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:85"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:87"
     },
     "Shared photos and videos keep all of their metadata, including location, capture date and camera information.": {
       "extractionState": "manual",
@@ -23025,7 +23303,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/PrivacyScreen.swift:83"
+      "comment": "Imora/Features/Settings/PrivacyScreen.swift:85"
     },
     "Shared to Imora": {
       "extractionState": "manual",
@@ -23043,7 +23321,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Notifications/LocalNotifications.swift:92\nImoraShare/ShareViewController.swift:142"
+      "comment": "Imora/Core/Notifications/LocalNotifications.swift:89\nImoraShare/ShareViewController.swift:142"
     },
     "Shared with %@": {
       "extractionState": "manual",
@@ -23097,7 +23375,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Notifications/LocalNotifications.swift:92"
+      "comment": "Imora/Core/Notifications/LocalNotifications.swift:89"
     },
     "Sharing needs attention": {
       "extractionState": "manual",
@@ -23169,7 +23447,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2578\nImora/Features/Viewer/AssetViewerScreen.swift:2644\nImora/Features/Viewer/AssetViewerScreen.swift:2739\nImora/Features/Viewer/AssetViewerScreen.swift:2791\nImora/Features/Viewer/AssetViewerScreen.swift:2836"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2581\nImora/Features/Viewer/AssetViewerScreen.swift:2647\nImora/Features/Viewer/AssetViewerScreen.swift:2742\nImora/Features/Viewer/AssetViewerScreen.swift:2794\nImora/Features/Viewer/AssetViewerScreen.swift:2839"
     },
     "Show My Location": {
       "extractionState": "manual",
@@ -23277,7 +23555,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3050"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3053"
     },
     "Show metadata": {
       "extractionState": "manual",
@@ -23439,7 +23717,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Auth/LoginFlowView.swift:187\nImora/Features/Settings/AccountSecurityScreen.swift:59"
+      "comment": "Imora/Features/Auth/LoginFlowView.swift:188\nImora/Features/Settings/AccountSecurityScreen.swift:59"
     },
     "Sign In with Passkey": {
       "extractionState": "manual",
@@ -23457,7 +23735,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Auth/LoginFlowView.swift:269"
+      "comment": "Imora/Features/Auth/LoginFlowView.swift:271"
     },
     "Sign Out": {
       "extractionState": "manual",
@@ -23475,7 +23753,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/AccountSecurityScreen.swift:154\nImora/Features/Settings/AccountSecurityScreen.swift:76\nImora/Features/Settings/SettingsView.swift:167\nImora/Features/Settings/SettingsView.swift:172"
+      "comment": "Imora/Features/Settings/AccountSecurityScreen.swift:154\nImora/Features/Settings/AccountSecurityScreen.swift:76\nImora/Features/Settings/SettingsView.swift:176\nImora/Features/Settings/SettingsView.swift:182"
     },
     "Sign Out of Other Devices": {
       "extractionState": "manual",
@@ -23531,6 +23809,24 @@
       },
       "comment": "ImoraShare/ShareViewController.swift:148"
     },
+    "Sign in to Apple on your Mac, then try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to Apple on your Mac, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在 Mac 上登录 Apple 账户，然后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:128"
+    },
     "Sign out of every other device?": {
       "extractionState": "manual",
       "localizations": {
@@ -23565,7 +23861,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:171"
+      "comment": "Imora/Features/Settings/SettingsView.swift:181"
     },
     "Signed out on this device, but couldn't close the server session": {
       "extractionState": "manual",
@@ -23601,7 +23897,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:1269"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:1271"
     },
     "Six digits that open the locked folder.": {
       "extractionState": "manual",
@@ -23673,7 +23969,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:292"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:316"
     },
     "Some photos or videos couldn't be backed up. %@": {
       "extractionState": "manual",
@@ -23691,7 +23987,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:54"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:78"
     },
     "Some photos or videos use an unsupported format.": {
       "extractionState": "manual",
@@ -23709,7 +24005,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:387"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:414"
     },
     "Some photos or videos were not uploaded.": {
       "extractionState": "manual",
@@ -23727,7 +24023,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:53"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:77"
     },
     "Some temporary copies could not be discarded. Review the remaining pending shares and try again.": {
       "extractionState": "manual",
@@ -23744,7 +24040,8 @@
             "value": "部分临时副本未能丢弃。请检查剩余的待处理分享后重试。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:168"
     },
     "Someone": {
       "extractionState": "manual",
@@ -23906,7 +24203,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:1842"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:1845"
     },
     "Spring": {
       "extractionState": "manual",
@@ -24104,7 +24401,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:237"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:261"
     },
     "Still analyzing, %lld%% of the library done": {
       "extractionState": "manual",
@@ -24176,7 +24473,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Admin/AdminScreen.swift:51\nImora/Features/Admin/AdminUserDetailScreen.swift:107\nImora/Features/Settings/SettingsView.swift:117\nImora/Features/Settings/StorageScreen.swift:20"
+      "comment": "Imora/Features/Admin/AdminScreen.swift:51\nImora/Features/Admin/AdminUserDetailScreen.swift:107\nImora/Features/Settings/SettingsView.swift:117\nImora/Features/Settings/StorageScreen.swift:28"
     },
     "Storage Backend Migration": {
       "extractionState": "manual",
@@ -24700,6 +24997,24 @@
       },
       "comment": "Imora/Core/Backup/BackupVerification.swift:80"
     },
+    "The Mac could not complete the installation. Check it and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Mac could not complete the installation. Check it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 未能完成安装。请检查 Mac，然后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:131"
+    },
     "The PIN is removed from your Imora server. Photos stay in the locked folder until you set up a new one.": {
       "extractionState": "manual",
       "localizations": {
@@ -24824,7 +25139,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2157"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2165"
     },
     "The album is removed for everyone. Photos stay in your library.": {
       "extractionState": "manual",
@@ -24859,7 +25174,8 @@
             "value": "App 已从后台返回，或网络发生了变化。请确认局域网地址以继续连接，不会使用外网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:135"
     },
     "The backed-up count increases after server verification.": {
       "extractionState": "manual",
@@ -24876,7 +25192,8 @@
             "value": "服务器核验完成后，已备份数量才会增加。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:72"
     },
     "The connection failed during backup.": {
       "extractionState": "manual",
@@ -24912,7 +25229,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3233"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3236"
     },
     "The local address did not answer. The connection was not changed.": {
       "extractionState": "manual",
@@ -24929,7 +25246,8 @@
             "value": "局域网地址未响应，连接未更改。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:157"
     },
     "The locked folder PIN is removed and the user can set up a new one.": {
       "extractionState": "manual",
@@ -24964,7 +25282,8 @@
             "value": "网络、账号或设置已变化，未选择局域网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:159"
     },
     "The others are deleted for good.": {
       "extractionState": "manual",
@@ -25002,6 +25321,24 @@
       },
       "comment": "Imora/Features/Library/UtilitiesScreens.swift:25"
     },
+    "The paired phone is not reachable. Check its connection to your Mac, then try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The paired phone is not reachable. Check its connection to your Mac, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接已配对的手机。请检查它与 Mac 的连接，然后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:126"
+    },
     "The passwords don't match.": {
       "extractionState": "manual",
       "localizations": {
@@ -25019,6 +25356,42 @@
         }
       },
       "comment": "Imora/Features/Settings/AccountSecurityScreen.swift:464"
+    },
+    "The prepared update changed or is no longer available. Check for updates again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The prepared update changed or is no longer available. Check for updates again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的更新发生了变化或已不可用。请重新检查更新。"
+          }
+        }
+      },
+      "comment": "Imora/Core/Updates/AppUpdateStore.swift:107"
+    },
+    "The prepared update could not be validated. Prepare it again on your Mac.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The prepared update could not be validated. Prepare it again on your Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证已准备的更新。请在 Mac 上重新准备更新。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:129"
     },
     "The request target is outside the configured server.": {
       "extractionState": "manual",
@@ -25054,7 +25427,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1808"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1996"
     },
     "The server confirmed these files.": {
       "extractionState": "manual",
@@ -25180,7 +25553,7 @@
           }
         }
       },
-      "comment": "Imora/Core/API/ControlledMediaStore.swift:116"
+      "comment": "Imora/Core/API/ControlledMediaStore.swift:119"
     },
     "The server is not available.": {
       "extractionState": "manual",
@@ -25198,7 +25571,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1929\nImora/Features/Timeline/TimelineScreen.swift:1960\nImora/Features/Timeline/TimelineScreen.swift:2039\nImora/Features/Timeline/TimelineScreen.swift:2067\nImora/Features/Timeline/TimelineScreen.swift:2136"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1931\nImora/Features/Timeline/TimelineScreen.swift:1962\nImora/Features/Timeline/TimelineScreen.swift:2046\nImora/Features/Timeline/TimelineScreen.swift:2075\nImora/Features/Timeline/TimelineScreen.swift:2144"
     },
     "The server or proxy rejected this file as too large (HTTP 413).": {
       "extractionState": "manual",
@@ -25324,7 +25697,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2273"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:2281"
     },
     "The space is removed for everyone. Photos stay in their owners' libraries.": {
       "extractionState": "manual",
@@ -25413,7 +25786,8 @@
             "value": "已验证的局域网服务器未响应。局域网模式仍保持选中。请在家中的 Wi-Fi 下重试，或选择外网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:139"
     },
     "There are no other people on this server.": {
       "extractionState": "manual",
@@ -25467,7 +25841,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:223"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:247"
     },
     "These local temporary copies include pending shares from all accounts on this device. Only the account that created a share can resume it while signed in. Shares needing attention must be shared again from their original source. Discarding a pending share cannot recall bytes already sent to the server.": {
       "extractionState": "manual",
@@ -25484,7 +25858,8 @@
             "value": "这些本地临时副本包含此设备上所有账号的待处理分享。只有创建该分享的账号登录后才能继续上传。需要处理的分享必须从原始来源重新分享。丢弃待处理分享无法撤回已发送到服务器的数据。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:179"
     },
     "These photos are no longer stacked.": {
       "extractionState": "manual",
@@ -25612,6 +25987,24 @@
       },
       "comment": "Imora/Features/Timeline/TimelineSelection.swift:187"
     },
+    "This App": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This App"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 App"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:9"
+    },
     "This Device": {
       "extractionState": "manual",
       "localizations": {
@@ -25646,7 +26039,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:358"
+      "comment": "Imora/Core/Backup/BackupManager.swift:366"
     },
     "This Year": {
       "extractionState": "manual",
@@ -25701,6 +26094,24 @@
         }
       },
       "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:64\nImora/Features/Spaces/SpacesScreen.swift:205"
+    },
+    "This build has no trusted update Mac configured. Your photos and other app features remain available.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no trusted update Mac configured. Your photos and other app features remain available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此构建尚未配置受信任的更新 Mac。照片和其他 App 功能仍可正常使用。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:85"
     },
     "This cannot be undone.": {
       "extractionState": "manual",
@@ -25772,7 +26183,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:360"
+      "comment": "Imora/Core/Backup/BackupManager.swift:368"
     },
     "This connection is not encrypted. Your password and session token are visible to devices on the network.": {
       "extractionState": "manual",
@@ -25790,7 +26201,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Auth/LoginFlowView.swift:149"
+      "comment": "Imora/Features/Auth/LoginFlowView.swift:150"
     },
     "This control applies to whole-library backup. Selected-photo uploads need Imora to remain open. iOS may pause or stop background work; force-closing Imora stops it.": {
       "extractionState": "manual",
@@ -25807,7 +26218,8 @@
             "value": "此控制仅适用于整个图库的备份。上传单独选择的照片时，需保持 Imora 打开。iOS 可能暂停或停止后台任务；强制退出 Imora 会停止任务。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:34"
     },
     "This device": {
       "extractionState": "manual",
@@ -25969,7 +26381,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3231"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3234"
     },
     "This photo is not backed up. It will be removed from your device photo library.": {
       "extractionState": "manual",
@@ -25987,7 +26399,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3219"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:3222"
     },
     "This photo's existing edits could not be loaded.": {
       "extractionState": "manual",
@@ -26041,7 +26453,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:106"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:118"
     },
     "This server does not support the locked folder yet.": {
       "extractionState": "manual",
@@ -26094,7 +26506,8 @@
             "value": "这会停止这些待处理上传，并从此设备移除有记录的临时副本。原始照片和文件、服务器上的现有文件，以及没有可读取待处理记录的副本均会保留。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/StorageScreen.swift:159"
     },
     "This user has been deleted.": {
       "extractionState": "manual",
@@ -26328,7 +26741,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineModel.swift:2120\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:120\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:30\nImora/Features/Viewer/AssetViewerScreen.swift:3160"
+      "comment": "Imora/Features/Timeline/TimelineModel.swift:2130\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:120\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:30\nImora/Features/Viewer/AssetViewerScreen.swift:3163"
     },
     "Today, %@": {
       "extractionState": "manual",
@@ -26399,7 +26812,8 @@
             "value": "等待处理的后台请求过多。请保持 Imora 打开，稍后重试。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:83"
     },
     "Total": {
       "extractionState": "manual",
@@ -26434,7 +26848,8 @@
             "value": "总上传速度：%@"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:25"
     },
     "Transcode Videos": {
       "extractionState": "manual",
@@ -26488,7 +26903,7 @@
           }
         }
       },
-      "comment": "Imora/App/MainTabView.swift:112\nImora/Features/Cleanup/CleanupBurstsScreen.swift:230\nImora/Features/Cleanup/CleanupBurstsScreen.swift:270\nImora/Features/Cleanup/CleanupBurstsScreen.swift:276\nImora/Features/Cleanup/CleanupDeck.swift:154\nImora/Features/Cleanup/CleanupDeck.swift:245\nImora/Features/Cleanup/CleanupDeck.swift:64\nImora/Features/Cleanup/CleanupRewindScreen.swift:211\nImora/Features/Cleanup/CleanupScreen.swift:88\nImora/Features/Library/LibraryTab.swift:47\nImora/Features/Library/LibraryTab.swift:512"
+      "comment": "Imora/App/MainTabView.swift:112\nImora/Features/Cleanup/CleanupBurstsScreen.swift:270\nImora/Features/Cleanup/CleanupBurstsScreen.swift:276\nImora/Features/Cleanup/CleanupDeck.swift:154\nImora/Features/Cleanup/CleanupDeck.swift:245\nImora/Features/Cleanup/CleanupDeck.swift:64\nImora/Features/Cleanup/CleanupRewindScreen.swift:211\nImora/Features/Cleanup/CleanupScreen.swift:88\nImora/Features/Library/LibraryTab.swift:47\nImora/Features/Library/LibraryTab.swift:512"
     },
     "Trash %lld": {
       "extractionState": "manual",
@@ -26650,7 +27065,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1341\nImora/Features/Timeline/TimelineSelection.swift:115\nImora/Features/Viewer/AssetViewerScreen.swift:2933"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1343\nImora/Features/Timeline/TimelineSelection.swift:115\nImora/Features/Viewer/AssetViewerScreen.swift:2936"
     },
     "Undo": {
       "extractionState": "manual",
@@ -26686,7 +27101,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Library/LibraryTab.swift:171\nImora/Features/People/PeopleScreen.swift:247\nImora/Features/People/PersonScreen.swift:138\nImora/Features/Timeline/TimelineScreen.swift:1294"
+      "comment": "Imora/Features/Library/LibraryTab.swift:171\nImora/Features/People/PeopleScreen.swift:247\nImora/Features/People/PersonScreen.swift:138\nImora/Features/Timeline/TimelineScreen.swift:1296"
     },
     "Unhide": {
       "extractionState": "manual",
@@ -26849,6 +27264,24 @@
         }
       },
       "comment": "Imora/Features/Settings/AccountSecurityScreen.swift:179"
+    },
+    "Unlock this phone, then try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock this phone, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请解锁此手机，然后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:127"
     },
     "Unlock with %@": {
       "extractionState": "manual",
@@ -27172,7 +27605,25 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2230"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2490"
+    },
+    "Update Queued on Mac": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Queued on Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新已在 Mac 上排队"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:117"
     },
     "Updated": {
       "extractionState": "manual",
@@ -27243,7 +27694,8 @@
             "value": "上传速度：%@"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:63"
     },
     "Uploading %@": {
       "extractionState": "manual",
@@ -27261,7 +27713,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2245"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2508"
     },
     "Uploading file…": {
       "extractionState": "manual",
@@ -27278,7 +27730,8 @@
             "value": "正在上传文件…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:84"
     },
     "Uploading to Imora": {
       "extractionState": "manual",
@@ -27349,7 +27802,8 @@
             "value": "要在此 Wi-Fi 网络中使用 %@ 吗？连通性检查只确认地址可达，不会验证服务器身份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:107"
     },
     "Use %@ on this Wi-Fi network? HTTP sends photos and account credentials without encryption. A ping checks reachability only and does not verify server identity.": {
       "extractionState": "manual",
@@ -27366,7 +27820,8 @@
             "value": "要在此 Wi-Fi 网络中使用 %@ 吗？HTTP 会以未加密方式传输照片和账号凭据。连通性检查只确认地址可达，不会验证服务器身份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:105"
     },
     "Use %@ on this Wi-Fi network? Imora will verify the server with the saved identity before connecting. Manual local mode never switches to the external address.": {
       "extractionState": "manual",
@@ -27383,7 +27838,8 @@
             "value": "要在此 Wi-Fi 网络中使用 %@ 吗？Imora 会在连接前使用已保存的身份验证服务器。手动局域网模式不会自动切换到外网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:103"
     },
     "Use Apple Maps?": {
       "extractionState": "manual",
@@ -27419,7 +27875,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:85"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:109"
     },
     "Use Custom Range": {
       "extractionState": "manual",
@@ -27454,7 +27910,8 @@
             "value": "使用外网地址"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:60"
     },
     "Use Local Address": {
       "extractionState": "manual",
@@ -27489,7 +27946,8 @@
             "value": "立即使用局域网地址"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:48\nImora/Features/Settings/ManualServerRouteSection.swift:96"
     },
     "Use This Local Address?": {
       "extractionState": "manual",
@@ -27506,24 +27964,8 @@
             "value": "使用此局域网地址？"
           }
         }
-      }
-    },
-    "Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Use the Wi-Fi networks below for automatic local selection, or choose Use Local Now without reading the Wi-Fi name. Both addresses use the same account and photo cache."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可在下方设置自动使用局域网地址的 Wi-Fi 网络，也可点按“立即使用局域网地址”，无需读取 Wi-Fi 名称。两个地址共用同一账号和照片缓存。"
-          }
-        }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:92"
     },
     "Used to show how old %@ is in a photo.": {
       "extractionState": "manual",
@@ -27666,7 +28108,8 @@
             "value": "连接已验证"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:129"
     },
     "Verified Local Address": {
       "extractionState": "manual",
@@ -27683,7 +28126,8 @@
             "value": "已验证的局域网地址"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:123"
     },
     "Verified Local Address (Manual)": {
       "extractionState": "manual",
@@ -27700,7 +28144,8 @@
             "value": "已验证的局域网地址（手动）"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:123"
     },
     "Verified Local Connection": {
       "extractionState": "manual",
@@ -27717,7 +28162,8 @@
             "value": "已验证的局域网连接"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:146"
     },
     "Verified automatic selection needs an HTTPS address and a server identity installed through trusted setup. This trust applies only inside Imora; it does not install an iPhone certificate profile. Editing the local address removes a mismatching identity.": {
       "extractionState": "manual",
@@ -27734,7 +28180,8 @@
             "value": "经过身份验证的自动选择需要 HTTPS 地址，以及通过可信设置安装的服务器身份。此信任仅在 Imora 内生效，不会向 iPhone 安装证书描述文件。编辑局域网地址时，会移除不匹配的身份。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:151"
     },
     "Verify Originals and Remove Device Copies": {
       "extractionState": "manual",
@@ -27751,7 +28198,8 @@
             "value": "核验原件并移除设备副本"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:110"
     },
     "Verify and Remove %@": {
       "extractionState": "manual",
@@ -27769,7 +28217,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:453"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:480"
     },
     "Verify and remove %lld selected device copies?": {
       "extractionState": "manual",
@@ -27798,7 +28246,8 @@
             "value": "核验并移除所选的 %lld 个设备副本？"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:100"
     },
     "Verify the server originals, then remove %@ from this device?": {
       "extractionState": "manual",
@@ -27816,7 +28265,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:491"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:518"
     },
     "Verifying backup with server…": {
       "extractionState": "manual",
@@ -27833,7 +28282,8 @@
             "value": "正在向服务器核验备份…"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/ActiveBackupTransfersView.swift:85"
     },
     "Verifying original files before removal...": {
       "extractionState": "manual",
@@ -27851,7 +28301,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:433"
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:117\nImora/Features/Backup/BackupScreen.swift:460"
     },
     "Verifying the local server on this Wi-Fi network. Connections remain paused until verification succeeds.": {
       "extractionState": "manual",
@@ -27868,7 +28318,8 @@
             "value": "正在验证此 Wi-Fi 网络中的局域网服务器。验证成功前，连接将保持暂停。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:137"
     },
     "Verifying with server...": {
       "extractionState": "manual",
@@ -27886,7 +28337,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:427"
+      "comment": "Imora/Features/Backup/BackupScreen.swift:454"
     },
     "Version": {
       "extractionState": "manual",
@@ -27904,7 +28355,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/SettingsView.swift:149"
+      "comment": "Imora/Features/Settings/SettingsView.swift:158"
     },
     "Video": {
       "extractionState": "manual",
@@ -27922,7 +28373,7 @@
           }
         }
       },
-      "comment": "Imora/DesignSystem/RemoteImage.swift:556\nImora/Features/Backup/BackupScreen.swift:230\nImora/Features/Timeline/TimelineTileRow.swift:827\nImora/Features/Viewer/AssetViewerScreen.swift:3200\nImora/Features/Viewer/VideoTrimEditor.swift:245\nImora/Features/Viewer/VideoTrimEditor.swift:290"
+      "comment": "Imora/DesignSystem/RemoteImage.swift:556\nImora/Features/Backup/BackupScreen.swift:254\nImora/Features/Timeline/TimelineTileRow.swift:827\nImora/Features/Viewer/AssetViewerScreen.swift:3203\nImora/Features/Viewer/VideoTrimEditor.swift:245\nImora/Features/Viewer/VideoTrimEditor.swift:290"
     },
     "Video moments from %@": {
       "extractionState": "manual",
@@ -28066,7 +28517,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2903"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2906"
     },
     "View in Timeline": {
       "extractionState": "manual",
@@ -28084,7 +28535,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2868"
+      "comment": "Imora/Features/Viewer/AssetViewerScreen.swift:2871"
     },
     "Viewer": {
       "extractionState": "manual",
@@ -28174,7 +28625,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1855"
+      "comment": "Imora/Features/Timeline/TimelineScreen.swift:1857"
     },
     "Waiting": {
       "extractionState": "manual",
@@ -28264,7 +28715,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:108"
+      "comment": "Imora/Features/Backup/ActiveBackupScreen.swift:120"
     },
     "Whole-library backup can continue while iOS grants background time.": {
       "extractionState": "manual",
@@ -28281,7 +28732,8 @@
             "value": "在 iOS 允许的后台运行时间内，将继续备份整个图库。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:71"
     },
     "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.": {
       "extractionState": "manual",
@@ -28298,7 +28750,8 @@
             "value": "整个图库的备份已暂停。点按“在后台继续备份”或“立即备份”可恢复已保存的备份请求。"
           }
         }
-      }
+      },
+      "comment": "Imora/Core/Backup/BackupManager.swift:2502\nImora/Features/Backup/BackgroundBackupControls.swift:62\nImora/Features/Backup/BackupScreen.swift:403"
     },
     "Wi-Fi Name": {
       "extractionState": "manual",
@@ -28334,7 +28787,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:82"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:86"
     },
     "Wi-Fi is unavailable. Local mode stays selected, and new connections are blocked. The external address will not be used.": {
       "extractionState": "manual",
@@ -28351,7 +28804,8 @@
             "value": "Wi-Fi 不可用。局域网模式仍保持选中，新连接已暂停，不会使用外网地址。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Settings/ManualServerRouteSection.swift:133"
     },
     "Winter": {
       "extractionState": "manual",
@@ -28370,6 +28824,42 @@
         }
       },
       "comment": "Imora/Core/Models/Models.swift:911"
+    },
+    "Wireless Updates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wireless Updates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无线更新"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:90"
+    },
+    "Wireless Updates Not Configured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wireless Updates Not Configured"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未配置无线更新"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:82"
     },
     "Workflows": {
       "extractionState": "manual",
@@ -28441,7 +28931,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Timeline/TimelineModel.swift:2122\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:124\nImora/Features/Viewer/AssetViewerScreen.swift:3163"
+      "comment": "Imora/Features/Timeline/TimelineModel.swift:2132\nImora/Features/Viewer/AssetViewerOpeningChrome.swift:124\nImora/Features/Viewer/AssetViewerScreen.swift:3166"
     },
     "You": {
       "extractionState": "manual",
@@ -28622,6 +29112,42 @@
         }
       },
       "comment": "Imora/Features/Settings/FaceSharingScreen.swift:47"
+    },
+    "Your Mac installs prepared updates over Wi-Fi after you confirm. Keep it awake and logged in, and keep this paired phone reachable. Apple sign-in or unlocking the phone may be required.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Mac installs prepared updates over Wi-Fi after you confirm. Keep it awake and logged in, and keep this paired phone reachable. Apple sign-in or unlocking the phone may be required."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认后，Mac 会通过 Wi-Fi 安装已准备的更新。请保持 Mac 唤醒并已登录，同时确保这部已配对的手机可以连接。可能需要登录 Apple 账户或解锁手机。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:92"
+    },
+    "Your Mac is busy with another installation or renewal. Try again shortly.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Mac is busy with another installation or renewal. Try again shortly."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac 正在执行其他安装或续签，请稍后重试。"
+          }
+        }
+      },
+      "comment": "Imora/Features/Settings/AppUpdatesScreen.swift:130"
     },
     "Your PIN opens the locked folder.": {
       "extractionState": "manual",
@@ -28855,7 +29381,7 @@
           }
         }
       },
-      "comment": "Imora/Core/API/ImoraClient.swift:311"
+      "comment": "Imora/Core/API/ImoraClient.swift:354"
     },
     "could not reach the server. check the address and your connection.": {
       "extractionState": "manual",
@@ -28909,7 +29435,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2119"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2341"
     },
     "favorite": {
       "extractionState": "manual",
@@ -28945,7 +29471,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1164\nImora/Core/Backup/BackupManager.swift:1888\nImora/Core/Backup/BackupManager.swift:1962\nImora/Core/Backup/BackupManager.swift:687"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1250\nImora/Core/Backup/BackupManager.swift:2097\nImora/Core/Backup/BackupManager.swift:2174\nImora/Core/Backup/BackupManager.swift:745"
     },
     "full photo library access is required to download.": {
       "extractionState": "manual",
@@ -28963,7 +29489,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:2103"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2325"
     },
     "hidden": {
       "extractionState": "manual",
@@ -28999,7 +29525,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:38"
+      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:40"
     },
     "iOS could not grant background time right now. Whole-library backup can continue while Imora is open.": {
       "extractionState": "manual",
@@ -29016,7 +29542,8 @@
             "value": "iOS 暂时无法提供后台运行时间。保持 Imora 打开可继续备份整个图库。"
           }
         }
-      }
+      },
+      "comment": "Imora/Features/Backup/BackgroundBackupControls.swift:77"
     },
     "kept": {
       "extractionState": "manual",
@@ -29052,7 +29579,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1744"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1926"
     },
     "my-album": {
       "extractionState": "manual",
@@ -29124,7 +29651,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1729"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1908"
     },
     "not enough free space on this device. an upload needs about as much free space as the file itself.": {
       "extractionState": "manual",
@@ -29160,7 +29687,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Backup/BackupScreen.swift:485"
+      "comment": "Imora/Core/Backup/DeviceCopyRemoval.swift:106\nImora/Features/Backup/BackupScreen.swift:512"
     },
     "or": {
       "extractionState": "manual",
@@ -29178,7 +29705,7 @@
           }
         }
       },
-      "comment": "Imora/Features/Auth/LoginFlowView.swift:255"
+      "comment": "Imora/Features/Auth/LoginFlowView.swift:257"
     },
     "password": {
       "extractionState": "manual",
@@ -29234,24 +29761,6 @@
       },
       "comment": "Imora/Features/Library/LibraryTab.swift:161"
     },
-    "photo": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "photo"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "照片"
-          }
-        }
-      },
-      "comment": "Imora/Core/Backup/BackupManager.swift:829"
-    },
     "server error %lld.": {
       "extractionState": "manual",
       "localizations": {
@@ -29269,42 +29778,6 @@
         }
       },
       "comment": "Imora/Core/API/ImoraClient.swift:18"
-    },
-    "star": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "star"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "星"
-          }
-        }
-      },
-      "comment": "Imora/Features/Search/SearchFilterSheets.swift:898"
-    },
-    "stars": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "stars"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "星"
-          }
-        }
-      },
-      "comment": "Imora/Features/Search/SearchFilterSheets.swift:904"
     },
     "the photo could not be exported.": {
       "extractionState": "manual",
@@ -29396,24 +29869,6 @@
       },
       "comment": "Imora/Core/Backup/PhotoLibraryService.swift:17"
     },
-    "the server": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "the server"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "服务器"
-          }
-        }
-      },
-      "comment": "Imora/Features/Settings/LocalNetworkScreen.swift:33"
-    },
     "the server address is not a valid url.": {
       "extractionState": "manual",
       "localizations": {
@@ -29448,7 +29903,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1951"
+      "comment": "Imora/Core/Backup/BackupManager.swift:2163"
     },
     "the server refused the sign in: %@.": {
       "extractionState": "manual",
@@ -29520,7 +29975,7 @@
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupManager.swift:1730"
+      "comment": "Imora/Core/Backup/BackupManager.swift:1912"
     },
     "this person": {
       "extractionState": "manual",
@@ -29629,24 +30084,6 @@
         }
       },
       "comment": "Imora/Features/Albums/AlbumShareLinksSheet.swift:240"
-    },
-    "video": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "video"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "视频"
-          }
-        }
-      },
-      "comment": "Imora/Core/Backup/BackupManager.swift:829"
     },
     "wrong email or password.": {
       "extractionState": "manual",

@@ -31,6 +31,14 @@ final class LocalizationFlowTests: XCTestCase {
         field.tap()
         field.typeText(value)
     }
+    private func tapViewerClose(_ app: XCUIApplication) {
+        // Opening chrome and the viewer toolbar briefly expose the same
+        // close action. Tap a visible control; callers still require all
+        // viewer close controls to disappear before opening another asset.
+        let visible = app.buttons.matching(identifier: "viewer-close").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(visible)
+        visible?.tap()
+    }
     private func checkFlow(language: String, chinese: Bool) throws {
         continueAfterFailure = false
         let fixture = try fixture()
@@ -51,23 +59,35 @@ final class LocalizationFlowTests: XCTestCase {
         app.buttons["auth-sign-in"].tap()
         XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 25))
         snapshot(app, "\(language)-photos")
+        app.buttons["profile-avatar"].tap()
+        tap(app, "settings-app-updates")
+        XCTAssertTrue(app.staticTexts[chinese ? "App 版本" : "App Version"].waitForExistence(timeout: 10))
+        let version = app.descendants(matching: .any)["app-updates-installed-version"].firstMatch
+        XCTAssertTrue(version.waitForExistence(timeout: 10))
+        XCTAssertTrue(version.label.contains("1.0.1"), version.label)
+        XCTAssertTrue(app.descendants(matching: .any)["app-updates-installed-build"].firstMatch.label.contains("2"))
+        XCTAssertTrue(app.staticTexts[chinese ? "未配置无线更新" : "Wireless Updates Not Configured"].exists)
+        XCTAssertFalse(app.buttons["app-updates-install"].exists)
+        snapshot(app, "\(language)-app-updates")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["settings-close"].tap()
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
         XCTAssertGreaterThanOrEqual(tiles.count, 2)
         for (step, index) in [0, 1, 0, 1, 0].enumerated() {
             tiles.element(boundBy: index).tap()
-            let close = app.buttons["viewer-close"]
+            let close = app.buttons.matching(identifier: "viewer-close").firstMatch
             XCTAssertTrue(close.waitForExistence(timeout: 8), "A different asset must open after returning from the viewer")
             if step == 2 {
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).doubleTap()
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
                 XCTAssertTrue(close.waitForExistence(timeout: 8))
-                close.tap()
+                tapViewerClose(app)
             } else if step == 3 {
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
                     .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
             } else {
-                close.tap()
+                tapViewerClose(app)
             }
             XCTAssertTrue(close.waitForNonExistence(timeout: 8), "Returning must actually detach the fullscreen viewer")
             XCTAssertTrue(app.buttons["profile-avatar"].waitForExistence(timeout: 8))

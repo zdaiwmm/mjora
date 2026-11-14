@@ -5,6 +5,7 @@ import UserNotifications
 struct ImoraApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var session: SessionStore
+    @State private var appUpdates = AppUpdateStore()
 
     init() {
         // state is not installed during App.init. bind background processing
@@ -29,6 +30,7 @@ struct ImoraApp: App {
         WindowGroup {
             RootView()
                 .environment(session)
+                .environment(appUpdates)
         }
     }
 }
@@ -58,6 +60,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 struct RootView: View {
     @Environment(SessionStore.self) private var session
+    @Environment(AppUpdateStore.self) private var appUpdates
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -81,6 +84,30 @@ struct RootView: View {
             guard PhotoLibraryService.hasFullAccess else { return }
             await session.backup?.primeLocalState()
             session.backup?.startIfIdle()
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            // A brief foreground excursion does not start a network check.
+            // SwiftUI cancels this task when the app leaves the foreground.
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            guard !Task.isCancelled else { return }
+            await appUpdates.checkForUpdates(automatically: true)
+        }
+        .alert("App Update Available", isPresented: Binding(
+            get: { appUpdates.alertRelease != nil },
+            set: { if !$0 { appUpdates.dismissUpdateAlert() } }
+        ), presenting: appUpdates.alertRelease) { release in
+            Button("Install with Mac") {
+                Task {
+                    await appUpdates.confirmInstallation(of: release)
+                    if let failure = appUpdates.failureMessage { ErrorToastCenter.shared.show(failure) }
+                }
+            }
+            .accessibilityIdentifier("app-update-alert-confirm")
+            Button("Later", role: .cancel) { appUpdates.dismissUpdateAlert() }
+                .accessibilityIdentifier("app-update-alert-later")
+        } message: { release in
+            Text(release.installationConfirmationMessage)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
