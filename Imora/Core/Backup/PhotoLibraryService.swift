@@ -151,6 +151,20 @@ nonisolated enum PhotoLibraryService {
 
     // MARK: - local info
 
+    /// Browsing may use limited access; backup and cleanup keep their full-access gate.
+    @concurrent
+    static func browsableAssets() async -> [DeviceAsset] {
+        if hasFullAccess { return await scan() }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited else { return [] }
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let result = PHAsset.fetchAssets(with: options)
+        return (0..<result.count).compactMap { index in
+            let asset = result.object(at: index)
+            return asset.mediaType == .image || asset.mediaType == .video ? snapshot(of: asset) : nil
+        }
+    }
+
     /// camera fields read from the image file's own metadata.
     private struct CameraMetadata: Sendable {
         var make: String?
@@ -633,7 +647,21 @@ nonisolated enum PhotoLibraryService {
 
     /// Fetches and checks the exact approved set again inside Photos' commit
     /// closure. A zero/partial fetch is a changed report, never a success count.
-    static func deleteVerified(_ expected: [DeviceAsset], permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
+    static func protectedAlbumMemberIDs(_ albumIDs: Set<String>) throws -> Set<String> {
+        guard !albumIDs.isEmpty else { return [] }
+        guard hasFullAccess else { throw CleanupVerificationError.permission }
+        let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: Array(albumIDs), options: nil)
+        guard collections.count == albumIDs.count else { throw CleanupVerificationError.changed }
+        var ids: Set<String> = []
+        for index in 0..<collections.count {
+            let assets = PHAsset.fetchAssets(in: collections.object(at: index), options: nil)
+            for assetIndex in 0..<assets.count { ids.insert(assets.object(at: assetIndex).localIdentifier) }
+        }
+        return ids
+    }
+
+    static func deleteVerified(_ expected: [DeviceAsset], retention: CleanupRetentionSnapshot? = nil,
+                               permitted: @escaping @Sendable () -> Bool) async throws -> [String] {
         guard hasFullAccess else { throw CleanupVerificationError.permission }
         guard !expected.isEmpty, Set(expected.map(\.localIdentifier)).count == expected.count else { throw CleanupVerificationError.changed }
         let expectedByID = Dictionary(uniqueKeysWithValues: expected.map { ($0.localIdentifier, $0) })
@@ -643,12 +671,17 @@ nonisolated enum PhotoLibraryService {
             try Task.checkCancellation()
             try await PHPhotoLibrary.shared().performChanges {
                 guard !cancelled.withLock({ $0 }), permitted(), hasFullAccess else { return }
+                let protected: Set<String>
+                do { protected = try protectedAlbumMemberIDs(retention?.policy.protectedAlbumIDs ?? []) }
+                catch { return }
                 let fetched = PHAsset.fetchAssets(withLocalIdentifiers: Array(expectedByID.keys), options: nil)
                 guard fetched.count == expected.count else { return }
                 var ids: [String] = []
                 for index in 0..<fetched.count {
                     let asset = fetched.object(at: index)
                     guard expectedByID[asset.localIdentifier] == snapshot(of: asset) else { return }
+                    if let retention, !retention.reasons(creationDate: asset.creationDate, isFavorite: asset.isFavorite,
+                        protectedAlbumMember: protected.contains(asset.localIdentifier)).isEmpty { return }
                     ids.append(asset.localIdentifier)
                 }
                 guard !cancelled.withLock({ $0 }), permitted() else { return }

@@ -1173,7 +1173,6 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     private func revealPendingTimelineTarget() async {
         guard let target = navigationTarget,
-              mergesLocalPhotos,
               scrollContext.viewportWidth > 0
         else { return }
         if let bucketID = model.bucketID(containing: target.localDate) {

@@ -38,6 +38,7 @@ final class RealtimeHub {
 
     /// bumped after album events so album lists reload without a listener.
     private(set) var albumsGeneration = 0
+    private(set) var localGeneration = 0
     /// cache-buster per person, set once the server has re-rendered their
     /// portrait. it outranks the person's updatedAt because a re-render can
     /// land after the row was already read back, and it is persisted because
@@ -131,6 +132,7 @@ final class RealtimeHub {
     /// called by the backup manager whenever device assets or the backup
     /// index changed. debounced so upload bursts coalesce.
     func notifyLocalChange() {
+        localGeneration &+= 1
         guard localDebounce == nil else { return }
         localDebounce = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(800))

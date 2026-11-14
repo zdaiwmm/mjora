@@ -18,6 +18,8 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
     private(set) var unsupportedMedia = MediaCounts()
     private(set) var pendingMedia = MediaCounts()
     private(set) var excludedMedia = MediaCounts()
+    private(set) var cloudDeletedMedia = MediaCounts()
+    var cloudDeleted: Int { cloudDeletedMedia.total }
 
     var excluded: Int { excludedMedia.total }
     var total: Int { totalMedia.total }
@@ -34,6 +36,11 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
                 continue
             }
             totalMedia.add(asset)
+            // Removal protection outlives revisions and login sessions.
+            if entries[asset.localIdentifier]?.isUploadBlockedByRemoteRemoval == true {
+                cloudDeletedMedia.add(asset)
+                continue
+            }
             guard let entry = entries[asset.localIdentifier],
                   entry.matches(modificationDate: asset.modificationDate),
                   entry.isLivePhoto == asset.isLivePhoto else {

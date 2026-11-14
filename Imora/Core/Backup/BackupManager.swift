@@ -163,6 +163,14 @@ final class BackupManager {
 
     /// per-asset upload progress for tile overlays.
     private(set) var uploadStates: [String: LocalUploadState] = [:]
+    private(set) var remoteRemovedLocalIDs: Set<String> = []
+    var loginSessionKey: String?
+    private var forceFullReconciliation = false
+
+    func requestFullReconciliation() {
+        forceFullReconciliation = true
+        startIfIdle()
+    }
     /// Current work is independent of verified summary counts. Preparing an
     /// original never masquerades as a zero-percent network upload.
     private(set) var activeTransfers = ActiveBackupTransfers()
@@ -985,6 +993,13 @@ final class BackupManager {
     /// the main actor was a visible hitch per upload on a large library.
     private func refreshLocalSnapshots() async {
         let snapshot = await index.localSnapshot()
+        let entries = await index.allEntries()
+        remoteRemovedLocalIDs = Set(entries.compactMap { $0.value.isUploadBlockedByRemoteRemoval ? $0.key : nil })
+        for id in remoteRemovedLocalIDs {
+            repeatedFailureLedger.clear(account: accountKey, localIdentifier: id)
+            uploadStates[id] = nil
+        }
+        saveRepeatedFailures()
         sizeExcludedRequestBytesByLocal = snapshot.sizeExcludedRequestBytesByLocal
         updateSizeExclusions()
         if userId != nil, repeatedFailureLedger.entries.contains(where: { $0.account == accountKey }) {
@@ -1551,7 +1566,7 @@ final class BackupManager {
 
     /// asks the server about every hashed component we cannot prove yet, then
     /// returns the assets that still need uploads.
-    private func checkPhase(_ scanned: [DeviceAsset], updatesPhase: Bool = true) async throws -> [DeviceAsset] {
+    private func checkPhase(_ scanned: [DeviceAsset], updatesPhase: Bool = true, requiresFreshProof: Bool = false) async throws -> [DeviceAsset] {
         if updatesPhase {
             checkingCompleted = 0
             checkingTotal = 0
@@ -1598,7 +1613,7 @@ final class BackupManager {
             }
             if entry.unsupported { summary.unsupportedMedia.add(asset) }
             else if entry.primaryRemoteId == nil || (entry.isLivePhoto && entry.motionRemoteId == nil) {
-                if entry.isUploadBlockedByRemoteRemoval { summary.failedMedia.add(asset) }
+                if entry.isUploadBlockedByRemoteRemoval { /* Classified separately; never an upload failure. */ }
                 else if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes) { summary.skippedMedia.add(asset) }
                 else { queue.append(asset) }
             } else { verify.append((asset, entry)); continue }
@@ -1638,11 +1653,17 @@ final class BackupManager {
                 if let error {
                     let state = (error as? BackupVerificationError)?.state ?? .failed
                     await index.recordVerificationFailure(localId: asset.localIdentifier, source: source, generation: client.context.id, state: state)
+                    if state == .trashed {
+                        remoteRemovedLocalIDs.insert(asset.localIdentifier)
+                        repeatedFailureLedger.clear(account: accountKey, localIdentifier: asset.localIdentifier)
+                        uploadStates[asset.localIdentifier] = nil
+                        continue
+                    }
                     if case BackupVerificationError.component(let id, .missing) = error {
                         await index.clearMissingComponent(localId: asset.localIdentifier, source: source, remoteID: id, generation: client.context.id)
-                        summary.failedMedia.add(asset)
-                        markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error))
-                        if lastFailure == nil { lastFailure = error.localizedDescription }
+                        remoteRemovedLocalIDs.insert(asset.localIdentifier)
+                        repeatedFailureLedger.clear(account: accountKey, localIdentifier: asset.localIdentifier)
+                        uploadStates[asset.localIdentifier] = nil
                     } else {
                         summary.failedMedia.add(asset)
                         markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error))
@@ -2382,8 +2403,10 @@ final class BackupManager {
 
     // MARK: - cleanup
 
-    func cleanUpCandidates(selectedLocalIDs: Set<String>? = nil) async throws -> CleanupReport {
+    func cleanUpCandidates(selectedLocalIDs: Set<String>? = nil, retentionPolicy: CleanupRetentionPolicy? = nil) async throws -> CleanupReport {
         activeCleanupReportID = nil
+        let retention = retentionPolicy?.snapshot()
+        let protected = try await PhotosCleanupLibrary().protectedAlbumMemberIDs(retention?.policy.protectedAlbumIDs ?? [])
         if let selectedLocalIDs, selectedLocalIDs.isEmpty { throw CleanupVerificationError.invalidReport }
         guard PhotoLibraryService.hasFullAccess else { throw CleanupVerificationError.permission }
         let user = try await client.currentUser()
@@ -2403,7 +2426,9 @@ final class BackupManager {
         guard !isShutDown, client.context.isActive else { throw CleanupVerificationError.changed }
         let entries = await index.allEntries()
         let candidates = scanned.filter { asset in
-            guard let entry = entries[asset.localIdentifier], !entry.unsupported,
+            if let retention, !retention.reasons(creationDate: asset.creationDate, isFavorite: asset.isFavorite,
+                protectedAlbumMember: protected.contains(asset.localIdentifier)).isEmpty { return false }
+            guard let entry = entries[asset.localIdentifier], !entry.unsupported, !entry.isUploadBlockedByRemoteRemoval,
                   entry.matches(modificationDate: asset.modificationDate), entry.isLivePhoto == asset.isLivePhoto,
                   entry.primaryRemoteId != nil, !asset.isLivePhoto || entry.motionRemoteId != nil else { return false }
             return true
@@ -2411,7 +2436,7 @@ final class BackupManager {
         if let selectedLocalIDs, Set(candidates.map(\.localIdentifier)) != selectedLocalIDs {
             throw CleanupVerificationError.invalidReport
         }
-        _ = try await checkPhase(candidates, updatesPhase: false)
+        _ = try await checkPhase(candidates, updatesPhase: false, requiresFreshProof: true)
         let current = await index.allEntries()
         var evidence: [CleanupCandidate] = []
         for asset in candidates {
@@ -2423,6 +2448,14 @@ final class BackupManager {
         try Task.checkCancellation()
         guard !isShutDown, client.context.isActive else { throw CleanupVerificationError.changed }
         let eligible = Set(evidence.map { $0.asset.localIdentifier })
+        var retainedReasons: [CleanupRetentionReason: MediaCounts] = [:]
+        for asset in scanned where !eligible.contains(asset.localIdentifier) {
+            var reasons = retention?.reasons(creationDate: asset.creationDate, isFavorite: asset.isFavorite,
+                protectedAlbumMember: protected.contains(asset.localIdentifier)) ?? []
+            if current[asset.localIdentifier]?.isUploadBlockedByRemoteRemoval == true { reasons.insert(.cloudDeleted) }
+            if reasons.isEmpty { reasons.insert(.unverified) }
+            for reason in reasons { retainedReasons[reason, default: MediaCounts()].add(asset) }
+        }
         if let selectedLocalIDs {
             // Never silently delete a smaller subset of the confirmed selection.
             guard eligible == selectedLocalIDs else { throw CleanupVerificationError.invalidReport }
@@ -2433,7 +2466,7 @@ final class BackupManager {
         }
         let report = CleanupReport(account: accountKey, generation: client.context.id, candidates: evidence,
                                    keptMedia: MediaCounts(assets: scanned.filter { !eligible.contains($0.localIdentifier) }),
-                                   route: ServerRoute.resolve(client.apiURL))
+                                   route: ServerRoute.resolve(client.apiURL), retention: retention, retainedReasons: retainedReasons)
         activeCleanupReportID = report.id
         await refreshLocalSnapshots()
         try Task.checkCancellation()
