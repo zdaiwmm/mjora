@@ -393,15 +393,16 @@ struct AlbumCard: View {
 struct AlbumPickerSheet: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
-    let assetIDs: [String]
-    let localIdentifiers: [String]
+    @State private var request: AlbumAddSelection
+    private var assetIDs: [String] { request.assetIDs }
+    private var localIdentifiers: [String] { request.localIdentifiers }
     let onApplied: () -> Void
     let onRollback: (Set<String>) -> Void
 
-    init(assetIDs: [String], localIdentifiers: [String] = [],
+    init(assetIDs: [String], localIdentifiers: [String] = [], sourceAccountGeneration: UUID? = nil,
          onApplied: @escaping () -> Void, onRollback: @escaping (Set<String>) -> Void) {
-        self.assetIDs = assetIDs
-        self.localIdentifiers = localIdentifiers
+        _request = State(initialValue: AlbumAddSelection(assetIDs: assetIDs,
+            localIdentifiers: localIdentifiers, accountGeneration: sourceAccountGeneration))
         self.onApplied = onApplied
         self.onRollback = onRollback
     }
@@ -416,7 +417,8 @@ struct AlbumPickerSheet: View {
         if localIdentifiers.isEmpty {
             remotePicker
         } else {
-            AddToAlbumSheet(assetIDs: assetIDs, localIdentifiers: localIdentifiers) { _ in onApplied() }
+            AddToAlbumSheet(assetIDs: assetIDs, localIdentifiers: localIdentifiers,
+                            sourceAccountGeneration: request.accountGeneration) { _ in onApplied() }
         }
     }
 

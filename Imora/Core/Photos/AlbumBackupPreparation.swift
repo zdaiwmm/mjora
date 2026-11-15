@@ -1,5 +1,13 @@
 import Foundation
 
+/// Capture the user selection once for a sheet's lifetime. Live backup maps
+/// may change while the last upload or album request is still in flight.
+nonisolated struct AlbumAddSelection {
+    let assetIDs: [String]
+    let localIdentifiers: [String]
+    let accountGeneration: UUID?
+}
+
 /// One picker session's verified local→cloud resolutions. Construction and
 /// album browsing perform no backup. Explicit account-bound consent is needed
 /// before the first local operation; successful resolutions survive retries.

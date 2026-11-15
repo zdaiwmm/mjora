@@ -54,6 +54,9 @@ struct PhotoPeriodsView: View {
         }
         .background(Color(.systemBackground))
         .accessibilityIdentifier("photos-periods")
+        .onScrollPhaseChange { _, phase in
+            if phase == .tracking || phase == .interacting || phase == .decelerating { motion.cancel() }
+        }
         .onChange(of: controls.mode, initial: true) { _, _ in
             if let id = periods.first(where: { $0.cover?.id == controls.periodAnchor?.asset.id })?.id {
                 proxy.scrollTo(id, anchor: .center)

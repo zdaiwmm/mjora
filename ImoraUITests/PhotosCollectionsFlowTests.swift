@@ -69,6 +69,10 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         let edit = app.buttons["viewer-edit"].firstMatch
         XCTAssertTrue(edit.waitForExistence(timeout: 10)); edit.tap()
         let aspect = app.buttons["edit-aspect-ratio"]
+        if !aspect.exists {
+            let crop = app.buttons.matching(NSPredicate(format: "label IN %@", ["裁剪", "Crop"])).firstMatch
+            XCTAssertTrue(crop.waitForExistence(timeout: 15)); crop.tap()
+        }
         XCTAssertTrue(aspect.waitForExistence(timeout: 15))
         snapshot(app, "editor-crop-tools")
         aspect.tap()
@@ -109,6 +113,10 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         done.tap()
         XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 15))
         edit.tap()
+        if !aspect.exists {
+            let crop = app.buttons.matching(NSPredicate(format: "label IN %@", ["裁剪", "Crop"])).firstMatch
+            XCTAssertTrue(crop.waitForExistence(timeout: 15)); crop.tap()
+        }
         XCTAssertTrue(aspect.waitForExistence(timeout: 15))
         rotate.tap()
         app.buttons["edit-cancel"].tap()

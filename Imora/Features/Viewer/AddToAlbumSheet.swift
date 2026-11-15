@@ -21,16 +21,17 @@ struct AddToAlbumSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(SessionStore.self) private var session
 
-    let assetIDs: [String]
-    let localIdentifiers: [String]
-    let sourceAccountGeneration: UUID?
+    @State private var selection: AlbumAddSelection
+    private var assetIDs: [String] { selection.assetIDs }
+    private var localIdentifiers: [String] { selection.localIdentifiers }
+    private var sourceAccountGeneration: UUID? { selection.accountGeneration }
     let onMembershipUpdate: (AlbumMembershipUpdate) -> Void
     let onDone: (String) -> Void
 
     init(assetIDs: [String], localIdentifiers: [String] = [], sourceAccountGeneration: UUID? = nil,
          onMembershipUpdate: @escaping (AlbumMembershipUpdate) -> Void = { _ in }, onDone: @escaping (String) -> Void) {
-        self.assetIDs = assetIDs; self.localIdentifiers = localIdentifiers
-        self.sourceAccountGeneration = sourceAccountGeneration
+        _selection = State(initialValue: AlbumAddSelection(assetIDs: assetIDs,
+            localIdentifiers: localIdentifiers, accountGeneration: sourceAccountGeneration))
         self.onMembershipUpdate = onMembershipUpdate; self.onDone = onDone
     }
 

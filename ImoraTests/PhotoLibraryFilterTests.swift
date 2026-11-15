@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class PhotoLibraryFilterTests: XCTestCase {
+    func testCloudUnfiledResultsRefreshWhenAlbumMembershipChanges() async throws {
+        actor Calls {
+            var count = 0
+            func next() { count += 1 }
+        }
+        let calls = Calls()
+        let search = SearchModel(search: { _, _ in
+            await calls.next()
+            return (SearchResponse(albums: nil, assets: SearchAssetPage(count: 0, items: [], nextPage: nil, nextCursor: nil)), nil)
+        })
+        var filter = SearchFilter()
+        filter.notInAlbum = true
+        search.apply(filter, allowEmpty: true)
+        for _ in 0..<100 where search.isLoading { try await Task.sleep(for: .milliseconds(10)) }
+        let before = await calls.count
+        search.realtimeAlbumsChanged()
+        for _ in 0..<100 {
+            if await calls.count > before { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let after = await calls.count
+        XCTAssertEqual(after, before + 1)
+        XCTAssertTrue(search.filter.notInAlbum)
+    }
+
     private func asset(_ id: String, edited: Bool? = nil, localID: String? = nil, backedUp: Bool = false) -> Asset {
         Asset(id: id, ownerId: "fixture", isImage: true, isFavorite: false, isTrashed: false,
               visibility: .timeline, thumbhash: nil, fileCreatedAt: .distantPast, localOffsetHours: 0,

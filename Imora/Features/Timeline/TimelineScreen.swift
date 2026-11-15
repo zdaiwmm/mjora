@@ -1259,6 +1259,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             AlbumPickerSheet(
                 assetIDs: selected.compactMap { serverIdentifier(for: $0) },
                 localIdentifiers: selected.filter { serverIdentifier(for: $0) == nil }.compactMap(\.localIdentifier),
+                sourceAccountGeneration: session.client?.context.id,
                 onApplied: exitSelection,
                 onRollback: { failedIDs in
                     selection.formUnion(selected.filter { asset in
