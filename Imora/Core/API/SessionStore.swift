@@ -58,6 +58,7 @@ final class SessionStore {
     @ObservationIgnored private var preferenceProjectionRevisions: [String: Int] = [:]
     @ObservationIgnored private var pendingPreferenceMutationCounts: [String: Int] = [:]
     @ObservationIgnored private var refreshUserRevision = 0
+    @ObservationIgnored private var favoriteIdentityTask: Task<Void, Never>?
 
     private static let serverKey = "imora.serverURL"
     private static let tokenKey = "accessToken"
@@ -164,6 +165,8 @@ final class SessionStore {
         realtime = nil
         favorites?.shutdown()
         favorites = nil
+        favoriteIdentityTask?.cancel()
+        favoriteIdentityTask = nil
         lockedFolder?.shutdown()
         lockedFolder = nil
         backup?.shutdown()
@@ -418,6 +421,8 @@ final class SessionStore {
             realtime?.shutdown()
             favorites?.shutdown()
             favorites = nil
+            favoriteIdentityTask?.cancel()
+            favoriteIdentityTask = nil
         }
         LocalServerRouter.shared.activate(external: client.apiURL)
         if profileImageCacheKey == nil {
@@ -472,6 +477,17 @@ final class SessionStore {
                 credentialScope: client.offlineAccountKey),
               favorites?.account != account else { return }
         if let provisional = favorites?.account, provisional.hasPrefix("credential:") {
+            if favorites?.isIdle == false {
+                guard favoriteIdentityTask == nil else { return }
+                favoriteIdentityTask = Task { [weak self, weak client, weak previous = favorites] in
+                    await previous?.waitUntilIdle()
+                    guard !Task.isCancelled, let self, let client, let previous,
+                          self.client === client, self.favorites === previous else { return }
+                    self.favoriteIdentityTask = nil
+                    self.configureFavorites(client: client)
+                }
+                return
+            }
             do { try FavoriteIntentStore.shared.confirmAccount(credentialScope: provisional, account: account) }
             catch { return } // Keep the existing authenticated queue usable.
         }

@@ -723,7 +723,7 @@ private struct AssetInformationSheet: View {
             AssetInfoPanel(
                 asset: asset,
                 onDateAdjusted: onDateAdjusted,
-                onAddToAlbum: serverAssetID == nil || asset.visibility == .locked ? nil : { showAddToAlbum = true },
+                onAddToAlbum: (serverAssetID == nil && !asset.isLocal) || asset.visibility == .locked ? nil : { showAddToAlbum = true },
                 onOpenPerson: onOpenPerson,
                 onOpenAlbum: onOpenAlbum,
                 albumMembershipUpdate: albumMembershipUpdate
@@ -740,9 +740,10 @@ private struct AssetInformationSheet: View {
         .presentationBackgroundInteraction(.enabled(upThrough: Self.detent))
         .tint(.accentColor)
         .sheet(isPresented: $showAddToAlbum) {
-            if let serverAssetID {
+            if serverAssetID != nil || asset.isLocal {
                 AddToAlbumSheet(
-                    assetIDs: [serverAssetID],
+                    assetIDs: serverAssetID.map { [$0] } ?? [],
+                    localIdentifiers: serverAssetID == nil ? asset.localIdentifier.map { [$0] } ?? [] : [],
                     onMembershipUpdate: { update in
                         albumMembershipUpdate = AlbumMembershipUpdate(
                             operationID: update.operationID,
@@ -779,7 +780,7 @@ private struct AssetInformationPanel: View {
             showsHeader: false,
             isRevealed: isRevealed,
             onDateAdjusted: onDateAdjusted,
-            onAddToAlbum: serverAssetID == nil || asset.visibility == .locked ? nil : { showAddToAlbum = true },
+            onAddToAlbum: (serverAssetID == nil && !asset.isLocal) || asset.visibility == .locked ? nil : { showAddToAlbum = true },
             onOpenPerson: onOpenPerson,
             onOpenAlbum: onOpenAlbum,
             albumMembershipUpdate: albumMembershipUpdate
@@ -787,9 +788,10 @@ private struct AssetInformationPanel: View {
         .padding(.bottom, bottomContentInset)
         .tint(.accentColor)
         .sheet(isPresented: $showAddToAlbum) {
-            if let serverAssetID {
+            if serverAssetID != nil || asset.isLocal {
                 AddToAlbumSheet(
-                    assetIDs: [serverAssetID],
+                    assetIDs: serverAssetID.map { [$0] } ?? [],
+                    localIdentifiers: serverAssetID == nil ? asset.localIdentifier.map { [$0] } ?? [] : [],
                     onMembershipUpdate: { update in
                         albumMembershipUpdate = AlbumMembershipUpdate(
                             operationID: update.operationID,
@@ -1045,7 +1047,7 @@ struct AssetViewerScreen: View {
     }
 
     private var current: Asset? {
-        assets.indices.contains(currentIndex) ? assets[currentIndex] : nil
+        assets.indices.contains(currentIndex) ? session.projectingFavorite(assets[currentIndex]) : nil
     }
 
     private var mediaShowsChrome: Bool {
@@ -1255,8 +1257,9 @@ struct AssetViewerScreen: View {
                 }
             }
             .sheet(isPresented: $showAddToAlbum) {
-                if let serverAssetID {
-                    AddToAlbumSheet(assetIDs: [serverAssetID]) { message in
+                if let current {
+                    AddToAlbumSheet(assetIDs: serverAssetID.map { [$0] } ?? [],
+                                    localIdentifiers: serverAssetID == nil ? current.localIdentifier.map { [$0] } ?? [] : []) { message in
                         toast = message
                     }
                 }
@@ -1298,6 +1301,11 @@ struct AssetViewerScreen: View {
                     let isVideo = current.isVideo
                     AssetEditScreen(
                         asset: current,
+                        localAssetIdentifier: current.localIdentifier,
+                        onLocalSaved: { _ in commitLocalEdit(assetID: editedID) },
+                        onRemoteSaveUnconfirmed: { _ in
+                            apply(.edited(editedID, thumbhash: nil))
+                        },
                         onProjected: projectEdit,
                         onReverted: { revertEdit(assetID: editedID, operationID: $0) },
                         onCommitted: { operationID, detail in
@@ -2542,7 +2550,7 @@ struct AssetViewerScreen: View {
                 .accessibilityLabel("Share")
                 .accessibilityIdentifier("viewer-share")
 
-                if !current.isLocal, actionAvailability?.canFavorite == true {
+                if actionAvailability?.canFavorite == true {
                     Button {
                         Task { await toggleFavorite() }
                     } label: {
@@ -2574,7 +2582,7 @@ struct AssetViewerScreen: View {
                     .accessibilityIdentifier("viewer-restore")
                 }
             } else {
-                if !current.isLocal, actionAvailability?.canEdit == true {
+                if actionAvailability?.canEdit == true {
                     Button {
                         showEditor = true
                     } label: {
@@ -2783,36 +2791,9 @@ struct AssetViewerScreen: View {
         }
     }
 
-    /// device-only assets can be shared, inspected and deleted locally;
-    /// server actions come after they are backed up.
+    /// Device stills use the same nondestructive controls as cloud photos.
     @ToolbarContentBuilder private func localToolbarItems(_ current: Asset) -> some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
-            Button {
-                shareRequest = AssetShareRequest(assets: [current])
-            } label: {
-                Image(systemName: "square.and.arrow.up")
-            }
-            .accessibilityLabel("Share")
-        }
-
-        ToolbarSpacer(.flexible, placement: .bottomBar)
-
-        ToolbarItem(placement: .bottomBar) {
-            Button {
-                toggleInfo()
-            } label: {
-                Image(systemName: informationControlIsPresented ? "info.circle.fill" : "info.circle")
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .accessibilityLabel(informationControlIsPresented ? "Hide Info" : "Show Info")
-            .accessibilityIdentifier("viewer-info")
-        }
-
-        ToolbarSpacer(.flexible, placement: .bottomBar)
-
-        ToolbarItem(placement: .bottomBar) {
-            deleteMenu
-        }
+        remoteToolbarItems(current)
     }
 
     private var deleteMenu: some View {
@@ -3459,12 +3440,32 @@ struct AssetViewerScreen: View {
         let newValue = !asset.isFavorite
         apply(.favorite(asset.id, newValue))
         do {
-            try await client.setFavorite(ids: [asset.id], newValue)
+            let result = try await session.setFavorite(asset, value: newValue)
+            guard session.client === client else { return }
             apply(.favoriteCommitted(asset.id, newValue))
+            if result.storageFailed {
+                toast = String(localized: "Saved on device. Cloud favorite couldn't be queued.")
+            } else if result.syncPending {
+                toast = String(localized: "Favorite saved. Cloud sync is pending.")
+            }
         } catch {
+            guard session.client === client else { return }
             apply(.favorite(asset.id, asset.isFavorite))
             ErrorToastCenter.shared.show(String(localized: "Couldn't update the favorite"), error: error)
         }
+    }
+
+    private func commitLocalEdit(assetID: String) {
+        if let index = indexByAssetID[assetID] {
+            assets[index].localImageVersion = UUID().uuidString
+            if let id = assets[index].localIdentifier,
+               let photo = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject {
+                assets[index].isEdited = PHAssetResource.assetResources(for: photo).contains { $0.type == .adjustmentData }
+            }
+        }
+        LocalImageLoader.shared.noteLibraryChange()
+        session.realtime?.notifyLocalChange()
+        toast = String(localized: "Edits saved")
     }
 
     private func toggleArchive() async {

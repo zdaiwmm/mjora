@@ -99,6 +99,7 @@ struct SelectionMoreMenu: View {
                         } label: {
                             Label("Remove from Album", systemImage: "rectangle.stack.badge.minus")
                         }
+                        .disabled(serverActionsDisabled)
                         if let onSetAlbumCover {
                             Button {
                                 Task { await onSetAlbumCover() }
@@ -106,6 +107,7 @@ struct SelectionMoreMenu: View {
                                 Label("Set as Album Cover", systemImage: "photo.badge.checkmark")
                             }
                             .accessibilityIdentifier("selection-album-cover")
+                            .disabled(serverActionsDisabled)
                         }
                     } else {
                         Button {
@@ -116,7 +118,7 @@ struct SelectionMoreMenu: View {
                                 systemImage: filter.visibility == .archive ? "tray.and.arrow.up" : "archivebox"
                             )
                         }
-                        .disabled(ownerActionsDisabled)
+                        .disabled(serverActionsDisabled || ownerActionsDisabled)
                         Button(action: onAddToAlbum) {
                             Label("Add to Album", systemImage: "rectangle.stack.badge.plus")
                         }
@@ -126,6 +128,7 @@ struct SelectionMoreMenu: View {
                             Label("Add to Space", systemImage: "person.3")
                         }
                         .accessibilityIdentifier("selection-add-to-space")
+                        .disabled(serverActionsDisabled)
                     }
                     if let onStack {
                         Button {
@@ -134,6 +137,7 @@ struct SelectionMoreMenu: View {
                             Label("Stack", systemImage: "square.stack")
                         }
                         .accessibilityIdentifier("selection-stack")
+                        .disabled(serverActionsDisabled)
                     }
                     if let onRemoveFromSpace {
                         Button {
@@ -142,9 +146,9 @@ struct SelectionMoreMenu: View {
                             Label("Remove from Space", systemImage: "person.3.sequence")
                         }
                         .accessibilityIdentifier("selection-remove-from-space")
+                        .disabled(serverActionsDisabled)
                     }
                 }
-                .disabled(serverActionsDisabled)
                 if onLock != nil {
                     Section {
                         Button {

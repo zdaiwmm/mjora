@@ -22,6 +22,21 @@ final class PhotoFavoriteCoordinator {
     @ObservationIgnored private var draining = false
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private var mutations: [String: (UUID, Task<FavoriteMutationResult, Error>)] = [:]
+    @ObservationIgnored private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+
+    var isIdle: Bool { !draining && mutations.isEmpty }
+
+    func waitUntilIdle() async {
+        guard !isIdle else { return }
+        await withCheckedContinuation { idleWaiters.append($0) }
+    }
+
+    private func releaseIdleWaiters() {
+        guard isIdle else { return }
+        let waiting = idleWaiters
+        idleWaiters = []
+        waiting.forEach { $0.resume() }
+    }
 
     init(account: String, store: FavoriteIntentStore = .shared,
          writeLocal: @escaping Write, writeRemote: @escaping Write) {
@@ -69,6 +84,7 @@ final class PhotoFavoriteCoordinator {
         mutations[identity] = (operation, mutation)
         defer {
             if mutations[identity]?.0 == operation { mutations[identity] = nil }
+            releaseIdleWaiters()
         }
         return try await mutation.value
     }
@@ -92,18 +108,20 @@ final class PhotoFavoriteCoordinator {
     func flush() async {
         guard active, !draining else { return }
         draining = true
-        defer { draining = false; refreshStatus() }
-        while active, !Task.isCancelled, let intent = store.pending(account: account).first {
+        defer { draining = false; refreshStatus(); releaseIdleWaiters() }
+        var failed = false
+        for intent in store.pending(account: account) {
+            guard active, !Task.isCancelled else { return }
+            guard store.pending(account: account).contains(where: { $0.id == intent.id }) else { continue }
             do {
                 try await writeRemote(intent.remoteID, intent.value)
                 guard active, !Task.isCancelled else { return }
                 try store.acknowledge(intent)
-                syncFailed = false
             } catch {
-                syncFailed = true
-                return
+                failed = true
             }
         }
+        syncFailed = failed
     }
 
     private func refreshStatus() {

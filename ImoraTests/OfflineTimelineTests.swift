@@ -5,6 +5,60 @@ import XCTest
 
 @MainActor
 final class OfflineTimelineTests: XCTestCase {
+    func testPendingFavoriteProjectsOverFreshAndRefreshedServerBuckets() async throws {
+        let month = "2026-02-01T00:00:00.000Z"
+        let payload = Data(#"{"id":["pending-photo"],"ownerId":["fixture"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"thumbhash":[null],"fileCreatedAt":["2026-02-02T12:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let server = try LocalHTTPServer { request in
+            if request.path.hasPrefix("/api/timeline/buckets?") {
+                return .init(body: Data("[{\"timeBucket\":\"\(month)\",\"count\":1}]".utf8))
+            }
+            return .init(body: payload)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "pending-\(UUID())")
+        defer { client.invalidate() }
+        let model = TimelineModel(filter: TimelineFilter(order: "pending-\(UUID())"))
+        model.assetProjection = { asset in
+            var projected = asset
+            if asset.id == "pending-photo" { projected.isFavorite = true }
+            return projected
+        }
+        model.attach(client)
+        await model.load()
+        XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true])
+        await model.loadBucket(month, refresh: true)
+        XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true], "A server response older than a durable intent must not undo it")
+    }
+
+    func testPartialFavoriteRollbackPreservesTheItemsWhoseWritesWereAccepted() {
+        let assets = ["accepted", "failed"].map { id in
+            Asset(id: id, ownerId: "fixture", isImage: true, isFavorite: false,
+                  isTrashed: false, visibility: .timeline, thumbhash: nil,
+                  fileCreatedAt: Date(timeIntervalSince1970: 1_700_000_000), localOffsetHours: 0,
+                  duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil, createdAt: nil)
+        }
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: assets)
+        let mutation = model.setFavoriteForOptimisticAction(ids: Set(assets.map(\.id)), value: true)
+        model.restore(mutation, ids: ["failed"])
+        model.commit(mutation)
+        let values = Dictionary(uniqueKeysWithValues: model.flatAssets.map { ($0.id, $0.isFavorite) })
+        XCTAssertEqual(values["accepted"], true)
+        XCTAssertEqual(values["failed"], false)
+    }
+
+    func testSuppliedSearchAndRealtimeDetailsPreserveTheDurableFavoriteProjection() async throws {
+        let json = Data(#"{"id":"pending","ownerId":"fixture","type":"IMAGE","originalFileName":"fixture.jpg","fileCreatedAt":"2026-02-02T12:00:00.000Z","localDateTime":"2026-02-02T12:00:00.000Z","isFavorite":false,"isTrashed":false}"#.utf8)
+        let detail = try JSONDecoder().decode(AssetDetail.self, from: json)
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [detail.asAsset()])
+        model.assetProjection = { asset in var next = asset; next.isFavorite = true; return next }
+        XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true], "Attaching the session projection must cover initial supplied results")
+        model.replaceSuppliedAssets([detail.asAsset()], groupsByDate: true)
+        XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true])
+        model.realtimeAssetUpdated(detail)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true])
+    }
+
     func testAwaitingAnAlreadyLoadingMonthWaitsForItsProjectedAssets() async throws {
         let month = "2026-03-01T00:00:00.000Z"
         let server = try LocalHTTPServer { _ in

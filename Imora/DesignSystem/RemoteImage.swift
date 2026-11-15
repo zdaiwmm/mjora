@@ -638,7 +638,7 @@ struct AssetTile: View {
     private var accessibilitySummary: String {
         var parts = [
             asset.isVideo ? String(localized: "Video") : (asset.isLivePhoto ? String(localized: "Live Photo") : String(localized: "Photo")),
-            asset.localDate.formatted(date: .long, time: .shortened),
+            PhotoDatePresentation.dateTime(wallClock: asset.localDate),
         ]
         if let duration = asset.durationLabel { parts.append(duration) }
         if asset.isStacked, let count = asset.stackCount { parts.append(String(localized: "Stack of \(count)")) }

@@ -394,8 +394,17 @@ struct AlbumPickerSheet: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
     let assetIDs: [String]
+    let localIdentifiers: [String]
     let onApplied: () -> Void
     let onRollback: (Set<String>) -> Void
+
+    init(assetIDs: [String], localIdentifiers: [String] = [],
+         onApplied: @escaping () -> Void, onRollback: @escaping (Set<String>) -> Void) {
+        self.assetIDs = assetIDs
+        self.localIdentifiers = localIdentifiers
+        self.onApplied = onApplied
+        self.onRollback = onRollback
+    }
 
     @State private var albums: [Album] = []
     @State private var newAlbumName = ""
@@ -404,6 +413,14 @@ struct AlbumPickerSheet: View {
     @State private var isLoading = true
 
     var body: some View {
+        if localIdentifiers.isEmpty {
+            remotePicker
+        } else {
+            AddToAlbumSheet(assetIDs: assetIDs, localIdentifiers: localIdentifiers) { _ in onApplied() }
+        }
+    }
+
+    private var remotePicker: some View {
         NavigationStack {
             List {
                 Section {

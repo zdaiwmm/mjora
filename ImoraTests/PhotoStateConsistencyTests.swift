@@ -155,6 +155,43 @@ final class PhotoStateConsistencyTests: XCTestCase {
         coordinator.shutdown()
     }
 
+    func testFailedFavoriteDoesNotBlockTheOtherPhotosInTheSameRetryPass() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FavoriteIntentStore(url: directory.appendingPathComponent("favorites.json"))
+        _ = try store.record(account: "A", remoteID: "deleted", localID: nil, value: true)
+        _ = try store.record(account: "A", remoteID: "healthy", localID: nil, value: true)
+        let coordinator = PhotoFavoriteCoordinator(account: "A", store: store,
+            writeLocal: { _, _ in }, writeRemote: { id, _ in
+                if id == "deleted" { throw URLError(.resourceUnavailable) }
+            })
+        await coordinator.flush()
+        XCTAssertEqual(store.pending(account: "A").map(\.remoteID), ["deleted"])
+        XCTAssertTrue(coordinator.syncFailed)
+        coordinator.shutdown()
+    }
+
+    func testIdentityPromotionWaitsForAcceptedLocalWritesBeforeMigratingTheirIntents() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FavoriteIntentStore(url: directory.appendingPathComponent("favorites.json"))
+        let device = FavoriteTestDevice(delayFirstWrite: true)
+        let coordinator = PhotoFavoriteCoordinator(account: "credential:current", store: store,
+            writeLocal: { id, value in await device.set(id, value) },
+            writeRemote: { _, _ in throw URLError(.notConnectedToInternet) })
+        let write = Task { try await coordinator.set(localID: "device", remoteID: "remote", value: true) }
+        while await device.startedWrites == 0 { await Task.yield() }
+        let promotion = Task {
+            await coordinator.waitUntilIdle()
+            try store.confirmAccount(credentialScope: coordinator.account, account: "server|user:A")
+            coordinator.shutdown()
+        }
+        _ = try await write.value
+        try await promotion.value
+        XCTAssertTrue(store.pending(account: "credential:current").isEmpty)
+        XCTAssertEqual(store.pending(account: "server|user:A").map(\.value), [true])
+    }
+
     private func sampleAsset(date: Date) -> Asset {
         Asset(id: "local-fixture", ownerId: "", isImage: true, isFavorite: false,
               isTrashed: false, visibility: .timeline, thumbhash: nil, fileCreatedAt: date,

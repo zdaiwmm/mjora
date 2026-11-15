@@ -940,6 +940,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     }
 
     private func handleScrollIdle(_ isIdle: Bool) {
+        if !isIdle { periodMotion.cancel() }
         scrollContext.isIdle = isIdle
         if isIdle {
             settleMotion()
@@ -1205,6 +1206,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         // no pull-to-refresh: the realtime hub keeps every grid current.
         .task {
+            model.assetProjection = { [weak session = session] asset in
+                session?.projectingFavorite(asset) ?? asset
+            }
             if let client = session.client {
                 model.attach(client, backup: session.backup, hub: session.realtime)
                 model.columns = columnCount
@@ -1251,11 +1255,15 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             ImageLoader.shared.setSweepPaused(false)
         }
         .sheet(item: $pendingAlbumAssets) { ids in
+            let selected = model.flatAssets.filter { ids.contains($0.id) }
             AlbumPickerSheet(
-                assetIDs: ids,
+                assetIDs: selected.compactMap { serverIdentifier(for: $0) },
+                localIdentifiers: selected.filter { serverIdentifier(for: $0) == nil }.compactMap(\.localIdentifier),
                 onApplied: exitSelection,
                 onRollback: { failedIDs in
-                    selection.formUnion(failedIDs)
+                    selection.formUnion(selected.filter { asset in
+                        serverIdentifier(for: asset).map { failedIDs.contains($0) } ?? false
+                    }.map(\.id))
                     isSelecting = !selection.isEmpty
                 }
             )
@@ -1283,8 +1291,18 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
         }
         .fullScreenCover(item: $pendingEditAsset) { asset in
-            AssetEditScreen(asset: asset) { outcome in
+            AssetEditScreen(asset: asset,
+                            localAssetIdentifier: asset.localIdentifier,
+                            onLocalSaved: { _ in
+                LocalImageLoader.shared.noteLibraryChange()
+                model.updateAssets(ids: [asset.id]) { $0.localImageVersion = UUID().uuidString }
+                session.realtime?.notifyLocalChange()
+            }, onRemoteSaveUnconfirmed: { _ in
+                session.backup?.noteRemoteEdits([asset.id])
+                model.realtimeResync()
+            }) { outcome in
                 guard case .saved(let detail) = outcome else { return }
+                guard !asset.isLocal else { return }
                 model.updateAssets(ids: [asset.id]) { current in
                     if let thumbhash = detail?.thumbhash { current.thumbhash = thumbhash }
                     if current.isVideo, let duration = detail?.duration { current.duration = duration }
@@ -1451,7 +1469,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             toggleSelection: { toggle($0) },
             menu: { UIMenu(children: menuElements(for: $0)) },
             makeViewer: { asset, startsAsContextPreview, bounds in
-                viewerController(
+                periodMotion.cancel()
+                return viewerController(
                     for: asset,
                     startsAsContextPreview: startsAsContextPreview,
                     previewBounds: bounds
@@ -1490,13 +1509,13 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 Task { _ = await restore(ids: [serverID]) }
             })
         }
-        if availability.canFavorite, let serverID {
+        if availability.canFavorite {
             primary.append(UIAction(
                 title: asset.isFavorite ? String(localized: "Unfavorite") : String(localized: "Favorite"),
                 image: UIImage(systemName: asset.isFavorite ? "heart.slash" : "heart"),
                 attributes: mutationAttributes
             ) { _ in
-                Task { _ = await favorite(ids: [serverID], value: !asset.isFavorite) }
+                Task { _ = await favorite(ids: [asset.id], value: !session.projectingFavorite(asset).isFavorite) }
             })
         }
         if availability.canEdit {
@@ -1504,9 +1523,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 pendingEditAsset = asset
             })
         }
-        if availability.canAddToAlbum, let serverID {
+        if availability.canAddToAlbum {
             primary.append(UIAction(title: String(localized: "Add to Album"), image: UIImage(systemName: "rectangle.stack.badge.plus")) { _ in
-                pendingAlbumAssets = [serverID]
+                pendingAlbumAssets = [asset.id]
             })
         }
         if canRemoveFromAlbum(asset), let serverID {
@@ -1699,10 +1718,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         onSetAlbumCover != nil && !asset.isLocal && !asset.isTrashed
     }
 
-    /// device photos join selection only while they still need a backup, so
-    /// server actions keep their remote-id contract for everything else.
+    /// Source-specific actions resolve device and server identities separately.
     private func isSelectable(_ asset: Asset) -> Bool {
-        if asset.isLocal { return !asset.isLocalBackedUp }
+        if asset.isLocal { return true }
         return owns(asset)
     }
 
@@ -1746,6 +1764,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     private func pinchChanged(_ magnification: CGFloat, viewportWidth: CGFloat, viewportHeight: CGFloat) {
         guard magnification > 0 else { return }
+        periodMotion.cancel()
         if pinchBaseColumns == nil {
             AssetViewerOpeningChromeCache.shared.cancelPrewarming(
                 owner: openingChromePrewarmOwner
@@ -2094,6 +2113,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         let leavesCurrentFilter = filter.isFavorite.map { $0 != value } ?? false
         var favorite: TimelineFavoriteMutation?
         var removal: TimelineRemoval?
+        let selected = model.flatAssets.filter { requestedIDs.contains($0.id) }
+        guard selected.count == requestedIDs.count else { return false }
+        var allSucceeded = true
         let result: Void? = await OptimisticAction.perform(
             errorMessage: String(localized: "Couldn't update favorites"),
             apply: {
@@ -2110,7 +2132,28 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     model.restore(favorite)
                 }
             },
-            request: { try await client.setFavorite(ids: ids, value) },
+            request: {
+                var failed: Set<String> = []
+                var failure: Error?
+                for asset in selected {
+                    guard session.client === client else { throw CancellationError() }
+                    do {
+                        let outcome = try await session.setFavorite(asset, value: value)
+                        if outcome.storageFailed {
+                            ErrorToastCenter.shared.show(String(localized: "Saved on device. Cloud favorite couldn't be queued."))
+                        }
+                    } catch { failed.insert(asset.id); failure = error }
+                }
+                guard session.client === client else { throw CancellationError() }
+                if failed.count == requestedIDs.count, let failure { throw failure }
+                if !failed.isEmpty {
+                    allSucceeded = false
+                    if let removal { model.restore(removal, ids: failed) }
+                    else if let favorite { model.restore(favorite, ids: failed) }
+                    selection = failed
+                    ErrorToastCenter.shared.show(String(localized: "Some favorites couldn't be updated. Retry the selected photos."))
+                }
+            },
             commit: { _ in
                 if let removal {
                     model.commit(removal)
@@ -2119,7 +2162,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 }
             }
         )
-        return result != nil
+        return result != nil && allSucceeded
     }
 
     @discardableResult
