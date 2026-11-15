@@ -15,25 +15,26 @@ nonisolated struct AlbumMembershipUpdate: Equatable {
     let change: Change
 }
 
-/// pick an album for the current asset, or create a new one with it inside.
+/// App albums are cloud albums. Local items cross that boundary only through
+/// the explicit backup confirmation, never while opening/browsing this sheet.
 struct AddToAlbumSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(SessionStore.self) private var session
 
     let assetIDs: [String]
+    let localIdentifiers: [String]
+    let sourceAccountGeneration: UUID?
     let onMembershipUpdate: (AlbumMembershipUpdate) -> Void
     let onDone: (String) -> Void
 
-    init(
-        assetIDs: [String],
-        onMembershipUpdate: @escaping (AlbumMembershipUpdate) -> Void = { _ in },
-        onDone: @escaping (String) -> Void
-    ) {
-        self.assetIDs = assetIDs
-        self.onMembershipUpdate = onMembershipUpdate
-        self.onDone = onDone
+    init(assetIDs: [String], localIdentifiers: [String] = [], sourceAccountGeneration: UUID? = nil,
+         onMembershipUpdate: @escaping (AlbumMembershipUpdate) -> Void = { _ in }, onDone: @escaping (String) -> Void) {
+        self.assetIDs = assetIDs; self.localIdentifiers = localIdentifiers
+        self.sourceAccountGeneration = sourceAccountGeneration
+        self.onMembershipUpdate = onMembershipUpdate; self.onDone = onDone
     }
 
+    private enum Action { case add(Album), create(String) }
     @State private var albums: [Album] = []
     @State private var containingIDs: Set<String> = []
     @State private var isLoading = true
@@ -41,222 +42,234 @@ struct AddToAlbumSheet: View {
     @State private var query = ""
     @State private var showNewAlbum = false
     @State private var newAlbumName = ""
+    @State private var preparation: AlbumBackupPreparation?
+    @State private var consentGeneration: UUID?
+    @State private var pendingAction: Action?
+    @State private var showBackupConfirmation = false
+    @State private var completedBackupCount = 0
+    @State private var errorMessage: String?
+    @State private var creationNeedsReview = false
 
-    private var visibleAlbums: [Album] {
-        guard !query.isEmpty else { return albums }
-        return albums.filter { $0.albumName.localizedCaseInsensitiveContains(query) }
+    private var isCurrentAccount: Bool {
+        guard let generation = preparation?.accountGeneration, let client = session.client else { return false }
+        return client.context.isActive && client.context.id == generation
     }
+    private var localCount: Int { Set(localIdentifiers).count }
+    private var visibleAlbums: [Album] {
+        query.isEmpty ? albums : albums.filter { $0.albumName.localizedCaseInsensitiveContains(query) }
+    }
+    private var isCreating: Bool { if case .create = pendingAction { true } else { false } }
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Button {
-                        newAlbumName = ""
-                        showNewAlbum = true
-                    } label: {
-                        Label("New Album", systemImage: "plus")
+                if !localIdentifiers.isEmpty {
+                    Section {
+                        Text("App albums are stored on your server. Device items must be backed up before they can be added.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        if isWorking {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(completedBackupCount < localCount
+                                     ? String(localized: "Backing Up \(min(completedBackupCount + 1, localCount)) of \(localCount)")
+                                     : String(localized: "Adding to App Album…"))
+                                ProgressView(value: Double(completedBackupCount), total: Double(max(localCount, 1)))
+                            }
+                            .accessibilityIdentifier("album-backup-progress")
+                        } else if completedBackupCount > 0 {
+                            Text("\(completedBackupCount) of \(localCount) items backed up. Completed backups are kept for retry.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                    .disabled(isWorking || isLoading)
-                    .accessibilityIdentifier("add-to-album-new")
                 }
-
                 Section {
-                    ForEach(visibleAlbums) { album in
-                        albumRow(album)
-                    }
+                    Button { showNewAlbum = true } label: { Label("New Album", systemImage: "plus") }
+                        .disabled(isWorking || isLoading || !isCurrentAccount)
+                        .accessibilityIdentifier("add-to-album-new")
+                        .alert("New Album", isPresented: $showNewAlbum) {
+                            TextField("Album name", text: $newAlbumName)
+                            Button(localIdentifiers.isEmpty ? String(localized: "Create") : String(localized: "Continue")) {
+                                choose(.create(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)))
+                            }
+                            .disabled(isWorking || newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Button("Cancel", role: .cancel) {}
+                        }
+                }
+                Section {
+                    ForEach(visibleAlbums) { album in albumRow(album) }
                 } footer: {
-                    if !isLoading, albums.isEmpty {
-                        Text("No albums yet. Create one to get started.")
-                    }
+                    if !isLoading, albums.isEmpty { Text("No albums yet. Create one to get started.") }
                 }
             }
-            .overlay {
-                if isLoading {
-                    ProgressView()
-                }
-            }
+            .overlay { if isLoading { ProgressView() } }
             .searchable(text: $query, prompt: "Search albums")
-            .navigationTitle("Add to Album")
+            .navigationTitle(localIdentifiers.isEmpty ? String(localized: "Add to Album") : String(localized: "Add to App Album"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isWorking) }
             }
             .task { await load() }
-            .alert("New Album", isPresented: $showNewAlbum) {
-                TextField("Album name", text: $newAlbumName)
-                Button("Create") {
-                    Task { await createAlbum() }
+            .confirmationDialog(isCreating ? String(localized: "Back Up and Create Album") : String(localized: "Back Up and Add to Album"),
+                                isPresented: $showBackupConfirmation, titleVisibility: .visible) {
+                Button(isCreating ? String(localized: "Back Up and Create Album") : String(localized: "Back Up and Add to Album")) {
+                    guard isCurrentAccount, let action = pendingAction else { return }
+                    consentGeneration = preparation?.accountGeneration
+                    Task { await perform(action) }
                 }
-                .disabled(isWorking || newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will back up the selected device items to your server, then add them to the App album.")
+            }
+            .alert("Couldn't Add to Album", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                if creationNeedsReview {
+                    Button("Refresh App Albums") {
+                        creationNeedsReview = false; pendingAction = nil
+                        Task { await load() }
+                    }
+                } else if isCurrentAccount {
+                    Button("Try Again") {
+                        if let action = pendingAction { Task { await perform(action) } }
+                        else { Task { await load() } }
+                    }
+                }
+                Button("Keep Selection", role: .cancel) {}
+            } message: { Text(errorMessage ?? "") }
+            .onChange(of: session.client?.context.id) {
+                if preparation != nil && !isCurrentAccount { errorMessage = AlbumBackupPreparation.Failure.accountChanged.localizedDescription }
             }
             .interactiveDismissDisabled(isWorking)
         }
     }
 
-    @ViewBuilder private func albumRow(_ album: Album) -> some View {
-        let alreadyIn = containingIDs.contains(album.id)
-
-        Button {
-            Task { await add(to: album) }
-        } label: {
+    private func albumRow(_ album: Album) -> some View {
+        let alreadyIn = localIdentifiers.isEmpty && assetIDs.count == 1 && containingIDs.contains(album.id)
+        return Button { choose(.add(album)) } label: {
             HStack(spacing: 12) {
                 if let client = session.client, let cover = album.albumThumbnailAssetId {
                     RemoteImage(url: client.thumbnailURL(assetID: cover), targetPixelSize: 120)
-                        .frame(width: 48, height: 48)
-                        .clipShape(.rect(cornerRadius: 8))
+                        .frame(width: 48, height: 48).clipShape(.rect(cornerRadius: 8))
                 } else {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.quaternary)
-                        .frame(width: 48, height: 48)
-                        .overlay {
-                            Image(systemName: "rectangle.stack")
-                                .foregroundStyle(.secondary)
-                        }
+                    RoundedRectangle(cornerRadius: 8).fill(.quaternary).frame(width: 48, height: 48)
+                        .overlay { Image(systemName: "rectangle.stack").foregroundStyle(.secondary) }
                 }
-
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(album.albumName)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    Text(album.albumName).font(.subheadline.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                     HStack(spacing: 4) {
                         Text("^[\(album.assetCount) item](inflect: true)")
-                        if album.shared {
-                            Text("·")
-                            Text("Shared")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                        if album.shared { Text("·"); Text("Shared") }
+                    }.font(.caption).foregroundStyle(.secondary)
                 }
-
                 Spacer()
-
-                if alreadyIn {
-                    Image(systemName: "checkmark")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.tint)
-                }
+                if alreadyIn { Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint) }
             }
         }
-        .disabled(alreadyIn || isWorking)
+        .disabled(alreadyIn || isWorking || !isCurrentAccount)
     }
 
-    // MARK: - actions
+    private func choose(_ action: Action) {
+        guard !isWorking, isCurrentAccount else { return }
+        pendingAction = action
+        creationNeedsReview = false
+        if !localIdentifiers.isEmpty && consentGeneration != preparation?.accountGeneration {
+            showBackupConfirmation = true
+        } else { Task { await perform(action) } }
+    }
 
     private func load() async {
-        guard let client = session.client else { return }
-        // the albums tab's offline copy paints the list instantly while the
-        // fresh one loads. membership ticks still wait for the server - a
-        // guessed tick invites a duplicate add.
+        defer { isLoading = false }
+        guard let client = session.client else { errorMessage = String(localized: "Connect to your server to choose an App album."); return }
+        if preparation == nil {
+            preparation = AlbumBackupPreparation(localIdentifiers: localIdentifiers, accountGeneration: sourceAccountGeneration ?? client.context.id)
+        }
+        guard isCurrentAccount else { errorMessage = AlbumBackupPreparation.Failure.accountChanged.localizedDescription; return }
         if albums.isEmpty, let account = client.offlineAccountKey {
-            let cached = await Task.detached(priority: .userInitiated) {
-                OfflineCache.value([Album].self, key: "albums", account: account)
-            }.value
-            if let cached, albums.isEmpty {
-                albums = cached.filter { !$0.isPending }.sorted { $0.updatedAt > $1.updatedAt }
-            }
+            let cached = await Task.detached(priority: .userInitiated) { OfflineCache.value([Album].self, key: "albums", account: account) }.value
+            guard isCurrentAccount else { return }
+            if let cached, albums.isEmpty { albums = cached.filter { !$0.isPending }.sorted { $0.updatedAt > $1.updatedAt } }
         }
         async let allTask = try? client.albums()
-        async let containingTask = try? client.albums(assetID: assetIDs.first ?? "")
-        let all = await allTask
-        let containing = await containingTask ?? []
-        // a failed refresh keeps the cached list instead of blanking it.
-        if let all {
-            albums = all.sorted { $0.updatedAt > $1.updatedAt }
-        }
+        async let containingTask: [Album]? = localIdentifiers.isEmpty && assetIDs.count == 1 ? (try? await client.albums(assetID: assetIDs[0])) : nil
+        let all = await allTask, containing = await containingTask ?? []
+        guard isCurrentAccount else { return }
+        if let all { albums = all.sorted { $0.updatedAt > $1.updatedAt } }
+        else if albums.isEmpty { errorMessage = String(localized: "App albums couldn't be loaded. Your selection is kept.") }
         containingIDs = Set(containing.map(\.id))
-        isLoading = false
     }
 
-    private func add(to album: Album) async {
-        guard let client = session.client, !isWorking else { return }
-        let requested = Set(assetIDs)
-        let originalContaining = containingIDs
-        let optimistic = album.withAssetCountDelta(requested.count)
-        let operationID = UUID()
+    private func prepare<Result>(client: ImoraClient, operation: ([String]) async throws -> Result) async throws -> Result {
+        guard let preparation, isCurrentAccount else { throw AlbumBackupPreparation.Failure.accountChanged }
+        let backup = session.backup
+        return try await preparation.perform(assetIDs: assetIDs, consent: consentGeneration,
+            isCurrent: { isCurrentAccount && session.client?.context.id == client.context.id },
+            backup: { id in
+                guard let backup else { throw ImoraError.http(0, String(localized: "Backup is unavailable. Reconnect to your server and try again.")) }
+                return try await backup.backUp(localIdentifier: id)
+            }, verify: { local, remote in
+                guard let backup, backup.hasVerifiedBackup(localIdentifier: local) else { return false }
+                return await backup.remoteIdentifier(forLocal: local) == remote
+            }, progress: { completed, _ in completedBackupCount = completed }, operation: operation)
+    }
+
+    private func perform(_ action: Action) async {
+        guard !isWorking, isCurrentAccount, let client = session.client else { return }
         isWorking = true
         defer { isWorking = false }
-        let result = await OptimisticAction.perform(
-            errorMessage: String(localized: "Couldn't add the selected items to the album."),
-            apply: {
-                containingIDs.insert(album.id)
-                replaceAlbum(id: album.id, with: optimistic)
-                emit(.project(optimistic), operationID: operationID)
-                dismiss()
-            },
-            rollback: {
-                containingIDs = originalContaining
-                replaceAlbum(id: album.id, with: album)
-                emit(.rollback(album.id), operationID: operationID)
-            },
-            request: { try await client.addAssets(albumID: album.id, ids: Array(requested)) },
-            commit: { results in
-                let outcome = BulkMutationOutcome(requestedIDs: requested, results: results)
-                replaceAlbum(
-                    id: album.id,
-                    with: album.withAssetCountDelta(outcome.successfulIDs.count)
-                )
-                if !outcome.successfulIDs.isEmpty {
-                    emit(
-                        .commit(album.withAssetCountDelta(outcome.successfulIDs.count)),
-                        operationID: operationID
-                    )
-                } else if !outcome.duplicateIDs.isEmpty {
-                    emit(.commit(album), operationID: operationID)
-                } else {
-                    containingIDs = originalContaining
-                    emit(.rollback(album.id), operationID: operationID)
+        let operationID = UUID()
+        var projected: Album?
+        var projectedIDs: [String] = []
+        var original: Album?
+        do {
+            switch action {
+            case .add(let selected):
+                let album = albums.first { $0.id == selected.id } ?? selected
+                original = album
+                let results = try await prepare(client: client) { ids in
+                    projectedIDs = ids
+                    let optimistic = album.withAssetCountDelta(ids.count)
+                    projected = optimistic
+                    replaceAlbum(id: album.id, with: optimistic)
+                    emit(.project(optimistic), operationID: operationID, ids: ids)
+                    return try await client.addAssets(albumID: album.id, ids: ids)
                 }
-                reportFailures(outcome.failedIDs.count)
-            }
-        )
-        guard let results = result else { return }
-        let outcome = BulkMutationOutcome(requestedIDs: requested, results: results)
-        guard outcome.failedIDs.isEmpty else { return }
-        if !outcome.successfulIDs.isEmpty {
-            onDone(String(localized: "Added to \(album.albumName)"))
-        } else if !outcome.duplicateIDs.isEmpty {
-            onDone(String(localized: "Already in \(album.albumName)"))
-        }
-    }
-
-    private func createAlbum() async {
-        guard let client = session.client, !isWorking else { return }
-        let name = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        let pending = Album.pending(name: name, assetCount: Set(assetIDs).count)
-        let operationID = UUID()
-        isWorking = true
-        defer { isWorking = false }
-        let saved = await OptimisticAction.perform(
-            errorMessage: String(localized: "Couldn't create the album."),
-            apply: {
-                newAlbumName = ""
-                albums.insert(pending, at: 0)
-                containingIDs.insert(pending.id)
-                emit(.project(pending), operationID: operationID)
-                dismiss()
-            },
-            rollback: {
-                albums.removeAll { $0.id == pending.id }
-                containingIDs.remove(pending.id)
-                newAlbumName = name
-                emit(.rollback(pending.id), operationID: operationID)
-            },
-            request: { try await client.createAlbum(name: name, assetIds: assetIDs) },
-            commit: { album in
-                replaceAlbum(id: pending.id, with: album)
-                containingIDs.remove(pending.id)
+                let outcome = BulkMutationOutcome(requestedIDs: Set(projectedIDs), results: results)
+                let accepted = outcome.successfulIDs.union(outcome.duplicateIDs)
+                let updated = album.withAssetCountDelta(outcome.successfulIDs.count)
+                replaceAlbum(id: album.id, with: updated)
+                emit(.commit(updated), operationID: operationID, ids: Array(accepted))
+                emit(.rollback(album.id), operationID: operationID, ids: Array(outcome.failedIDs))
+                if !outcome.failedIDs.isEmpty {
+                    pendingAction = .add(updated)
+                    errorMessage = String(localized: "Some items couldn't be added. Your selection and completed backups are kept. Try again.")
+                    return
+                }
                 containingIDs.insert(album.id)
-                emit(.replace(pending.id, album), operationID: operationID)
+                onDone(outcome.successfulIDs.isEmpty ? String(localized: "Already in \(album.albumName)") : String(localized: "Added to \(album.albumName)"))
+            case .create(let name):
+                guard !name.isEmpty else { return }
+                let saved = try await prepare(client: client) { ids in
+                    projectedIDs = ids
+                    let pending = Album.pending(name: name, assetCount: ids.count)
+                    projected = pending
+                    albums.insert(pending, at: 0)
+                    emit(.project(pending), operationID: operationID, ids: ids)
+                    return try await client.createAlbum(name: name, assetIds: ids)
+                }
+                if let projected { replaceAlbum(id: projected.id, with: saved); emit(.replace(projected.id, saved), operationID: operationID, ids: projectedIDs) }
+                containingIDs.insert(saved.id)
+                newAlbumName = ""
+                onDone(String(localized: "Added to \(saved.albumName)"))
             }
-        )
-        if let saved { onDone(String(localized: "Added to \(saved.albumName)")) }
+            dismiss()
+        } catch {
+            if isCurrentAccount, let projected {
+                if let original { replaceAlbum(id: original.id, with: original) }
+                else { albums.removeAll { $0.id == projected.id } }
+                emit(.rollback(projected.id), operationID: operationID, ids: projectedIDs)
+            }
+            if case .create = action, projected != nil {
+                creationNeedsReview = true
+                errorMessage = String(localized: "Album creation couldn't be confirmed. Check App albums before creating it again. Your name, selection and completed backups are kept.")
+            } else { errorMessage = error.localizedDescription }
+        }
     }
 
     private func replaceAlbum(id: String, with replacement: Album) {
@@ -264,19 +277,7 @@ struct AddToAlbumSheet: View {
         albums[index] = replacement
     }
 
-    private func reportFailures(_ count: Int) {
-        guard count > 0 else { return }
-        ErrorToastCenter.shared.show(
-            count == 1 ? String(localized: "Couldn't add 1 selected item.") : String(localized: "Couldn't add \(count) selected items.")
-        )
-    }
-
-    private func emit(_ change: AlbumMembershipUpdate.Change, operationID: UUID) {
-        guard let assetID = assetIDs.first else { return }
-        onMembershipUpdate(AlbumMembershipUpdate(
-            operationID: operationID,
-            assetID: assetID,
-            change: change
-        ))
+    private func emit(_ change: AlbumMembershipUpdate.Change, operationID: UUID, ids: [String]) {
+        for id in ids { onMembershipUpdate(AlbumMembershipUpdate(operationID: operationID, assetID: id, change: change)) }
     }
 }
