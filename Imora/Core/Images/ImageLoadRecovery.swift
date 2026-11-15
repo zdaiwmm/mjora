@@ -25,4 +25,6 @@ final class ImageLoadRecovery {
     func protectedDataBecameAvailable() {
         generation &+= 1
     }
+
+    func contentChanged() { generation &+= 1 }
 }

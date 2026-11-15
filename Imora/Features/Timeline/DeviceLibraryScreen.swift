@@ -6,13 +6,29 @@ struct DeviceLibraryScreen: View {
     var photosConfiguration: PhotosToolbarConfiguration? = nil
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
-    @State private var model = TimelineModel(filter: TimelineFilter(order: "asc"), suppliedAssets: [])
+    @State private var modelHolder: TimelineModelHolder
+    private var model: TimelineModel { modelHolder.model }
     @State private var loadTask: Task<Void, Never>?
     @State private var allAssets: [Asset] = []
     @State private var filterLoading = true
     @State private var filterError: String?
     @State private var loadID = UUID()
     @State private var albumMembership = PhotoAppAlbumMembershipCache.shared
+
+    init(session: SessionStore, navigationTarget: Binding<TimelineNavigationTarget?>,
+         photosConfiguration: PhotosToolbarConfiguration? = nil) {
+        _navigationTarget = navigationTarget
+        self.photosConfiguration = photosConfiguration
+        _modelHolder = State(initialValue: TimelineModelHolder {
+            let model = TimelineModel(filter: TimelineFilter(order: "asc"), suppliedAssets: [])
+            let selected = photosConfiguration?.controls.mediaFilter ?? .all
+            model.suppliedLaunchContext = "device|\(selected.rawValue)|\(photosConfiguration?.controls.sortByAdded == true ? "added" : "date")"
+            if let client = session.client {
+                model.attachCachedLaunch(session.cachedLaunchHandle, client: client, backup: session.backup)
+            }
+            return model
+        })
+    }
 
     var body: some View {
         TimelineScreen(title: "", filter: model.filter, emptyMessage: String(localized: "No accessible photos on this device."),
@@ -100,6 +116,9 @@ struct DeviceLibraryScreen: View {
                 assets = await PhotoLibraryService.browsableAssets().map { $0.asAsset(backedUp: false) }
             }
             guard !Task.isCancelled, session.client === client else { return }
+            #if DEBUG || PHASE4_PERFORMANCE
+            LaunchPipelineTrace.mark("device-library-visible-inventory", items: assets.count)
+            #endif
             do {
                 if selectedFilter == .edited {
                     assets = await PhotoFilterMetadata.editedDeviceAssets(assets)

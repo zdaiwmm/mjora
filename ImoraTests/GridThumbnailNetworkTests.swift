@@ -15,13 +15,34 @@ final class GridThumbnailNetworkTests: XCTestCase {
         let client = ImoraClient(apiURL: server.apiURL, accessToken: "synthetic")
         ImageLoader.shared.configure(client: client)
         defer { ImageLoader.shared.configure(client: nil); client.invalidate(); server.stop() }
+        let id = UUID().uuidString
         let image = try await ImageLoader.shared.gridThumbnail(
-            thumbnailURL: client.thumbnailURL(assetID: UUID().uuidString),
-            previewURL: client.thumbnailURL(assetID: "preview-fixture", size: "preview"), targetPixelSize: 600)
+            thumbnailURL: client.thumbnailURL(assetID: id),
+            previewURL: client.thumbnailURL(assetID: id, size: "preview"), targetPixelSize: 600)
         XCTAssertEqual(image.size.width * image.scale, 600, accuracy: 1)
         XCTAssertEqual(server.received.count, 2)
         XCTAssertEqual(server.received.filter { $0.path.contains("size=preview") }.count, 1)
         XCTAssertEqual(server.received.filter { $0.path.contains("original") || $0.path.contains("video") }.count, 0)
+    }
+
+    func testGridPreviewCannotSubstituteAnotherAssetSubject() async throws {
+        let data = imageData(pixels: 700)
+        let server = try LocalHTTPServer { request in
+            request.path.contains("size=preview") ? .init(headers: ["Content-Type": "image/png"], body: data) : .init(status: 500)
+        }
+        try await server.start()
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "synthetic")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate(); server.stop() }
+        do {
+            _ = try await ImageLoader.shared.gridThumbnail(thumbnailURL: client.thumbnailURL(assetID: UUID().uuidString),
+                previewURL: client.thumbnailURL(assetID: "different-subject", size: "preview"), targetPixelSize: 600)
+            XCTFail("A different asset's preview cannot fulfil this grid subject")
+        } catch is CancellationError {
+            // The current committed-subject fence rejects before preview IO.
+        } catch { XCTFail("Expected subject cancellation, received \(type(of: error)): \(error)") }
+        XCTAssertEqual(server.received.count, 1)
+        XCTAssertFalse(server.received.contains { $0.path.contains("size=preview") || $0.path.contains("original") || $0.path.contains("video") })
     }
 
     func testAdequateThumbnailDoesNotUpgrade() async throws {

@@ -317,7 +317,7 @@ final class RealtimeHub {
 
         switch name {
         case "AssetEditReadyV1", "AssetEditReadyV2":
-            await client.invalidateMediaCache()
+            await client.invalidateMediaCache(assetIDs: Array(event.assetIDs))
             guard active, client.context.isActive else { return }
             // an edit anywhere - web, another phone - repaints the server copy,
             // so any device twin stops being a valid stand-in for it.

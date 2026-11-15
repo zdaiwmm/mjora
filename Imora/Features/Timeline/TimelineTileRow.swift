@@ -341,6 +341,20 @@ final class TimelineTileView: UIView {
     /// a picture of the same photo is on screen, so the sharp render lands in
     /// place: fading one rendition into another reads as a pulse.
     private var showsPicture = false
+    private var activeDisplayKey: MediaDisplayKeyV1?
+    private var shownDisplayKey: MediaDisplayKeyV1?
+    private struct SurfaceBinding {
+        let key: MediaDisplayKeyV1
+        let access: MediaAccessGeneration
+        let client: ImoraClient
+    }
+    private var requestBinding: SurfaceBinding?
+    private var boundSurface: CommittedGridSurface?
+    private var boundSurfaceID: UUID?
+    private weak var projectionClient: ImoraClient?
+    private var projectionSource: AssetThumbnailSource?
+    private var visibleLocalIdentifier: String?
+    private var visibleLocalRevision: String?
     /// photokit could not serve the paired device copy, so the tile renders
     /// the server thumbnail instead until the next recovery.
     private var unavailableLocalIdentifier: String?
@@ -434,6 +448,8 @@ final class TimelineTileView: UIView {
             setNeedsUpdateProperties()
         }
         register(in: registry)
+        // Bind the source before this row's first UIKit layout can display it.
+        updatePropertiesIfNeeded()
     }
 
     // MARK: - registry
@@ -481,11 +497,71 @@ final class TimelineTileView: UIView {
             },
             unavailableLocalIdentifier: unavailableGeneration == generation ? unavailableLocalIdentifier : nil
         )
-        updateImage(asset: asset, source: source, client: session.client, generation: generation)
+        projectImage(asset: asset, source: source, client: session.client, generation: generation, targetPixelSize: targetPixelSize)
         updateBackupState(asset: asset, backup: showsBackupBadge ? backup : nil)
     }
 
     // MARK: - image
+
+    func projectImage(asset: Asset, source: AssetThumbnailSource, client: ImoraClient?, generation: Int,
+                      targetPixelSize: CGFloat) {
+        self.asset = asset
+        self.targetPixelSize = targetPixelSize
+        // Reuse proof only within this synchronous projection. A later
+        // projection and every asynchronous delivery obtain current evidence.
+        var revisions: [String: String?] = [:]
+        func currentRevision(_ identifier: String) -> String? {
+            if let captured = revisions[identifier] { return captured }
+            let revision = LocalImageLoader.currentModificationRevision(identifier)
+            revisions[identifier] = .some(revision)
+            return revision
+        }
+        if let visibleLocalIdentifier {
+            applyLocalAccessRevision(currentRevision(visibleLocalIdentifier))
+        }
+        if let previous = boundSurface {
+            let expected = client.map { MediaPresentationCoordinator.gridKey(asset: asset, client: $0, pixels: targetPixelSize) }
+            let localIsUnavailable = previous.localProvenance.map {
+                currentRevision($0.localIdentifier) != $0.modificationRevision
+            } ?? false
+            if previous.key != expected || localIsUnavailable || projectionClient !== client {
+                imageView.image = nil
+                showsPicture = false
+                shownDisplayKey = nil
+                boundSurface = nil
+                boundSurfaceID = nil
+            }
+        }
+        projectionClient = client
+        // A server edit's committed rendition cannot come from its old paired original.
+        let selected = asset.localIdentifier == nil && asset.isEdited == true
+            ? AssetThumbnailSource(assetID: asset.id, localIdentifier: nil, pairedLocalIdentifier: nil,
+                pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil) : source
+        projectionSource = selected
+        updateImage(asset: asset, source: selected, client: client, generation: generation)
+    }
+
+    func checkpointSurface(for key: MediaDisplayKeyV1, client: ImoraClient) -> CommittedGridSurface? {
+        guard let surface = boundSurface, surface.key == key, surface.isCurrent(),
+              projectionClient === client else { return nil }
+        return surface
+    }
+
+    /// This boundary can only revoke a displayed local surface, never grant access.
+    func applyLocalAccessRevision(_ currentRevision: String?) {
+        guard visibleLocalIdentifier != nil,
+              currentRevision == nil || (visibleLocalRevision != nil && currentRevision != visibleLocalRevision) else { return }
+        cancelLoads()
+        imageView.image = nil
+        showsPicture = false
+        shownDisplayKey = nil
+        boundSurface = nil
+        boundSurfaceID = nil
+        visibleLocalIdentifier = nil
+        visibleLocalRevision = nil
+        loadKey = nil
+        loadedKey = nil
+    }
 
     private func updateImage(
         asset: Asset,
@@ -493,6 +569,7 @@ final class TimelineTileView: UIView {
         client: ImoraClient?,
         generation: Int
     ) {
+        activeDisplayKey = client.map { MediaPresentationCoordinator.gridKey(asset: asset, client: $0, pixels: targetPixelSize) }
         if let localIdentifier = source.preferredLocalIdentifier {
             // a device-only photo has nowhere else to come from; a paired one
             // falls back to the server thumbnail rather than downloading its
@@ -503,7 +580,7 @@ final class TimelineTileView: UIView {
             guard needsLoad(key: key, generation: generation) else { return }
             let serverThumbnail = client.flatMap { client in
                 source.remoteIdentifier.flatMap { remoteIdentifier in
-                    ImageLoader.shared.cachedImage(
+                    ImageLoader.shared.cachedSurface(
                         for: client.thumbnailURL(assetID: remoteIdentifier, cacheKey: asset.thumbhash),
                         targetPixelSize: targetPixelSize
                     )
@@ -544,6 +621,8 @@ final class TimelineTileView: UIView {
 
     /// a new source loads; a recovery retries only what never arrived.
     private func needsLoad(key: String, generation: Int) -> Bool {
+        if requestBinding?.key != activeDisplayKey { return true }
+        if let client = projectionClient, requestBinding?.access != MediaPresentationCoordinator.access(for: client) { return true }
         if key != loadKey { return true }
         return generation != loadGeneration && loadedKey != key
     }
@@ -564,10 +643,14 @@ final class TimelineTileView: UIView {
         cancelLoads()
         if loadKey != key {
             loadedKey = nil
+            shownDisplayKey = nil
         }
         loadKey = key
         loadGeneration = generation
         retryButton.isHidden = true
+        if let client = projectionClient, let key = activeDisplayKey {
+            requestBinding = .init(key: key, access: MediaPresentationCoordinator.access(for: client), client: client)
+        } else { requestBinding = nil }
     }
 
     @objc private func retryThumbnail() {
@@ -598,13 +681,54 @@ final class TimelineTileView: UIView {
             : (thumbnailState.phase == .preview ? String(localized: "Loading") : nil)
     }
 
-    private func show(_ image: UIImage, key: String, fading: Bool) {
+    private func show(_ image: UIImage, key: String, fading: Bool, binding: SurfaceBinding?,
+                      localProvenance: LocalSurfaceProvenance? = nil) {
+        if let binding, binding.access != MediaPresentationCoordinator.access(for: binding.client) {
+            reprojectAfterAccessChange(binding: binding, key: key)
+            return
+        }
+        guard let binding, binding.client.context.isActive, projectionClient === binding.client,
+              binding.access == MediaPresentationCoordinator.access(for: binding.client), binding.key.isCurrentContent,
+              let asset, binding.key == MediaPresentationCoordinator.gridKey(asset: asset, client: binding.client, pixels: targetPixelSize),
+              loadKey == key else { return }
+        if let localProvenance {
+            guard projectionSource?.preferredLocalIdentifier == localProvenance.localIdentifier,
+                  asset.localIdentifier != nil || asset.isEdited != true,
+                  LocalImageLoader.currentModificationRevision(localProvenance.localIdentifier) == localProvenance.modificationRevision else {
+                applyLocalAccessRevision(nil)
+                return
+            }
+        }
         placeholderTask?.cancel()
         loadedKey = key
         retryButton.isHidden = true
         accessibilityValue = nil
         accessibilityCustomActions = nil
         showsPicture = true
+        imageView.image = image
+        visibleLocalIdentifier = localProvenance?.localIdentifier
+        visibleLocalRevision = localProvenance?.modificationRevision
+        shownDisplayKey = binding.key
+        let id = UUID()
+        boundSurfaceID = id
+        boundSurface = .init(image: image, key: binding.key, access: binding.access, localProvenance: localProvenance,
+            isCurrent: { [weak self, weak client = binding.client] in
+                guard let self, let client, client.context.isActive, self.projectionClient === client,
+                      self.boundSurfaceID == id, binding.key.isCurrentContent,
+                      binding.access == MediaPresentationCoordinator.access(for: client),
+                      let current = self.asset,
+                      binding.key == MediaPresentationCoordinator.gridKey(asset: current, client: client, pixels: self.targetPixelSize)
+                else { return false }
+                if let localProvenance {
+                    guard self.projectionSource?.preferredLocalIdentifier == localProvenance.localIdentifier,
+                          current.localIdentifier != nil || current.isEdited != true,
+                          LocalImageLoader.currentModificationRevision(localProvenance.localIdentifier) == localProvenance.modificationRevision else { return false }
+                    if let session = self.session, let remote = localProvenance.remoteIdentifier {
+                        return session.backup?.localIdentifierByRemoteId[remote] == localProvenance.localIdentifier
+                    }
+                }
+                return true
+            })
         MediaPresentationCoordinator.shared.imageArrived()
         guard fading else {
             imageView.image = image
@@ -618,6 +742,32 @@ final class TimelineTileView: UIView {
             self.imageView.image = image
         }
     }
+
+    private func reprojectAfterAccessChange(binding: SurfaceBinding, key: String) {
+        guard projectionClient === binding.client, binding.client.context.isActive, loadKey == key,
+              binding.access != MediaPresentationCoordinator.access(for: binding.client),
+              let asset, let source = projectionSource else { return }
+        loadKey = nil
+        projectImage(asset: asset, source: source, client: binding.client,
+            generation: ImageLoadRecovery.shared.generation, targetPixelSize: targetPixelSize)
+    }
+
+    #if DEBUG || PHASE4_PERFORMANCE
+    func presentationMeasurement(in grid: UIView) -> GridFrameObservation.Tile? {
+        guard let asset else { return nil }
+        let rect = convert(bounds, to: grid.window)
+        let image = imageView.image
+        let width = image?.cgImage?.width ?? 0, height = image?.cgImage?.height ?? 0
+        let real = showsPicture && image?.cgImage != nil && shownDisplayKey != nil
+            && shownDisplayKey == activeDisplayKey && shownDisplayKey?.isCurrentContent == true
+        return .init(assetID: asset.id,
+            rect: [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)],
+            bitmapPixels: [width, height], requestedPixels: Int(targetPixelSize.rounded(.up)),
+            realBitmap: real, adequatePixels: min(width, height) >= Int(targetPixelSize.rounded(.up)),
+            sourceRevision: shownDisplayKey?.sourceRevision ?? activeDisplayKey?.sourceRevision ?? "",
+            contentGeneration: shownDisplayKey?.contentGeneration ?? "")
+    }
+    #endif
 
     /// a fade only earns its place over a flat placeholder, while the grid is
     /// slow enough for fades to read, and when the load was not instant.
@@ -635,14 +785,17 @@ final class TimelineTileView: UIView {
     ) {
         begin(key: key, generation: generation)
         thumbnailState = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
-        if let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize),
-           min(cached.size.width, cached.size.height) * cached.scale >= targetPixelSize {
+        if let cached = ImageLoader.shared.cachedSurface(for: url, targetPixelSize: targetPixelSize),
+           min(cached.image.size.width, cached.image.size.height) * cached.image.scale >= targetPixelSize {
             _ = thumbnailState.remoteResult(pixels: Double(targetPixelSize), isPreview: true)
-            show(cached, key: key, fading: false)
+            show(cached.image, key: key, fading: false, binding: requestBinding, localProvenance: cached.localProvenance)
             return
         }
         imageView.image = placeholder
+        visibleLocalIdentifier = placeholder == nil ? nil : projectionSource?.localIdentifier
+        visibleLocalRevision = nil
         showsPicture = placeholder != nil
+        if placeholder != nil { shownDisplayKey = activeDisplayKey }
         startRemote(url, previewURL: previewURL, key: key)
         guard motion?.isFast != true, let thumbhash, placeholder == nil else { return }
         placeholderTask = Task { [weak self] in
@@ -660,6 +813,7 @@ final class TimelineTileView: UIView {
         guard remoteTask == nil else { return }
         let size = targetPixelSize
         let ratio = asset?.ratio ?? 1
+        let binding = requestBinding
         remoteTask = Task { [weak self] in
             let start = ContinuousClock.now
             do {
@@ -669,10 +823,11 @@ final class TimelineTileView: UIView {
                     guard let self, self.loadKey == key, self.loadedKey != key else { return }
                     self.imageView.image = image
                     self.showsPicture = true
+                    self.shownDisplayKey = binding?.key
                 }
                 guard !Task.isCancelled, let self, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
                 _ = self.thumbnailState.remoteResult(pixels: Double(size), isPreview: true)
-                self.show(loaded, key: key, fading: self.fades(since: start))
+                self.show(loaded, key: key, fading: self.fades(since: start), binding: binding)
                 self.deadlineTask?.cancel()
                 self.loadTask?.cancel()
             } catch {
@@ -688,7 +843,7 @@ final class TimelineTileView: UIView {
         key: String,
         generation: Int,
         allowsNetwork: Bool,
-        placeholder: UIImage?,
+        placeholder: (image: UIImage, localProvenance: LocalSurfaceProvenance?)?,
         cacheScope: String,
         remoteURL: URL?,
         previewURL: URL?
@@ -697,17 +852,35 @@ final class TimelineTileView: UIView {
         thumbnailState = ThumbnailLoadState(hasLocal: true, hasRemote: remoteURL != nil, targetPixels: Double(targetPixelSize))
         accessibilityValue = String(localized: "Loading")
         let size = targetPixelSize
-        if let cached = LocalImageLoader.shared.cachedImage(
-            localIdentifier: localIdentifier, targetPixelSize: size,
-            contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
-            cacheScope: cacheScope
-        ) {
-            show(cached, key: key, fading: false)
-            return
+        let binding = requestBinding
+        if let binding, asset?.localIdentifier == localIdentifier {
+            // A prepared final may outlive its optional preview in the smaller
+            // preview cache. Bind the exact final now, under current access and
+            // the actual PhotoKit revision, rather than awaiting a new delivery.
+            guard let revision = LocalImageLoader.currentModificationRevision(localIdentifier),
+                  binding.key.sourceRevision == revision else {
+                imageView.image = nil; showsPicture = false; shownDisplayKey = nil
+                boundSurface = nil; boundSurfaceID = nil
+                visibleLocalIdentifier = nil; visibleLocalRevision = nil
+                _ = thumbnailState.localUnavailable()
+                updateThumbnailStatus()
+                return
+            }
+            if let final = LocalImageLoader.shared.cachedImage(localIdentifier: localIdentifier, targetPixelSize: size,
+                contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope) {
+                _ = thumbnailState.localFinal(pixels: Double(size), originalPixels: Double(size))
+                show(final, key: key, fading: false, binding: binding,
+                    localProvenance: .init(localIdentifier: localIdentifier, modificationRevision: revision, remoteIdentifier: nil))
+                return
+            }
         }
-        let shown = placeholder ?? LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier, cacheScope: cacheScope)
+        let shown = placeholder?.image ?? LocalImageLoader.shared.cachedPreview(localIdentifier: localIdentifier, cacheScope: cacheScope)
         imageView.image = shown
+        visibleLocalIdentifier = placeholder == nil && shown != nil ? localIdentifier : placeholder?.localProvenance?.localIdentifier
+        visibleLocalRevision = placeholder?.localProvenance?.modificationRevision
         showsPicture = shown != nil
+        if shown != nil { shownDisplayKey = activeDisplayKey }
+        if let placeholder { show(placeholder.image, key: key, fading: false, binding: binding, localProvenance: placeholder.localProvenance) }
         deadlineTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, let self, self.loadKey == key else { return }
@@ -719,13 +892,53 @@ final class TimelineTileView: UIView {
         }
         loadTask = Task { [weak self] in
             let start = ContinuousClock.now
+            let revision = await Task.detached(priority: .userInitiated, operation: {
+                LocalImageLoader.currentModificationRevision(localIdentifier)
+            }).value
+            guard let self, self.loadKey == key, let binding else { return }
+            guard binding.access == self.projectionClient.map(MediaPresentationCoordinator.access(for:)) else {
+                self.reprojectAfterAccessChange(binding: binding, key: key)
+                return
+            }
+            guard let revision else {
+                self.applyLocalAccessRevision(nil)
+                if let remoteURL, let previewURL {
+                    self.unavailableLocalIdentifier = localIdentifier
+                    self.unavailableGeneration = generation
+                    // Clearing private pixels revokes their surface, while
+                    // the captured current remote request may still proceed.
+                    self.loadKey = key
+                    self.startRemote(remoteURL, previewURL: previewURL, key: key)
+                }
+                return
+            }
+            let provenance = LocalSurfaceProvenance(localIdentifier: localIdentifier, modificationRevision: revision,
+                remoteIdentifier: self.asset?.localIdentifier == nil ? self.asset?.id : nil)
+            if let backup = self.session?.backup, provenance.remoteIdentifier != nil,
+               !(await backup.validatesLaunchSurface(provenance)) {
+                self.unavailableLocalIdentifier = localIdentifier
+                self.unavailableGeneration = generation
+                if let remoteURL, let previewURL { self.startRemote(remoteURL, previewURL: previewURL, key: key) }
+                return
+            }
+            guard binding.access == self.projectionClient.map(MediaPresentationCoordinator.access(for:)) else {
+                self.reprojectAfterAccessChange(binding: binding, key: key)
+                return
+            }
+            if let cached = LocalImageLoader.shared.cachedImage(localIdentifier: localIdentifier, targetPixelSize: size,
+                contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope) {
+                _ = self.thumbnailState.localFinal(pixels: Double(size), originalPixels: Double(size))
+                self.show(cached, key: key, fading: false, binding: binding, localProvenance: provenance)
+                self.deadlineTask?.cancel()
+                return
+            }
             let deliveries = LocalImageLoader.shared.deliveries(
                 localIdentifier: localIdentifier, targetPixelSize: size,
                 contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
                 allowsNetwork: allowsNetwork, cacheScope: cacheScope
             )
             for await delivery in deliveries {
-                guard !Task.isCancelled, let self, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
+                guard !Task.isCancelled, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
                 switch delivery {
                 case .terminal(let outcome):
                     guard outcome.shouldTryAlternateSource else { continue }
@@ -737,18 +950,23 @@ final class TimelineTileView: UIView {
                     self.thumbnailState.localPreview()
                     if placeholder == nil, self.loadedKey != key {
                         self.imageView.image = image
+                        self.visibleLocalIdentifier = localIdentifier
+                        self.visibleLocalRevision = revision
                         self.showsPicture = true
+                        self.shownDisplayKey = binding.key
                     }
                 case .final(let image):
                     // LocalImageLoader validates dimensions against the
                     // target and the original before emitting a final image.
                     _ = self.thumbnailState.localFinal(pixels: Double(size), originalPixels: Double(size))
-                    self.show(image, key: key, fading: self.fades(since: start))
+                    guard LocalImageLoader.currentModificationRevision(localIdentifier) == revision else { return }
+                    self.show(image, key: key, fading: self.fades(since: start), binding: binding, localProvenance: provenance)
                     self.remoteTask?.cancel()
                     self.deadlineTask?.cancel()
                 }
                 self.updateThumbnailStatus()
             }
+            self.reprojectAfterAccessChange(binding: binding, key: key)
         }
     }
 

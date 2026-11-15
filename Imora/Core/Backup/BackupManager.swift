@@ -1,3 +1,4 @@
+import Synchronization
 import Foundation
 import Observation
 import Photos
@@ -288,6 +289,8 @@ final class BackupManager {
     }
 
     private func reconcile(_ request: BackupReconcileRequest) async {
+        await cachedLaunchHandle?.waitUntilReleased()
+        guard !Task.isCancelled else { return }
         guard !isShutDown, PhotoLibraryService.hasFullAccess, !requiresExplicitResume,
               networkStatusKnown, conditionsAllowWork else { return }
         do {
@@ -1200,6 +1203,8 @@ final class BackupManager {
         localChangedTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
             guard let self, !Task.isCancelled else { return }
+            await self.cachedLaunchHandle?.waitUntilReleased()
+            guard !Task.isCancelled else { return }
             self.localChangedTask = nil
             await self.refreshLocalSnapshots()
         }
@@ -1225,6 +1230,16 @@ final class BackupManager {
             if repeatedFailureLedger.entries.count != before { saveRepeatedFailures() }
         }
         backedUpRemoteIds = snapshot.backedUpRemoteIds
+        let replacedRenderings = localIdentifierByRemoteId.compactMap { remote, local in
+            snapshot.renderableLocalByRemote[remote] == local ? nil : remote
+        }
+        if !replacedRenderings.isEmpty {
+            if let failure = ImageLoader.shared.invalidateSubjects(client: client,
+                subjects: replacedRenderings.map { .remoteAsset($0) }, retiresSourceRevisions: false) {
+                MediaCacheRecovery.handle(client: client, failure: failure)
+            }
+            MediaPresentationCoordinator.shared.cancelCheckpoint()
+        }
         pairedLocalIdentifierByRemoteId = snapshot.localByRemote
         remoteIdentifierByLocalId = snapshot.remoteByLocal
         localIdentifierByRemoteId = snapshot.renderableLocalByRemote
@@ -1321,9 +1336,61 @@ final class BackupManager {
         }
     }
 
+    @ObservationIgnored weak var cachedLaunchHandle: CachedLaunchHandle?
+
+    /// Capture only immutable account identity and the existing index actor.
+    /// Its W0 proof load can overlap scene construction without a PhotoKit scan.
+    func launchSurfaceValidator() -> (prepare: @Sendable () async -> Bool,
+        validate: LocalSurfaceValidator, validateRemote: RemoteLaunchSurfaceValidator, isCurrent: @Sendable () -> Bool) {
+        let index = index, client = client, account = userId
+        let evidence = LaunchIndexEvidence()
+        let isCurrent: @Sendable () -> Bool = {
+            client.context.isActive && client.mediaDisplayScope.accountID == account
+                && evidence.version.withLock { $0 != nil && $0 == index.evidenceVersion }
+        }
+        let prepare: @Sendable () async -> Bool = {
+            guard client.context.isActive, let account, client.mediaDisplayScope.accountID == account,
+                  await index.load(serverHost: client.serverKey, userId: account, generation: client.context.id) else { return false }
+            evidence.version.withLock { $0 = index.evidenceVersion }
+            #if DEBUG || PHASE4_PERFORMANCE
+            LaunchPipelineTrace.mark("local-pair-index-ready")
+            #endif
+            return isCurrent()
+        }
+        let validator: LocalSurfaceValidator = { provenance in
+            guard isCurrent(), let account else { return false }
+            let valid = await index.matchesLaunchPair(provenance, server: client.serverKey, account: account)
+            return valid && isCurrent()
+        }
+        let remoteValidator: RemoteLaunchSurfaceValidator = { asset in
+            guard isCurrent(), let account else { return false }
+            if asset.isEdited == true { return true }
+            let valid = await index.permitsRemoteLaunchSurface(remoteID: asset.id, server: client.serverKey, account: account)
+            return valid && isCurrent()
+        }
+        return (prepare, validator, remoteValidator, isCurrent)
+    }
+
+    func adoptLaunchSelections(_ provenance: [LocalSurfaceProvenance]) {
+        for value in provenance {
+            if let remote = value.remoteIdentifier, localIdentifierByRemoteId[remote] != value.localIdentifier {
+                localIdentifierByRemoteId[remote] = value.localIdentifier
+            }
+        }
+    }
+
+    func validatesLaunchSurface(_ provenance: LocalSurfaceProvenance) async -> Bool {
+        guard !isShutDown, client.context.isActive, let account = client.mediaDisplayScope.accountID,
+              account == userId else { return false }
+        let result = await index.matchesLaunchPair(provenance, server: client.serverKey, account: account)
+        return result && !isShutDown && client.context.isActive
+    }
+
     /// loads the index for the signed-in account so badges and the merged
     /// timeline are right from the first frame.
     func primeLocalState() async {
+        await cachedLaunchHandle?.waitUntilReleased()
+        guard !Task.isCancelled, !isShutDown else { return }
         guard let userId else { return }
         guard await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { return }
         await refreshLocalSnapshots()
@@ -2926,4 +2993,8 @@ private extension Array {
     nonisolated func chunks(of size: Int) -> [[Element]] {
         stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
     }
+}
+
+private nonisolated final class LaunchIndexEvidence: Sendable {
+    let version = Mutex<UInt64?>(nil)
 }

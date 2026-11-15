@@ -3,6 +3,12 @@ import Nuke
 import Synchronization
 import UIKit
 
+private nonisolated struct MediaRequestBinding: Sendable {
+    static let userInfoKey = ImageRequest.UserInfoKey("imora.contentBinding")
+    let key: MediaDisplayKeyV1
+    var isCurrent: Bool { key.isCurrentContent }
+}
+
 /// downloads and caches asset thumbnails on top of a nuke pipeline. beyond the
 /// memory and disk caches, the library brings request coalescing, a rate
 /// limiter tuned for fast scrolling, resumable downloads and the prefetcher
@@ -12,6 +18,7 @@ nonisolated final class ImageLoader: Sendable {
 
     private let pipeline: ImagePipeline
     private let visibleTasks = Mutex<[UUID: ImageTask]>([:])
+    private let observedRequests = Mutex<[String: ImageRequest]>([:])
     private let authorization = AuthorizingDelegate()
     private let prefetcher: ImagePrefetcher
     /// fills the disk cache only. a fling usually races past what sits far
@@ -49,65 +56,174 @@ nonisolated final class ImageLoader: Sendable {
 
     /// call after login so image requests carry the token.
     func configure(client: ImoraClient?) {
+        if client != nil { try? MediaContentGenerations.shared.ensureInitialized() }
         authorization.client.withLock { $0 = nil }
         sweepTask.withLock { current in current?.cancel(); current = nil }
         prefetcher.stopPrefetching()
         diskPrefetcher.stopPrefetching()
         visibleTasks.withLock { tasks in tasks.values.forEach { $0.cancel() }; tasks.removeAll() }
         authorization.networkTasks.withLock { tasks in
-            tasks.values.forEach { $0.cancel() }; tasks.removeAll()
+            tasks.values.forEach { $0.task.cancel() }; tasks.removeAll()
         }
         // Pinned Nuke removeAll() clears disk too. Content is scoped below;
         // rotating runtime authorization retires tasks and memory, not valid bytes.
         pipeline.cache.removeAll(caches: [.memory])
         authorization.ephemeralAssetIDs.withLock { $0.removeAll() }
         authorization.client.withLock { $0 = client }
+        observedRequests.withLock { $0.removeAll() }
     }
 
     /// keeps these assets' bytes out of the disk cache from now on. the
     /// locked folder registers its assets so the pin protects them at rest.
-    func markEphemeral(assetIDs: [String]) {
-        authorization.ephemeralAssetIDs.withLock { $0.formUnion(assetIDs) }
+    @MainActor func markEphemeral(assetIDs: [String]) {
+        let newlyLocked = authorization.ephemeralAssetIDs.withLock { ids in
+            let added = Set(assetIDs).subtracting(ids); ids.formUnion(assetIDs); return added
+        }
+        if !newlyLocked.isEmpty, let client = authorization.client.withLock({ $0 }) {
+            if let failure = invalidateSubjects(client: client, subjects: newlyLocked.map { .remoteAsset($0) }) {
+                MediaCacheRecovery.handle(client: client, failure: failure)
+            }
+        }
     }
 
     func requestKey(for url: URL, targetPixelSize: CGFloat) -> String {
-        "\(url.absoluteString)#\(Self.normalizedPixelSize(targetPixelSize, for: url))"
+        let generation = binding(for: url, pixels: targetPixelSize)?.key.contentGeneration ?? ""
+        return "\(url.absoluteString)#\(Self.normalizedPixelSize(targetPixelSize, for: url))#\(generation)"
     }
 
     func cachedImage(for url: URL, targetPixelSize: CGFloat) -> UIImage? {
+        cachedSurface(for: url, targetPixelSize: targetPixelSize)?.image
+    }
+
+    func cachedSurface(for url: URL, targetPixelSize: CGFloat) -> (image: UIImage, localProvenance: LocalSurfaceProvenance?)? {
         guard let client = authorization.client.withLock({ $0 }),
               (try? client.authorizedRequest(url: url)) != nil else { return nil }
-        return pipeline.cache[request(for: url, targetPixelSize: targetPixelSize)]?.image
+        let request = request(for: url, targetPixelSize: targetPixelSize)
+        guard Self.isCurrent(request) else { return nil }
+        let container = pipeline.cache[request]
+        if let provenance = container?.userInfo["imora.local-provenance"] as? LocalSurfaceProvenance {
+            guard container?.userInfo["imora.local-permission"] as? Int == LocalImageLoader.shared.permissionGeneration,
+                  LocalImageLoader.currentModificationRevision(provenance.localIdentifier) == provenance.modificationRevision else {
+                pipeline.cache[request] = nil
+                return nil
+            }
+        }
+        guard let container else { return nil }
+        guard client.context.isActive, authorization.client.withLock({ $0 === client }), Self.isCurrent(request) else { return nil }
+        return (container.image, container.userInfo["imora.local-provenance"] as? LocalSurfaceProvenance)
     }
 
     @concurrent
     func diskImage(for url: URL, targetPixelSize: CGFloat) async -> UIImage? {
         guard let client = authorization.client.withLock({ $0 }),
               (try? client.authorizedRequest(url: url)) != nil else { return nil }
-        let image = pipeline.cache.cachedImage(for: request(for: url, targetPixelSize: targetPixelSize), caches: [.disk])?.image
-        guard client.context.isActive, authorization.client.withLock({ $0 === client }), !Task.isCancelled else { return nil }
+        let request = request(for: url, targetPixelSize: targetPixelSize)
+        guard Self.isCurrent(request) else { return nil }
+        // storeOriginalData persists endpoint bytes without thumbnail options.
+        // Match TaskLoadImage's fallback, while decoding with the original
+        // sized request and its captured authorization/content binding.
+        var original = request
+        original.thumbnail = nil
+        original.processors = []
+        guard let data = pipeline.cache.cachedData(for: request) ?? pipeline.cache.cachedData(for: original) else { return nil }
+        let context = ImageDecodingContext(request: request, data: data, cacheType: .disk)
+        let image = try? pipeline.configuration.makeImageDecoder(context)?.decode(data).image
+        guard client.context.isActive, authorization.client.withLock({ $0 === client }), !Task.isCancelled, Self.isCurrent(request) else { return nil }
         return image
     }
 
-    func installPrepared(_ image: UIImage, url: URL, targetPixelSize: CGFloat, client: ImoraClient) {
+    func installPrepared(_ image: UIImage, url: URL, targetPixelSize: CGFloat, client: ImoraClient,
+                         localProvenance: LocalSurfaceProvenance? = nil) {
         guard authorization.client.withLock({ $0 === client }),
               (try? client.authorizedRequest(url: url)) != nil else { return }
-        pipeline.cache[request(for: url, targetPixelSize: targetPixelSize)] = ImageContainer(image: image)
+        let request = request(for: url, targetPixelSize: targetPixelSize)
+        guard Self.isCurrent(request) else { return }
+        var container = ImageContainer(image: image)
+        if let localProvenance {
+            guard LocalImageLoader.currentModificationRevision(localProvenance.localIdentifier) == localProvenance.modificationRevision else { return }
+            container.userInfo["imora.local-provenance"] = localProvenance
+            container.userInfo["imora.local-permission"] = LocalImageLoader.shared.permissionGeneration
+        }
+        pipeline.cache[request] = container
     }
 
-    func invalidate(asset: Asset, client: ImoraClient) {
-        for size in ["thumbnail", "preview"] {
-            let url = client.thumbnailURL(assetID: asset.id, size: size, cacheKey: asset.thumbhash)
-            for pixels in [CGFloat(512), CGFloat(1024)] {
-                pipeline.cache.removeCachedImage(for: request(for: url, targetPixelSize: pixels))
+    func cachedGridImage(thumbnailURL: URL, previewURL: URL, targetPixelSize: CGFloat, aspectRatio: Double) -> UIImage? {
+        cachedGridSurface(thumbnailURL: thumbnailURL, previewURL: previewURL, targetPixelSize: targetPixelSize, aspectRatio: aspectRatio)?.image
+    }
+
+    func cachedGridSurface(thumbnailURL: URL, previewURL: URL, targetPixelSize: CGFloat, aspectRatio: Double)
+        -> (image: UIImage, localProvenance: LocalSurfaceProvenance?)? {
+        if let surface = cachedSurface(for: thumbnailURL, targetPixelSize: targetPixelSize),
+           min(surface.image.size.width, surface.image.size.height) * surface.image.scale >= targetPixelSize { return surface }
+        let ratio = max(0.01, aspectRatio)
+        guard let surface = cachedSurface(for: previewURL, targetPixelSize: targetPixelSize * max(ratio, 1 / ratio)),
+              min(surface.image.size.width, surface.image.size.height) * surface.image.scale >= targetPixelSize else { return nil }
+        return surface
+    }
+
+    @MainActor func invalidate(asset: Asset, client: ImoraClient) {
+        let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 1)
+        if let failure = invalidateSubjects(client: client, subjects: [key.subject], keys: [key]) {
+            MediaCacheRecovery.handle(client: client, failure: failure)
+        }
+    }
+
+    /// A durable generation retires every size, revision and late callback,
+    /// including variants not retained in the bounded observed-request index.
+    @discardableResult
+    func invalidateSubjects(client: ImoraClient, subjects: [MediaDisplayKeyV1.Subject]?, keys: [MediaDisplayKeyV1] = [],
+                            retiresSourceRevisions: Bool = true) -> MediaContentGenerations.RetirementFailure? {
+        var persistenceFailure: MediaContentGenerations.RetirementFailure?
+        let scope = client.mediaDisplayScope
+        let observed = observedRequests.withLock { requests in
+            let matching = requests.filter { _, request in
+                guard let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding else { return false }
+                return binding.key.scope == scope && (subjects == nil || subjects!.contains(binding.key.subject))
+            }
+            matching.keys.forEach { requests[$0] = nil }
+            return Array(matching.values)
+        }
+        let knownKeys = observed.compactMap { ($0.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.key }
+        do { try MediaContentGenerations.shared.retire(scope: scope, subjects: subjects,
+            keys: retiresSourceRevisions ? keys + knownKeys : []) }
+        catch {
+            // A failed retirement cannot leave the previous namespace usable.
+            // Purge derivative layers only, and retire this runtime authorization.
+            pipeline.cache.removeAll(); dataCache?.flush()
+            persistenceFailure = error as? MediaContentGenerations.RetirementFailure ?? .init(journalRemovalSucceeded: false)
+            let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+            if let bytes = try? encoder.encode(scope) {
+                try? FileManager.default.removeItem(at: LaunchPreviewStore.rootDirectory.appending(path: MediaDisplayKeyV1.digest(bytes)))
             }
         }
+        for request in observed { pipeline.cache.removeCachedImage(for: request) }
+        visibleTasks.withLock { tasks in
+            for task in tasks.values {
+                guard let binding = task.request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding,
+                      binding.key.scope == scope, subjects == nil || subjects!.contains(binding.key.subject) else { continue }
+                task.cancel()
+            }
+        }
+        authorization.networkTasks.withLock { tasks in
+            for entry in tasks.values where entry.binding?.key.scope == scope
+                && (subjects == nil || entry.binding.map { subjects!.contains($0.key.subject) } == true) { entry.task.cancel() }
+        }
+        prefetcher.stopPrefetching(); diskPrefetcher.stopPrefetching()
+        sweepTask.withLock { task in task?.cancel(); task = nil }
+        return persistenceFailure
     }
 
     func image(for url: URL, targetPixelSize: CGFloat) async throws -> UIImage {
         guard let client = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
         _ = try client.authorizedRequest(url: url)
         var request = request(for: url, targetPixelSize: targetPixelSize)
+        guard Self.isCurrent(request) else { throw CancellationError() }
+        // A raw remote-result API must not strip the proof attached to a
+        // restored local-derived alias. Such aliases use cachedSurface;
+        // ordinary pipeline results come from real endpoint bytes.
+        if pipeline.cache[request]?.userInfo["imora.local-provenance"] != nil {
+            request.options.insert(.disableMemoryCacheReads)
+        }
         migrateCredentialData(to: request, client: client)
         // a tile on screen beats every prefetch and sweep request queued
         // ahead of it; those run low and very low.
@@ -117,9 +233,16 @@ nonisolated final class ImageLoader: Sendable {
         visibleTasks.withLock { $0[id] = task }
         defer { visibleTasks.withLock { _ = $0.removeValue(forKey: id) } }
         return try await withTaskCancellationHandler {
-            let image = try await task.image
-            guard client.context.isActive, authorization.client.withLock({ $0 === client }) else { throw ServerTrustError.sessionExpired }
-            return image
+            let response = try await task.response
+            guard client.context.isActive, authorization.client.withLock({ $0 === client }), Self.isCurrent(request) else { throw ServerTrustError.sessionExpired }
+            if let provenance = response.container.userInfo["imora.local-provenance"] as? LocalSurfaceProvenance {
+                guard response.container.userInfo["imora.local-permission"] as? Int == LocalImageLoader.shared.permissionGeneration,
+                      LocalImageLoader.currentModificationRevision(provenance.localIdentifier) == provenance.modificationRevision else {
+                    pipeline.cache[request] = nil
+                    throw CancellationError()
+                }
+            }
+            return response.image
         } onCancel: { task.cancel() }
     }
 
@@ -133,6 +256,7 @@ nonisolated final class ImageLoader: Sendable {
         onPreview: @escaping @MainActor @Sendable (UIImage) -> Void = { _ in }
     ) async throws -> UIImage {
         guard let initialClient = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
+        guard let initialKey = binding(for: thumbnailURL, pixels: targetPixelSize)?.key, initialKey.isCurrentContent else { throw CancellationError() }
         var state = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
         let ratio = max(0.01, aspectRatio)
         for (url, isPreview) in [(thumbnailURL, false), (previewURL, true)] {
@@ -141,11 +265,29 @@ nonisolated final class ImageLoader: Sendable {
                 throw ServerTrustError.sessionExpired
             }
             let size = isPreview ? targetPixelSize * max(ratio, 1 / ratio) : targetPixelSize
+            guard let requested = binding(for: url, pixels: size)?.key,
+                  requested.scope == initialKey.scope, requested.subject == initialKey.subject,
+                  requested.sourceRevision == initialKey.sourceRevision,
+                  requested.presentationRevision == initialKey.presentationRevision,
+                  requested.contentGeneration == initialKey.contentGeneration else { throw CancellationError() }
             do {
                 let loaded = try await image(for: url, targetPixelSize: size)
                 try Task.checkCancellation()
                 let pixels = Double(min(loaded.size.width, loaded.size.height) * loaded.scale)
-                if state.remoteResult(pixels: pixels, isPreview: isPreview) == .finished { return loaded }
+                if state.remoteResult(pixels: pixels, isPreview: isPreview) == .finished {
+                    guard initialKey.isCurrentContent else { throw CancellationError() }
+                    if isPreview, pixels >= Double(targetPixelSize) {
+                        // The same committed asset's adequate decoded preview
+                        // also fulfils the grid demand. Do not cache 333×250 raw
+                        // thumbnail bytes as though they covered a416px tile.
+                        let gridRequest = request(for: thumbnailURL, targetPixelSize: targetPixelSize)
+                        guard let binding = gridRequest.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding,
+                              binding.key.contentGeneration == initialKey.contentGeneration, binding.isCurrent else { throw CancellationError() }
+                        pipeline.cache[gridRequest] = ImageContainer(image: loaded)
+                    }
+                    guard initialKey.isCurrentContent else { throw CancellationError() }
+                    return loaded
+                }
                 await onPreview(loaded)
             } catch {
                 try Task.checkCancellation()
@@ -267,6 +409,9 @@ nonisolated final class ImageLoader: Sendable {
               let url = request.url, url.lastPathComponent == "thumbnail",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.queryItems?.contains(where: { $0.name == "c" && $0.value?.isEmpty == false }) == true,
+              let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding,
+              binding.isCurrent,
+              MediaContentGenerations.shared.canMigrateLegacy(scope: binding.key.scope, subject: binding.key.subject),
               !pipeline.cache.containsData(for: request) else { return }
         var legacy = request
         legacy.imageID = Self.contentID(scope: .credential(credential, server: client.serverKey), components: components)
@@ -283,21 +428,43 @@ nonisolated final class ImageLoader: Sendable {
         return "media-v1|\(MediaDisplayKeyV1.digest(encoded))|\(components.percentEncodedPath)|\(components.percentEncodedQuery ?? "")"
     }
 
+    private static func isCurrent(_ request: ImageRequest) -> Bool {
+        (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent ?? true
+    }
+
+    private func binding(for url: URL, pixels: CGFloat) -> MediaRequestBinding? {
+        guard let client = authorization.client.withLock({ $0 }),
+              (try? client.authorizedRequest(url: url)) != nil,
+              let index = url.pathComponents.firstIndex(of: "assets"), url.pathComponents.indices.contains(index + 1) else { return nil }
+        let revision = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "c" }?.value ?? ""
+        return .init(key: .init(scope: client.mediaDisplayScope, subject: .remoteAsset(url.pathComponents[index + 1]),
+            sourceRevision: revision, presentationRevision: "committed:\(revision)", variant: .grid,
+            pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover", orientationRevision: "source", colorProfile: "source"))
+    }
+
     /// decoding straight to a thumbnail keeps memory flat while scrolling -
     /// the full-size bitmap never exists.
     private func request(for url: URL, targetPixelSize: CGFloat) -> ImageRequest {
         var request = ImageRequest(url: url)
+        let binding = binding(for: url, pixels: targetPixelSize)
         if let client = authorization.client.withLock({ $0 }),
            (try? client.authorizedRequest(url: url)) != nil {
             if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                 // Trust policy validates host/context first. Only then may a LAN/WAN
                 // route share content; query preserves edited/size/revision semantics.
-                request.imageID = Self.contentID(scope: client.mediaDisplayScope, components: components)
+                if let key = Self.contentID(scope: client.mediaDisplayScope, components: components) {
+                    request.imageID = key + "|generation:\(binding?.key.contentGeneration ?? "")"
+                }
             }
         }
         let maxPixelSize = Self.normalizedPixelSize(targetPixelSize, for: url)
         request.thumbnail = ImageRequest.ThumbnailOptions(maxPixelSize: Float(maxPixelSize))
         request.userInfo[FittingThumbnailDecoder.maxPixelSizeKey] = maxPixelSize
+        if let binding { request.userInfo[MediaRequestBinding.userInfoKey] = binding }
+        observedRequests.withLock { requests in
+            if requests.count >= 2048, let oldest = requests.keys.first { requests[oldest] = nil }
+            requests["\(request.imageID ?? url.absoluteString)|\(maxPixelSize)"] = request
+        }
         return request
     }
 
@@ -374,17 +541,20 @@ private final class FittingThumbnailDecoder: ImageDecoding, @unchecked Sendable 
 private final class AuthorizingDelegate: ImagePipeline.Delegate {
     let client = Mutex<ImoraClient?>(nil)
     let ephemeralAssetIDs = Mutex<Set<String>>([])
-    let networkTasks = Mutex<[UUID: Task<Void, Never>]>([:])
+    struct Transfer: Sendable { let task: Task<Void, Never>; let binding: MediaRequestBinding? }
+    let networkTasks = Mutex<[UUID: Transfer]>([:])
 
     nonisolated func dataLoader(for request: ImageRequest, pipeline: ImagePipeline) -> any DataLoading {
-        AccountImageDataLoader(client: client.withLock { $0 }, owner: self)
+        AccountImageDataLoader(client: client.withLock { $0 }, owner: self,
+            binding: request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)
     }
 
     /// nuke asks before every disk read and write; nil keeps a locked asset
     /// memory only.
     nonisolated func dataCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any DataCaching)? {
         guard let url = request.url, let client = client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+              (try? client.authorizedRequest(url: url)) != nil,
+              (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { return nil }
         if let id = Self.assetID(in: request.url), ephemeralAssetIDs.withLock({ $0.contains(id) }) {
             return nil
         }
@@ -393,7 +563,8 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
 
     nonisolated func imageCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any ImageCaching)? {
         guard let url = request.url, let client = client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+              (try? client.authorizedRequest(url: url)) != nil,
+              (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { return nil }
         return pipeline.configuration.imageCache
     }
 
@@ -412,6 +583,7 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
         urlRequest: URLRequest,
         pipeline: ImagePipeline
     ) async throws -> URLRequest {
+        guard (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { throw CancellationError() }
         var urlRequest = urlRequest
         urlRequest.url = urlRequest.url.map(ServerRoute.resolve)
         guard let client = client.withLock({ $0 }), let url = urlRequest.url else { throw ServerTrustError.sessionExpired }
@@ -433,17 +605,21 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
 private nonisolated final class AccountImageDataLoader: DataLoading {
     let client: ImoraClient?
     let owner: AuthorizingDelegate
-    init(client: ImoraClient?, owner: AuthorizingDelegate) { self.client = client; self.owner = owner }
+    let binding: MediaRequestBinding?
+    init(client: ImoraClient?, owner: AuthorizingDelegate, binding: MediaRequestBinding?) {
+        self.client = client; self.owner = owner; self.binding = binding
+    }
 
     func loadData(with request: URLRequest, didReceiveData: @escaping @Sendable (Data, URLResponse) -> Void,
                   completion: @escaping @Sendable (Error?) -> Void) -> any Cancellable {
-        let id = UUID(), owner = owner, client = client
+        let id = UUID(), owner = owner, client = client, binding = binding
         let task = owner.networkTasks.withLock { values in
             let task = Task {
                 defer { owner.networkTasks.withLock { _ = $0.removeValue(forKey: id) } }
                 do {
                     try Task.checkCancellation()
                     guard let client, owner.client.withLock({ $0 === client }),
+                          binding?.isCurrent != false,
                           request.value(forHTTPHeaderField: "Authorization") == "Bearer \(client.accessToken)" else {
                         throw ServerTrustError.sessionExpired
                     }
@@ -451,12 +627,12 @@ private nonisolated final class AccountImageDataLoader: DataLoading {
                     defer { Task { await ThumbnailLoadLimiter.shared.release(permit) } }
                     try Task.checkCancellation()
                     let (data, response) = try await client.imageData(for: request)
-                    guard owner.client.withLock({ $0 === client }) else { throw ServerTrustError.sessionExpired }
+                    guard owner.client.withLock({ $0 === client }), binding?.isCurrent != false else { throw ServerTrustError.sessionExpired }
                     didReceiveData(data, response)
                     completion(nil)
                 } catch { completion(error) }
             }
-            values[id] = task
+            values[id] = .init(task: task, binding: binding)
             return task
         }
         return ImageTransfer(task: task)

@@ -635,6 +635,22 @@ actor BackupIndex {
         return remoteToLocal.filter { !editedRemoteIds.contains($0.key) }
     }
 
+    /// Reads only this already loaded account and one captured render pairing.
+    /// This is display evidence, never backup/cleanup authority.
+    func matchesLaunchPair(_ provenance: LocalSurfaceProvenance, server: String, account: String) -> Bool {
+        guard loaded, serverHost == server, userId == account,
+              let remote = provenance.remoteIdentifier, !editedRemoteIds.contains(remote),
+              remoteToLocal[remote] == provenance.localIdentifier,
+              let entry = entries[provenance.localIdentifier], !entry.isUploadBlockedByRemoteRemoval,
+              let modified = entry.modificationDate else { return false }
+        return String(modified.timeIntervalSinceReferenceDate.bitPattern) == provenance.modificationRevision
+    }
+
+    func permitsRemoteLaunchSurface(remoteID: String, server: String, account: String) -> Bool {
+        guard loaded, serverHost == server, userId == account else { return false }
+        return remoteToLocal[remoteID] == nil || editedRemoteIds.contains(remoteID)
+    }
+
     /// server-side edit landed: the device copy still exists and still has to
     /// be deleted along with the server one, it just no longer looks like it.
     /// returns true when this is news, so the caller can refresh and save.

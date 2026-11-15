@@ -35,6 +35,8 @@ final class SessionStore {
     var showsTags: Bool {
         capabilities.supportsTags && preferences?.tagsEnabled != false
     }
+    @ObservationIgnored private let launchProtection = LaunchProtectionGate()
+    @ObservationIgnored private(set) var cachedLaunchHandle: CachedLaunchHandle?
     private(set) var backup: BackupManager?
     private(set) var favorites: PhotoFavoriteCoordinator?
     private(set) var realtime: RealtimeHub?
@@ -75,6 +77,9 @@ final class SessionStore {
     /// server confirms them in the background. an expired token only shows
     /// once the refresh comes back 401.
     init() {
+        #if DEBUG || PHASE4_PERFORMANCE
+        LaunchPipelineTrace.mark("session-store-init")
+        #endif
         loginNotice = UserDefaults.standard.string(forKey: Self.loginNoticeDefaultsKey)
         profileImageCacheKey = UserDefaults.standard.string(
             forKey: Self.profileImageCacheKeyDefaultsKey
@@ -128,7 +133,13 @@ final class SessionStore {
         }
         serverVersion = serverIdentity == nil ? nil : cached?.serverVersion
         preferences = cached?.preferences
-        adopt(client: ImoraClient(apiURL: apiURL, accessToken: token), user: cached?.user)
+        let restoredClient = ImoraClient(apiURL: apiURL, accessToken: token)
+        guard prepareMediaRecoveryNamespace(restoredClient) else {
+            restoredClient.invalidate()
+            state = UIApplication.shared.isProtectedDataAvailable ? .loggedOut : .restoring
+            return
+        }
+        adopt(client: restoredClient, user: cached?.user)
     }
 
     func logIn(apiURL: URL, response: LoginResponse) async {
@@ -142,6 +153,7 @@ final class SessionStore {
         let client = ImoraClient(apiURL: apiURL, accessToken: response.accessToken)
         let user = try? await client.currentUser()
         if let user { client.confirmMediaAccount(user.id) }
+        guard prepareMediaRecoveryNamespace(client) else { client.invalidate(); state = .loggedOut; return }
         adopt(client: client, user: user)
     }
 
@@ -152,6 +164,7 @@ final class SessionStore {
     }
 
     func logOut(reportRemoteFailure: Bool = true) async {
+        cachedLaunchHandle?.cancel(); cachedLaunchHandle = nil
         let signingOutClient = client
         ShareTransfer.revoke()
         ShareUploadCoordinator.shared.cancelAll()
@@ -416,7 +429,16 @@ final class SessionStore {
         }
     }
 
+    func noteLaunchProtection(available: Bool) {
+        launchProtection.resolve(available)
+        #if DEBUG || PHASE4_PERFORMANCE
+        LaunchPipelineTrace.mark("uikit-protected-data-state", items: available ? 1 : 0)
+        #endif
+        if !available { cachedLaunchHandle?.cancel() }
+    }
+
     private func adopt(client: ImoraClient, user: CurrentUser?) {
+        cachedLaunchHandle?.cancel(); cachedLaunchHandle = nil
         if let previous = self.client, previous !== client {
             previous.invalidate()
             ShareUploadCoordinator.shared.cancelAll()
@@ -434,6 +456,26 @@ final class SessionStore {
             )
         }
         self.client = client
+        #if DEBUG || PHASE4_PERFORMANCE
+        LaunchPipelineTrace.mark("verified-session-ready", items: client.mediaDisplayScope.accountID == nil ? 0 : 1)
+        #endif
+        client.setMediaRecoveryHandler { [weak self, weak client] outcome, notice in
+            guard let self, let client, self.client === client, let notice else { return }
+            self.loginNotice = notice
+            UserDefaults.standard.set(notice, forKey: Self.loginNoticeDefaultsKey)
+            if outcome == .signInRequired {
+                // Local recovery only. No remote logout, queue deletion, draft
+                // deletion or backup-proof mutation is authorized here.
+                self.realtime?.shutdown(); self.realtime = nil
+                self.favorites?.shutdown(); self.favorites = nil
+                self.backup?.shutdown(); self.backup = nil
+                self.lockedFolder?.shutdown(); self.lockedFolder = nil
+                self.notifications = nil
+                self.cachedLaunchHandle?.cancel(); self.cachedLaunchHandle = nil
+                self.client = nil; self.user = nil
+                self.state = .loggedOut
+            } else { ErrorToastCenter.shared.show(notice) }
+        }
         self.user = user
         lockedFolder = LockedFolderSession(client: client)
         ImageLoader.shared.configure(client: client)
@@ -441,6 +483,33 @@ final class SessionStore {
         if case .value(let key) = KeychainStore.get(Self.loginSessionKey) { backup.loginSessionKey = key }
         backup.userId = user?.id
         self.backup = backup
+        let source = UserDefaults.standard.string(forKey: "imora.photos.source") ?? "cloud"
+        let startupFilter = source == "local" ? "device|all|date" : TimelineCache.key(for:
+            PhotosLaunchSelection.cloudFilter(mergesSharedSpaces: capabilities.mergesSharedSpacesIntoTimeline))
+        if client.mediaDisplayScope.accountID != nil, ["cloud", "local"].contains(source), let filterKey = startupFilter {
+            let packSource = source == "local" ? "device" : "cloud"
+            let validator = backup.launchSurfaceValidator()
+            let protection = launchProtection
+            if UIApplication.shared.isProtectedDataAvailable { protection.resolve(true) }
+            let coordinator = MediaPresentationCoordinator.shared
+            let handle = CachedLaunchHandle(client: client, source: packSource, filter: filterKey) {
+                #if DEBUG || PHASE4_PERFORMANCE
+                LaunchPipelineTrace.mark("cached-bootstrap-start")
+                #endif
+                guard await protection.value(), !Task.isCancelled, await validator.prepare() else { return nil }
+                let result = try? await coordinator.restore(client: client, filter: filterKey, layout: nil,
+                    protectedDataAvailable: true, validateLocalSurface: { provenance in
+                        if provenance.remoteIdentifier == nil { return true }
+                        return await validator.validate(provenance)
+                    }, localEvidenceIsCurrent: { protection.isAvailable && validator.isCurrent() }, validateRemoteSurface: validator.validateRemote)
+                #if DEBUG || PHASE4_PERFORMANCE
+                LaunchPipelineTrace.mark("cached-bootstrap-prepared-ready")
+                #endif
+                return result
+            }
+            cachedLaunchHandle = handle
+            backup.cachedLaunchHandle = handle
+        }
         let hub = RealtimeHub(client: client)
         backup.onLocalChange = { [weak hub] in hub?.notifyLocalChange() }
         backup.onRunFailed = { message in
@@ -461,6 +530,9 @@ final class SessionStore {
         hub.addListener(inbox)
         notifications = inbox
         state = .loggedIn
+        #if DEBUG || PHASE4_PERFORMANCE
+        LaunchPipelineTrace.mark("session-adopt-complete")
+        #endif
         ShareUploadCoordinator.shared.resumePending()
         // the index is on disk and the account is cached, so the pairing maps
         // that let tiles render from the device are ready before the server
@@ -471,6 +543,24 @@ final class SessionStore {
         Task { await inbox.load() }
         backup.startIfIdle()
         hub.setActive(true)
+    }
+
+    private func prepareMediaRecoveryNamespace(_ client: ImoraClient) -> Bool {
+        switch KeychainStore.get(KeychainStore.mediaRecoveryFenceKey) {
+        case .missing: return true
+        case .unavailable: return false
+        case .value(let fence):
+            do {
+                try MediaContentGenerations.shared.rollover()
+                _ = KeychainStore.removeIfMatching(fence, for: KeychainStore.mediaRecoveryFenceKey)
+                return true
+            } catch {
+                let notice = String(localized: "Photos are temporarily unavailable. Your edits are preserved. Reopen the app and try again.")
+                loginNotice = notice; UserDefaults.standard.set(notice, forKey: Self.loginNoticeDefaultsKey)
+                ErrorToastCenter.shared.show(notice)
+                return false
+            }
+        }
     }
 
     private func configureFavorites(client: ImoraClient) {

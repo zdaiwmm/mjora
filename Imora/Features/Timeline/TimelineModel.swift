@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 nonisolated struct DayGroup: Identifiable, Hashable {
     let id: String
@@ -12,8 +13,11 @@ nonisolated struct TimelineSection: Identifiable, Hashable {
     let monthTitle: String
     let count: Int
     var days: [DayGroup]?
+    var leadingUnloadedAssetCount = 0
+    var trailingUnloadedAssetCount = 0
 
-    var isLoaded: Bool { days != nil }
+    var hasPartialLaunchRange: Bool { leadingUnloadedAssetCount > 0 || trailingUnloadedAssetCount > 0 }
+    var isLoaded: Bool { days != nil && !hasPartialLaunchRange }
 }
 
 /// Exact positions removed by one optimistic command. Rollback replays only
@@ -428,16 +432,33 @@ final class TimelineModel {
     @ObservationIgnored var launchLayout: LaunchViewportSnapshot.Layout? {
         didSet {
             guard launchLayout != nil else { return }
+            if let expected = unvalidatedBootstrapLayout {
+                unvalidatedBootstrapLayout = nil
+                if launchLayout != expected {
+                    launchCheckpointMiss = true; restoredLaunchViewport = false
+                    pendingLaunchAnchor = nil; sections = []
+                    #if DEBUG || PHASE4_PERFORMANCE
+                    restoredLaunchSnapshot = nil; restoredLaunchComplete = false
+                    LaunchPipelineTrace.mark("cached-bootstrap-layout-miss")
+                    #endif
+                    rebuildRows(rebuildAssets: true)
+                    cachedLaunchHandle?.cancel()
+                } else { cachedLaunchHandle?.finish() }
+            }
+            if launchLayout != oldValue { launchPreparationGeneration &+= 1 }
             let waiters = launchLayoutWaiters.values
             launchLayoutWaiters.removeAll()
             waiters.forEach { $0.resume() }
         }
     }
     @ObservationIgnored private var launchLayoutWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored private var launchPreparationGeneration: UInt64 = 0
     /// Only explicit main-library supplied models participate; search/album results do not.
     @ObservationIgnored var suppliedLaunchContext: String? {
         didSet {
-            if suppliedLaunchContext != oldValue { hasLoaded = false; restoredLaunchViewport = false }
+            if suppliedLaunchContext != oldValue {
+                launchPreparationGeneration &+= 1; hasLoaded = false; restoredLaunchViewport = false
+            }
         }
     }
     private var launchCacheKey: String? { usesSuppliedAssets ? suppliedLaunchContext : TimelineCache.key(for: filter) }
@@ -445,6 +466,10 @@ final class TimelineModel {
     private var restoredLaunchViewport = false
     var hasRestoredLaunchViewport: Bool { restoredLaunchViewport }
     @ObservationIgnored var pendingLaunchAnchor: (id: String, offset: Double)?
+    #if DEBUG || PHASE4_PERFORMANCE
+    @ObservationIgnored private(set) var restoredLaunchSnapshot: LaunchViewportSnapshot?
+    @ObservationIgnored private(set) var restoredLaunchComplete = false
+    #endif
     private var backup: BackupManager?
     private var inflightBuckets: Set<String> = []
     @ObservationIgnored private var bucketWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -556,6 +581,7 @@ final class TimelineModel {
 
     func attach(_ client: ImoraClient, backup: BackupManager? = nil, hub: RealtimeHub? = nil,
                 preparesLaunchViewport: Bool = false) {
+        if self.backup == nil { self.backup = backup }
         if usesSuppliedAssets {
             if suppliedLaunchContext != nil { self.client = client }
             return
@@ -577,23 +603,33 @@ final class TimelineModel {
         hub?.addListener(self)
     }
 
-    func load() async {
-        guard !usesSuppliedAssets || suppliedLaunchContext != nil else { return }
-        guard let client, !hasLoaded, !isLoading else { return }
-        isLoading = true
-        loadError = nil
-        defer { isLoading = false }
-
-        // Prepare W0 before publishing metadata. Probes, scans and backup work
-        // remain outside this dependency chain.
-        if let key = launchCacheKey, let layout = launchLayout,
-           let prepared = try? await MediaPresentationCoordinator.shared.restore(client: client, filter: key, layout: layout),
-           client.context.isActive, !Task.isCancelled {
+    /// Atomically publish prepared metadata only with the same current client,
+    /// selection, access and content. UIKit independently verifies real geometry.
+    @discardableResult
+    func adoptPreparedViewport(_ prepared: PreparedViewport) -> Bool {
+        #if DEBUG || PHASE4_PERFORMANCE
+        let adoptionStarted = ProcessInfo.processInfo.systemUptime
+        defer { LaunchPipelineTrace.record("timeline-adoption-validation-and-publication", since: adoptionStarted, items: prepared.assets.count) }
+        #endif
+        guard let client, client.context.isActive, UIApplication.shared.isProtectedDataAvailable,
+              prepared.localEvidenceIsCurrent(),
+              prepared.localProvenanceByKey.values.allSatisfy({ LocalImageLoader.currentModificationRevision($0.localIdentifier) == $0.modificationRevision }),
+              prepared.access == MediaPresentationCoordinator.access(for: client),
+              prepared.snapshot.scope == client.mediaDisplayScope, prepared.snapshot.filter == launchCacheKey,
+              prepared.snapshot.source == (usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud")),
+              prepared.snapshot.visibleKeys.allSatisfy(\.isCurrentContent),
+              launchLayout == nil || launchLayout == prepared.snapshot.layout else { return false }
+            #if DEBUG || PHASE4_PERFORMANCE
+            LaunchPipelineTrace.mark("timeline-prepared-adopt")
+            #endif
+            backup?.adoptLaunchSelections(Array(prepared.localProvenanceByKey.values))
             launchCheckpointMiss = prepared.checkpointMiss || !prepared.missingKeys.isEmpty
-            if usesSuppliedAssets {
-                pendingLaunchAnchor = (prepared.snapshot.anchor, prepared.snapshot.anchorOffset)
-                replaceSuppliedAssets(prepared.assets, groupsByDate: true)
-            } else {
+            #if DEBUG || PHASE4_PERFORMANCE
+            restoredLaunchSnapshot = prepared.snapshot
+            restoredLaunchComplete = !launchCheckpointMiss
+            #endif
+            // Both cloud and supplied device libraries retain the complete
+            // canonical count and original slots; only W0 owns asset payloads.
             let cached = prepared.snapshot.bucketList.flatMap { try? JSONDecoder().decode([TimeBucket].self, from: $0) }
                 ?? TimelineCache.buckets(for: filter, account: client.offlineAccountKey ?? "") ?? []
             sections = Self.sections(from: cached)
@@ -603,16 +639,80 @@ final class TimelineModel {
             }
             for (id, assets) in grouped {
                 let days = Self.groupByDay(assets.map(assetProjection), byUploadDate: filter.groupsByUploadDate)
-                if let index = sections.firstIndex(where: { $0.id == id }) { sections[index].days = days }
+                if let index = sections.firstIndex(where: { $0.id == id }) {
+                    let total = sections[index].count
+                    let leading = prepared.snapshot.bucketLeadingAssetCounts[id] ?? (total == assets.count ? 0 : -1)
+                    guard leading >= 0, leading <= total, assets.count <= total - leading else {
+                        launchCheckpointMiss = true
+                        #if DEBUG || PHASE4_PERFORMANCE
+                        restoredLaunchComplete = false
+                        #endif
+                        continue
+                    }
+                    sections[index].days = days
+                    sections[index].leadingUnloadedAssetCount = leading
+                    sections[index].trailingUnloadedAssetCount = total - leading - assets.count
+                }
                 else { sections.append(.init(id: id, monthTitle: Self.monthTitle(for: id), count: assets.count, days: days)) }
             }
             pendingLaunchAnchor = (prepared.snapshot.anchor, prepared.snapshot.anchorOffset)
             staleBucketIDs.formUnion(sections.map(\.id))
             noteProjectionInputsChanged()
             rebuildRows(rebuildAssets: true)
-            }
             restoredLaunchViewport = true
+        return true
+    }
+
+    @ObservationIgnored private var cachedLaunchHandle: CachedLaunchHandle?
+    @ObservationIgnored private var unvalidatedBootstrapLayout: LaunchViewportSnapshot.Layout?
+
+    func releaseCachedLaunch() { cachedLaunchHandle?.cancel() }
+
+    func attachCachedLaunch(_ handle: CachedLaunchHandle?, client: ImoraClient, backup: BackupManager?) {
+        guard let handle, let key = launchCacheKey else { return }
+        let source = usesSuppliedAssets ? "device" : "cloud"
+        guard handle.matches(client: client, source: source, filter: key) else { handle.cancel(); return }
+        attach(client, backup: backup, preparesLaunchViewport: true)
+        cachedLaunchHandle = handle
+        if let prepared = handle.preparedIfReady(client: client, source: source, filter: key), adoptPreparedViewport(prepared) {
+            unvalidatedBootstrapLayout = prepared.snapshot.layout
         }
+    }
+
+    func load() async {
+        guard !usesSuppliedAssets || suppliedLaunchContext != nil else { return }
+        guard let client, !hasLoaded, !isLoading else { return }
+        isLoading = true
+        loadError = nil
+        let preparationGeneration = launchPreparationGeneration
+        defer {
+            isLoading = false
+            if !Task.isCancelled, preparationGeneration != launchPreparationGeneration, !hasLoaded {
+                Task { [weak self] in await self?.load() }
+            }
+        }
+
+        // Prepare W0 before publishing metadata. Probes, scans and backup work
+        // remain outside this dependency chain.
+        if !restoredLaunchViewport, let key = launchCacheKey, let layout = launchLayout {
+            let handle = cachedLaunchHandle
+            let source = usesSuppliedAssets ? "device" : "cloud"
+            let shared = await handle?.value(client: client, source: source, filter: key)
+            if let shared, adoptPreparedViewport(shared) {
+                handle?.finish()
+            } else {
+                handle?.cancel()
+                if handle == nil, let prepared = try? await MediaPresentationCoordinator.shared.restore(client: client, filter: key, layout: layout,
+                    isCurrent: { [weak self] in self?.launchPreparationGeneration == preparationGeneration && self?.client === client },
+                    validateLocalSurface: { [weak self] provenance in
+                        if provenance.remoteIdentifier == nil { return true }
+                        return await self?.backup?.validatesLaunchSurface(provenance) ?? false
+                    }), client.context.isActive, !Task.isCancelled {
+                    adoptPreparedViewport(prepared)
+                }
+            }
+        }
+        guard !Task.isCancelled, preparationGeneration == launchPreparationGeneration else { return }
         if usesSuppliedAssets { hasLoaded = true; return }
         if sections.isEmpty, client.context.isActive,
            let account = client.offlineAccountKey, let cached = TimelineCache.buckets(for: filter, account: account) {
@@ -724,7 +824,7 @@ final class TimelineModel {
     /// runs, applying in one debounced pass.
     private func restoreCachedBuckets(using client: ImoraClient) async {
         guard client.context.isActive, !Task.isCancelled, let account = account(for: client) else { return }
-        let missing = sections.filter { $0.days == nil }.map(\.id)
+        let missing = sections.filter { $0.days == nil || $0.hasPartialLaunchRange }.map(\.id)
         guard !missing.isEmpty else { return }
         let filter = filter
 
@@ -763,9 +863,11 @@ final class TimelineModel {
     private func applyRestoredBuckets(_ restored: [String: [Asset]]) {
         guard !restored.isEmpty else { return }
         var changed = false
-        for index in sections.indices where sections[index].days == nil {
+        for index in sections.indices where sections[index].days == nil || sections[index].hasPartialLaunchRange {
             guard let assets = restored[sections[index].id] else { continue }
             sections[index].days = Self.groupByDay(assets.map(assetProjection), byUploadDate: filter.groupsByUploadDate)
+            sections[index].leadingUnloadedAssetCount = 0
+            sections[index].trailingUnloadedAssetCount = 0
             staleBucketIDs.insert(sections[index].id)
             changed = true
         }
@@ -814,7 +916,8 @@ final class TimelineModel {
                     id: existing.id,
                     monthTitle: existing.monthTitle,
                     count: bucket.count,
-                    days: existing.days
+                    days: existing.days, leadingUnloadedAssetCount: existing.leadingUnloadedAssetCount,
+                    trailingUnloadedAssetCount: existing.trailingUnloadedAssetCount
                 ))
             } else {
                 fresh.append(TimelineSection(
@@ -847,7 +950,7 @@ final class TimelineModel {
         guard !isViewerSuspended,
               let client,
               let index = sections.firstIndex(where: { $0.id == id }),
-              sections[index].days == nil || refresh,
+              sections[index].days == nil || sections[index].hasPartialLaunchRange || refresh,
               !inflightBuckets.contains(id)
         else { return }
         inflightBuckets.insert(id)
@@ -870,8 +973,10 @@ final class TimelineModel {
                 resolution.assets.map(assetProjection),
                 byUploadDate: filter.groupsByUploadDate
             )
-            let changed = sections[current].days != days
+            let changed = sections[current].days != days || sections[current].hasPartialLaunchRange
             sections[current].days = days
+            sections[current].leadingUnloadedAssetCount = 0
+            sections[current].trailingUnloadedAssetCount = 0
             if resolution.isAuthoritative {
                 cacheBucket(id, payload: payload)
             }
@@ -1244,7 +1349,7 @@ final class TimelineModel {
 
     /// Loaded months share rows in the native compact grid. Only an unloaded
     /// range breaks a run; its placeholder still triggers the existing loader.
-    nonisolated private static func compactProjection(_ sections: [TimelineSection], columns: Int) -> (
+    nonisolated static func compactProjection(_ sections: [TimelineSection], columns: Int) -> (
         rows: [TimelineRow], spans: [TimelineSectionSpan], months: [String: String], firstIDs: [String: String], tileRows: Int
     ) {
         var rows: [TimelineRow] = []
@@ -1253,36 +1358,72 @@ final class TimelineModel {
         var counts: [String: Int] = [:]
         var pending: [Asset] = []
         var source: TimelineSection?
+        var missingBucket: String?
+        var column = 0
+        var logicalRow = 0
         var tileRows = 0
         func flush() {
-            guard let first = pending.first, let source else { return }
-            let id = "compact-\(first.id)"
-            rows.append(.tiles(id, [TileRun(colStart: 0, assets: pending)]))
-            months[id] = source.monthTitle
-            firstIDs[id] = first.id
+            guard column > 0, let source else { return }
+            if let missingBucket {
+                let id = "p-\(missingBucket)-slot-\(logicalRow)"
+                rows.append(.placeholder(id, missingBucket, 1, 0))
+                months[id] = source.monthTitle
+            } else if let first = pending.first {
+                let id = "compact-\(first.id)"
+                rows.append(.tiles(id, [TileRun(colStart: 0, assets: pending)]))
+                months[id] = source.monthTitle
+                firstIDs[id] = first.id
+            }
             counts[source.id, default: 0] += 1
             tileRows += 1
+            logicalRow += 1
             pending.removeAll(keepingCapacity: true)
+            column = 0
+            missingBucket = nil
+        }
+        func unknown(_ amount: Int, in section: TimelineSection) {
+            var remaining = max(0, amount)
+            if column > 0, remaining > 0 {
+                let fill = min(columns - column, remaining)
+                missingBucket = missingBucket ?? section.id
+                column += fill; remaining -= fill
+                if column == columns { flush() }
+            }
+            let completeRows = remaining / columns
+            if completeRows > 0 {
+                let id = "p-\(section.id)-slot-\(logicalRow)"
+                rows.append(.placeholder(id, section.id, completeRows, 0))
+                months[id] = section.monthTitle
+                counts[section.id, default: 0] += completeRows
+                tileRows += completeRows
+                logicalRow += completeRows
+                remaining %= columns
+            }
+            if remaining > 0 {
+                source = section
+                missingBucket = section.id
+                column = remaining
+            }
         }
         for section in sections {
-            if let days = section.days {
-                for day in days {
-                    for asset in day.assets {
-                        if pending.isEmpty { source = section }
-                        pending.append(asset)
-                        if pending.count == columns { flush() }
-                    }
+            guard let days = section.days else { unknown(section.count, in: section); continue }
+            let assets = days.flatMap(\.assets)
+            if section.hasPartialLaunchRange {
+                let leading = section.leadingUnloadedAssetCount, trailing = section.trailingUnloadedAssetCount
+                guard leading >= 0, trailing >= 0, leading <= section.count,
+                      trailing <= section.count - leading, assets.count == section.count - leading - trailing else {
+                    unknown(section.count, in: section)
+                    continue
                 }
-            } else {
-                flush()
-                let count = (section.count + columns - 1) / columns
-                guard count > 0 else { continue }
-                let id = "p-\(section.id)"
-                rows.append(.placeholder(id, section.id, count, 0))
-                months[id] = section.monthTitle
-                counts[section.id, default: 0] += count
-                tileRows += count
             }
+            unknown(section.leadingUnloadedAssetCount, in: section)
+            for asset in assets {
+                if column == 0 { source = section }
+                pending.append(asset)
+                column += 1
+                if column == columns { flush() }
+            }
+            unknown(section.trailingUnloadedAssetCount, in: section)
         }
         flush()
         let spans = sections.compactMap { section -> TimelineSectionSpan? in
@@ -1601,7 +1742,8 @@ final class TimelineModel {
                             id: existing.id,
                             monthTitle: existing.monthTitle,
                             count: bucket.count,
-                            days: existing.days
+                            days: existing.days, leadingUnloadedAssetCount: existing.leadingUnloadedAssetCount,
+                            trailingUnloadedAssetCount: existing.trailingUnloadedAssetCount
                         ))
                         if existing.isLoaded { toFetch.append(bucket.timeBucket) }
                     }
@@ -1889,6 +2031,13 @@ final class TimelineModel {
                     let before = assets[a]
                     transform(&assets[a])
                     if assets[a] != before {
+                        if let client, before.thumbhash != assets[a].thumbhash
+                            || before.localImageVersion != assets[a].localImageVersion
+                            || before.isEdited != assets[a].isEdited
+                            || before.visibility != assets[a].visibility || before.isTrashed != assets[a].isTrashed {
+                            ImageLoader.shared.invalidate(asset: before, client: client)
+                            MediaPresentationCoordinator.shared.cancelCheckpoint()
+                        }
                         changedAssets[assets[a].id] = assets[a]
                         dayChanged = true
                     }
@@ -2138,26 +2287,47 @@ final class TimelineModel {
 
     /// Actual visible rows, including stationary layout changes; never a fixed asset count.
     func checkpointViewport(rowIDs: [String], layout: LaunchViewportSnapshot.Layout, pixels: CGFloat,
-                            anchorOffset: Double, stable: Bool) {
+                            anchorOffset: Double, stable: Bool, surfaceProvider: GridSurfaceProvider? = nil) {
         guard let client, client.context.isActive, let filterKey = launchCacheKey else { return }
         let visible = Set(rowIDs)
         let assets = rows.filter { visible.contains($0.id) }.flatMap { row -> [Asset] in
             guard case .tiles(_, let runs) = row else { return [] }
             return runs.flatMap(\.assets)
         }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
         guard !assets.isEmpty, assets.allSatisfy({ !$0.isTrashed && $0.visibility != .locked && $0.visibility != .hidden }),
-              let metadata = try? JSONEncoder().encode(assets) else { return }
+              let metadata = try? encoder.encode(assets) else { return }
         let keys = assets.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: pixels) }
         var snapshot = LaunchViewportSnapshot(scope: client.mediaDisplayScope, source: usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud"),
             filter: filterKey, sort: filter.order ?? "desc", anchor: assets[0].id, layout: layout,
             visibleKeys: keys, metadata: metadata)
-        snapshot.bucketList = try? JSONEncoder().encode(sections.map { TimeBucket(timeBucket: $0.id, count: $0.count) })
-        snapshot.bucketIDByAssetID = Dictionary(uniqueKeysWithValues: assets.compactMap { asset in
-            bucketIDByAssetID[asset.id].map { (asset.id, $0) }
-        })
+        let projected = Self.mergedSections(sections, local: mergesLocal ? localMergeSource : nil)
+        var canonicalBuckets: [TimeBucket] = []
+        let visibleIDs = Set(assets.map(\.id))
+        for section in projected {
+            let known = section.days?.flatMap(\.assets) ?? []
+            let count = section.days == nil || section.hasPartialLaunchRange ? section.count : known.count
+            canonicalBuckets.append(.init(timeBucket: section.id, count: count))
+            let chosen = known.filter { visibleIDs.contains($0.id) }
+            guard let first = chosen.first else { continue }
+            guard let offset = known.firstIndex(where: { $0.id == first.id }),
+                  Array(known.dropFirst(offset).prefix(chosen.count)).map(\.id) == chosen.map(\.id) else { return }
+            snapshot.bucketLeadingAssetCounts[section.id] = section.leadingUnloadedAssetCount + offset
+            for asset in chosen { snapshot.bucketIDByAssetID[asset.id] = section.id }
+        }
+        guard snapshot.bucketIDByAssetID.count == assets.count else { return }
+        snapshot.bucketList = try? encoder.encode(canonicalBuckets)
         snapshot.anchorOffset = anchorOffset
-        if stable { MediaPresentationCoordinator.shared.checkpoint(snapshot: snapshot, assets: assets, client: client) }
-        else { MediaPresentationCoordinator.shared.noteViewport(snapshot: snapshot, client: client) }
+        if stable { MediaPresentationCoordinator.shared.checkpoint(snapshot: snapshot, assets: assets, client: client,
+            surfaceProvider: surfaceProvider, validateLocalSurface: { [weak self] provenance in
+                if provenance.remoteIdentifier == nil { return true }
+                return await self?.backup?.validatesLaunchSurface(provenance) ?? false
+            }) }
+        else {
+            MediaPresentationCoordinator.shared.cancelCheckpoint()
+            MediaPresentationCoordinator.shared.noteViewport(snapshot: snapshot, client: client)
+        }
     }
 
     func commit(_ removal: TimelineRemoval, ids: Set<String>? = nil) {

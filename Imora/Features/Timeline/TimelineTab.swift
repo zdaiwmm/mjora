@@ -11,11 +11,8 @@ struct TimelineTab: View {
 
     private var controls: PhotosGridControls { source == "local" ? deviceControls : cloudControls }
     private var filter: TimelineFilter {
-        TimelineFilter(withPartners: true,
-                       withSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline,
-                       withStacked: true,
-                       isFavorite: cloudControls.mediaFilter == .favorites ? true : nil,
-                       order: "asc", orderBy: cloudControls.sortByAdded ? "createdAt" : nil)
+        PhotosLaunchSelection.cloudFilter(mergesSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline,
+            favorites: cloudControls.mediaFilter == .favorites, sortByAdded: cloudControls.sortByAdded)
     }
     private var configuration: PhotosToolbarConfiguration {
         PhotosToolbarConfiguration(source: $source, controls: controls,
@@ -33,15 +30,20 @@ struct TimelineTab: View {
         NavigationStack {
             Group {
                 if source == "local" {
-                    DeviceLibraryScreen(navigationTarget: $router.pendingTarget,
+                    DeviceLibraryScreen(session: session, navigationTarget: $router.pendingTarget,
                                         photosConfiguration: configuration)
                 } else if [.all, .favorites].contains(cloudControls.mediaFilter) {
-                    CloudPhotosScreen(filter: filter, navigationTarget: $router.pendingTarget,
+                    CloudPhotosScreen(session: session, filter: filter, navigationTarget: $router.pendingTarget,
                                       configuration: configuration)
                         .id(filter)
                 } else {
                     PhotosMediaTimeline(media: cloudControls.mediaFilter, configuration: configuration)
                         .id(cloudControls.mediaFilter)
+                }
+            }
+            .onChange(of: source) { _, newSource in
+                if session.cachedLaunchHandle?.source != (newSource == "local" ? "device" : "cloud") {
+                    session.cachedLaunchHandle?.cancel()
                 }
             }
             .onChange(of: controls.mediaFilter) { _, _ in
@@ -70,14 +72,21 @@ private struct CloudPhotosScreen: View {
     let filter: TimelineFilter
     @Binding var navigationTarget: TimelineNavigationTarget?
     let configuration: PhotosToolbarConfiguration
-    @State private var model: TimelineModel
+    @State private var modelHolder: TimelineModelHolder
+    private var model: TimelineModel { modelHolder.model }
 
-    init(filter: TimelineFilter, navigationTarget: Binding<TimelineNavigationTarget?>,
+    init(session: SessionStore, filter: TimelineFilter, navigationTarget: Binding<TimelineNavigationTarget?>,
          configuration: PhotosToolbarConfiguration) {
         self.filter = filter
         _navigationTarget = navigationTarget
         self.configuration = configuration
-        _model = State(initialValue: TimelineModel(filter: filter))
+        _modelHolder = State(initialValue: TimelineModelHolder {
+            let model = TimelineModel(filter: filter)
+            if let client = session.client {
+                model.attachCachedLaunch(session.cachedLaunchHandle, client: client, backup: session.backup)
+            }
+            return model
+        })
     }
 
     var body: some View {

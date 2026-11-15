@@ -8,11 +8,15 @@ struct ImoraApp: App {
     @State private var appUpdates = AppUpdateStore()
 
     init() {
+        #if DEBUG || PHASE4_PERFORMANCE
+        if LaunchPresentationTrace.enabled { LaunchPresentationTrace.begin() }
+        #endif
         // state is not installed during App.init. bind background processing
         // to the same retained instance that the scene receives, not a fresh
         // temporary instance produced by reading the wrapper too early.
         let session = SessionStore()
         _session = State(initialValue: session)
+        AppDelegate.launchSession = session
         // set before any scene exists so a backup report landing mid-launch
         // is still presented.
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
@@ -40,6 +44,24 @@ struct ImoraApp: App {
 /// once their events are delivered. the identifier routes between the backup
 /// session and the sessions the share extension started.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    static weak var launchSession: SessionStore?
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        #if DEBUG || PHASE4_PERFORMANCE
+        LaunchPipelineTrace.mark("uikit-did-finish-launching")
+        #endif
+        Self.launchSession?.noteLaunchProtection(available: application.isProtectedDataAvailable)
+        return true
+    }
+
+    func applicationProtectedDataDidBecomeAvailable(_ application: UIApplication) {
+        Self.launchSession?.noteLaunchProtection(available: application.isProtectedDataAvailable)
+    }
+
+    func applicationProtectedDataWillBecomeUnavailable(_ application: UIApplication) {
+        Self.launchSession?.noteLaunchProtection(available: false)
+    }
+
     func application(
         _ application: UIApplication,
         handleEventsForBackgroundURLSession identifier: String,

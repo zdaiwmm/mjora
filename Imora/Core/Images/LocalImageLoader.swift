@@ -52,6 +52,14 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         libraryGeneration.withLock { $0 } * 10 + PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue
     }
 
+    nonisolated static func currentModificationRevision(_ localIdentifier: String) -> String? {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited,
+              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+              !asset.isHidden, let modified = asset.modificationDate else { return nil }
+        return String(modified.timeIntervalSinceReferenceDate.bitPattern)
+    }
+
     @concurrent
     func canReadPrepared(_ localIdentifier: String) async -> Bool {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -104,6 +112,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     /// asset lookups are cached; a library change invalidates them all.
     func noteLibraryChange() {
         libraryGeneration.withLock { $0 &+= 1 }
+        Task { @MainActor in ImageLoadRecovery.shared.contentChanged() }
         cachingQueue.async { [self] in
             prefetchTasks.values.forEach { $0.cancel() }
             prefetchTasks.removeAll()

@@ -245,4 +245,84 @@ final class Phase4LaunchPreviewTests: XCTestCase {
             XCTAssertTrue(try FileManager.default.subpathsOfDirectory(atPath: root.path).contains { $0.contains(receipt.generation.uuidString) })
         }
     }
+
+    func testRestartReclaimsAbandonedGenerationsBeforeReadingOrAllocating() async throws {
+        try await withStore { store, root in
+            let imageKey = key("a")
+            _ = try await store.checkpoint(snapshot: snapshot([imageKey]), images: [record(imageKey)])
+            let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!
+            let scopeDirectory = files.compactMap { $0 as? URL }.first { $0.lastPathComponent == "complete.json" }!.deletingLastPathComponent()
+            // Emulate processes killed after staging bytes, so no actor defer runs.
+            for _ in 0..<3 {
+                let orphan = scopeDirectory.appending(path: UUID().uuidString)
+                try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+                try Data(repeating: 7, count: 12 << 20).write(to: orphan.appending(path: "abandoned-preview"))
+            }
+            let restart = LaunchPreviewStore(root: root)
+            guard case .complete = try await restart.restore(scope: scope, context: context()) else {
+                return XCTFail("Recovery must retain the last committed pack")
+            }
+            let usage = await restart.diskUsage()
+            XCTAssertTrue(usage <= 32 << 20, "Abandoned generations escaped the global reserve: \(usage)")
+            let remaining = try FileManager.default.subpathsOfDirectory(atPath: root.path)
+            XCTAssertFalse(remaining.contains { $0.contains("abandoned-preview") })
+        }
+    }
+
+    func testReplacementCannotAllocateBeyondQuotaWhilePreviousPackSurvives() async throws {
+        try await withStore { store, root in
+            let first = key("a"), latest = key("b")
+            var large = fixturePNG
+            large.append(Data(repeating: 0, count: 17 << 20))
+            let previous = PreparedImageRecord(key: first, bytes: large, pixelWidth: 64, pixelHeight: 96, content: .photograph)
+            let receipt = try await store.checkpoint(snapshot: snapshot([first]), images: [previous])
+            let incoming = PreparedImageRecord(key: latest, bytes: large, pixelWidth: 64, pixelHeight: 96, content: .photograph)
+            do {
+                _ = try await store.checkpoint(snapshot: snapshot([latest], anchor: "latest"), images: [incoming])
+                XCTFail("Two disjoint 17 MiB generations cannot coexist in a 32 MiB reserve")
+            } catch {}
+            let files = try FileManager.default.subpathsOfDirectory(atPath: root.path)
+            XCTAssertTrue(files.contains { $0.contains(receipt.generation.uuidString) }, "Previous complete pack was discarded to make room")
+            guard case .partial(let saved, _, _) = try await LaunchPreviewStore(root: root).restore(scope: scope, context: context()) else {
+                return XCTFail("Latest anchor must record a quota checkpoint miss")
+            }
+            XCTAssertEqual(saved.anchor, "latest")
+            let usage = await store.diskUsage()
+            XCTAssertTrue(usage <= 32 << 20)
+        }
+    }
+
+    func testRetirementJournalSurvivesRestartWithoutChangingOtherSubjects() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-journal-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        let first = MediaDisplayKeyV1.Subject.remoteAsset("first"), other = MediaDisplayKeyV1.Subject.remoteAsset("other")
+        let before = journal.current(scope: scope, subject: first)
+        let unaffected = journal.current(scope: scope, subject: other)
+        try journal.retire(scope: scope, subjects: [first])
+        let restart = MediaContentGenerations(root: root)
+        XCTAssertNotEqual(restart.current(scope: scope, subject: first), before)
+        XCTAssertEqual(restart.current(scope: scope, subject: other), unaffected)
+        XCTAssertFalse(restart.canMigrateLegacy(scope: scope, subject: first))
+    }
+
+    func testInterruptedOrCorruptJournalNeverReturnsToAnOldNamespace() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-journal-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        let subject = MediaDisplayKeyV1.Subject.remoteAsset("first")
+        let original = journal.current(scope: scope, subject: subject)
+        try journal.retire(scope: scope, subjects: [subject])
+        try Data("interrupted new journal bytes".utf8).write(to: root.appending(path: ".content-generations-staging"))
+        let restarted = MediaContentGenerations(root: root)
+        XCTAssertNotEqual(restarted.current(scope: scope, subject: subject), original)
+        try Data("corrupt committed journal".utf8).write(to: root.appending(path: "content-generations.json"))
+        let corrupt = MediaContentGenerations(root: root)
+        XCTAssertNil(corrupt.current(scope: scope, subject: subject))
+        try corrupt.ensureInitialized()
+        XCTAssertNotEqual(corrupt.current(scope: scope, subject: subject), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appending(path: ".content-generations-staging").path))
+    }
 }

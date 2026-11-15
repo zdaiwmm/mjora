@@ -117,6 +117,9 @@ struct TimelineGridEvents {
 /// ScrollPosition. plain, nothing here is observed.
 @MainActor
 final class TimelineGridController {
+    func checkpointSurface(for key: MediaDisplayKeyV1, client: ImoraClient) -> CommittedGridSurface? {
+        grid?.checkpointSurface(for: key, client: client)
+    }
     func periodTile(assetID: String? = nil) -> TimelineTileView? {
         grid?.periodTile(assetID: assetID)
     }
@@ -323,6 +326,7 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
         grid.onScroll = { [weak self] scroll in self?.events.onScroll(scroll) }
         grid.onPlaceholder = { [weak self] bucketID in self?.events.onPlaceholder(bucketID) }
         grid.onWidthChange = { [weak self] in self?.measureSections() }
+        grid.onEffectiveHeaderHeight = { [weak self] height in self?.events.onHeaderHeight(height) }
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
         pinch.delegate = self
         grid.addGestureRecognizer(pinch)
@@ -396,7 +400,6 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
     func setHeaderHeight(_ height: CGFloat) {
         guard grid.headerHeight != height else { return }
         grid.headerHeight = height
-        events.onHeaderHeight(height)
     }
 
     func setFooterHeight(_ height: CGFloat) {
@@ -505,6 +508,69 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
 /// exact layout, diffed by index while the rows hold and by id when they
 /// are swapped, and handed back to per-kind pools when they leave.
 final class TimelineGridView: UIScrollView {
+    var usesFullPhotosCanvas = false { didSet { if usesFullPhotosCanvas != oldValue { setNeedsLayout() } } }
+    var onEffectiveHeaderHeight: ((CGFloat) -> Void)?
+    private var shortContentTopPadding: CGFloat = 0
+    private var lastEffectiveHeaderHeight: CGFloat?
+    private var effectiveHeaderHeight: CGFloat { headerHeight + shortContentTopPadding }
+    func checkpointSurface(for key: MediaDisplayKeyV1, client: ImoraClient) -> CommittedGridSurface? {
+        guard window != nil else { return nil }
+        let viewport = bounds.inset(by: adjustedContentInset)
+        return zoomTiles.lazy.filter { tile in
+            !tile.isHidden && tile.alpha > 0.01 && tile.convert(tile.bounds, to: self).intersection(viewport).height > 1
+        }.compactMap { $0.checkpointSurface(for: key, client: client) }.first
+    }
+    #if DEBUG || PHASE4_PERFORMANCE
+    private var presentationTrace: LaunchPresentationTrace?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard LaunchPresentationTrace.enabled else { return }
+        if window != nil, presentationTrace == nil { presentationTrace = LaunchPresentationTrace(grid: self) }
+        if window == nil { presentationTrace?.stop(); presentationTrace = nil }
+    }
+
+    func presentationObservation(timestamp: Double, origin: String = "cad", displayTimestamp: Double? = nil) -> GridFrameObservation {
+        let viewport = bounds.inset(by: adjustedContentInset)
+        let tiles = zoomTiles.filter { tile in
+            let overlap = tile.convert(tile.bounds, to: self).intersection(viewport)
+            return !tile.isHidden && tile.alpha > 0.01 && overlap.width > 1 && overlap.height > 1
+        }.sorted { left, right in
+            let a = left.convert(left.bounds, to: self), b = right.convert(right.bounds, to: self)
+            return abs(a.minY - b.minY) > 1 ? a.minY < b.minY : a.minX < b.minX
+        }.compactMap { $0.presentationMeasurement(in: self) }
+        let placeholderRows = mounted.filter { entry in
+            entry.kind == .placeholder && entry.view.frame.intersection(viewport).height > 1
+        }.count
+        let expected = model?.restoredLaunchSnapshot
+        let expectedIDs: [String] = expected?.visibleKeys.map { key -> String in
+            switch key.subject {
+            case .remoteAsset(let id): id
+            case .localAsset(_, let id): "local-\(id)"
+            case .artwork(_, let id, _): id
+            }
+        } ?? []
+        let applicationActive = UIApplication.shared.applicationState == .active
+        var visible = window != nil && bounds.width > 1 && bounds.height > 1
+        var inputEnabled = true
+        var ancestor: UIView? = self
+        while let view = ancestor {
+            visible = visible && !view.isHidden && view.alpha > 0.01
+            inputEnabled = inputEnabled && view.isUserInteractionEnabled
+            ancestor = view.superview
+        }
+        return .init(timestamp: timestamp, observationOrigin: origin, cadDisplayTimestamp: displayTimestamp,
+            applicationActive: applicationActive, viewInteractionEnabled: inputEnabled, offset: Double(offsetY),
+            viewport: [Double(viewport.width), Double(viewport.height)], rowVersion: model?.rowsContentVersion ?? -1,
+            tiles: tiles, placeholderRows: placeholderRows, expectedW0: expectedIDs, expectedAnchor: expected?.anchor,
+            restoredComplete: model?.restoredLaunchComplete ?? false, interactive: visible && inputEnabled && applicationActive,
+            serverIdentity: context?.session.client?.mediaDisplayScope.serverIdentity,
+            accountID: context?.session.client?.mediaDisplayScope.accountID,
+            galleryVisible: visible,
+            loadingOverlayVisible: model?.isLoading == true && model?.rows.isEmpty == true,
+            reportedItemCount: model?.sections.reduce(0) { $0 + $1.count } ?? 0)
+    }
+    #endif
     let zoomTransition = TimelineGridZoomTransition()
     var currentTileSide: CGFloat { side }
 
@@ -555,7 +621,7 @@ final class TimelineGridView: UIScrollView {
                 for (offset, asset) in run.assets.enumerated() {
                     var x = CGFloat(run.colStart + offset) * (side + AssetGridLayout.gutter)
                     if effectiveUserInterfaceLayoutDirection == .rightToLeft { x = contentWidth - x - side }
-                    frames[asset.id] = CGRect(x: x, y: headerHeight + layout.starts[index], width: side, height: side)
+                    frames[asset.id] = CGRect(x: x, y: effectiveHeaderHeight + layout.starts[index], width: side, height: side)
                 }
             }
         }
@@ -704,36 +770,53 @@ final class TimelineGridView: UIScrollView {
         super.layoutSubviews()
         keepRestOffset()
         guard let model else { return }
+        let insets = adjustedContentInset
+        let width = contentWidth
+        let viewportHeight = max(1, bounds.height - insets.top - insets.bottom)
+        if width > 0, bounds.height > 0 {
+            // SwiftUI's enclosing GeometryReader excludes areas this grid
+            // intentionally extends into. UIKit owns the actual W0 geometry.
+            model.launchLayout = .init(width: Double(width), height: Double(viewportHeight),
+                scale: Double(traitCollection.displayScale), columns: model.columns)
+        }
         // read on every pass: uikit tracks the reads, so a swap or a
         // projected removal lays the grid out again on its own.
         let rows = model.rows
         let removals = model.projectedRemovalIDs
         let layout = layoutBox.layout(for: model, side: side)
-        let insets = adjustedContentInset
-        let width = contentWidth
+        // Keep the canvas fixed before metadata exists. Short content gets
+        // an explicit origin below real bars instead of shrinking that canvas.
+        let safeHeight = max(1, bounds.height - safeAreaInsets.top - safeAreaInsets.bottom)
+        let shortContent = usesFullPhotosCanvas && layout.total > 0
+            && headerHeight + layout.total + footerHeight + tailPadding <= safeHeight
+        shortContentTopPadding = shortContent ? safeAreaInsets.top : 0
+        if lastEffectiveHeaderHeight != effectiveHeaderHeight {
+            lastEffectiveHeaderHeight = effectiveHeaderHeight
+            onEffectiveHeaderHeight?(effectiveHeaderHeight)
+        }
         if width != measuredWidth {
             zoomTransition.cancel()
             measuredWidth = width
             onWidthChange?()
         }
 
-        let size = CGSize(width: width, height: headerHeight + layout.total + footerHeight + tailPadding)
+        let size = CGSize(width: width, height: effectiveHeaderHeight + layout.total + footerHeight + tailPadding)
         if contentSize != size { contentSize = size }
         if let anchor = model.pendingLaunchAnchor,
            let row = model.rowIndex(containingAnyOf: [anchor.id]), layout.starts.indices.contains(row) {
             model.pendingLaunchAnchor = nil
             // Restore before mounting any row, so the first content frame is W0.
-            scroll(toOffsetY: headerHeight + layout.starts[row] + CGFloat(anchor.offset))
+            scroll(toOffsetY: effectiveHeaderHeight + layout.starts[row] + CGFloat(anchor.offset))
         }
-        place(headerView, CGRect(x: 0, y: 0, width: width, height: headerHeight))
-        let footerFrame = CGRect(x: 0, y: headerHeight + layout.total, width: width, height: footerHeight)
+        place(headerView, CGRect(x: 0, y: shortContentTopPadding, width: width, height: headerHeight))
+        let footerFrame = CGRect(x: 0, y: effectiveHeaderHeight + layout.total, width: width, height: footerHeight)
         place(footerView, footerFrame)
 
         let scroll = TimelineGridScroll(
             offsetY: offsetY,
             insetTop: insets.top,
             insetBottom: insets.bottom,
-            containerHeight: max(1, bounds.height - insets.top - insets.bottom)
+            containerHeight: viewportHeight
         )
         if scroll != lastScroll {
             lastScroll = scroll
@@ -741,6 +824,9 @@ final class TimelineGridView: UIScrollView {
         }
 
         mount(rows: rows, layout: layout, removals: removals, width: width, viewportHeight: scroll.containerHeight)
+        #if DEBUG || PHASE4_PERFORMANCE
+        presentationTrace?.didCompleteLayout()
+        #endif
 
         let visibleFooter = footerHeight > 0
             && bounds.intersection(footerFrame).height >= footerHeight * 0.1
@@ -782,7 +868,7 @@ final class TimelineGridView: UIScrollView {
             unmountAll()
             return
         }
-        let top = offsetY - headerHeight
+        let top = offsetY - effectiveHeaderHeight
         let (before, after): (CGFloat, CGFloat)
         switch controller?.direction ?? 0 {
         case 1: (before, after) = (Self.bufferBehind, Self.bufferAhead)
@@ -799,7 +885,7 @@ final class TimelineGridView: UIScrollView {
             && mountedSide == side
             && (mountedRemovals.isEmpty && removals.isEmpty || mountedRemovals == removals)
         let sameFrames = sameRows && mountedSide == side && mountedWidth == width
-            && mountedHeaderHeight == headerHeight
+            && mountedHeaderHeight == effectiveHeaderHeight
         if sameContent, sameLook, sameFrames, range == mountedRange { return }
 
         var next: [MountedRow] = []
@@ -855,7 +941,7 @@ final class TimelineGridView: UIScrollView {
             var height = entry.row.height(tileSide: side)
             // tiles keep their 2pt gutter below them, outside the row.
             if entry.kind == .tiles { height = side }
-            let frame = CGRect(x: 0, y: headerHeight + layout.starts[index], width: width, height: height)
+            let frame = CGRect(x: 0, y: effectiveHeaderHeight + layout.starts[index], width: width, height: height)
             if arrived[offset] {
                 UIView.performWithoutAnimation {
                     entry.view.frame = frame
@@ -875,7 +961,7 @@ final class TimelineGridView: UIScrollView {
         mountedContextVersion = contextVersion
         mountedSide = side
         mountedWidth = width
-        mountedHeaderHeight = headerHeight
+        mountedHeaderHeight = effectiveHeaderHeight
         mountedRemovals = removals
     }
 

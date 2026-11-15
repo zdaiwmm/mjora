@@ -26,6 +26,7 @@ private final class ScrollContext {
     /// distance scrolled past the rest position, the space scrollTo(y:) takes.
     var offsetY: CGFloat = 0
     var firstVisibleRowID: String?
+    var firstVisibleAssetID: String?
     /// the whole visible run, not just the first row: only tile rows anchor a
     /// prefetch window and the top row is usually a month header.
     var visibleRowIDs: [String] = []
@@ -344,7 +345,7 @@ nonisolated enum TimelineServerCommand: Equatable {
 /// keeps only the first. a model restores its months from disk and lays out
 /// every row when built, so it is built lazily, by the holder swiftui keeps.
 @MainActor
-private final class TimelineModelHolder {
+final class TimelineModelHolder {
     private let make: () -> TimelineModel
     private(set) lazy var model = make()
 
@@ -644,13 +645,27 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         prewarmOpeningChrome(in: rows, visibleRange: visible)
         if context.isIdle || viewportChanged {
-            let firstTileRow = visible.first { index in
-                if case .tiles = rows[index] { return true }; return false
+            let tileRows = visible.filter { index in
+                if case .tiles = rows[index] {
+                    return layout.starts[index] + side > top && layout.starts[index] < top + context.viewportHeight
+                }
+                return false
             }
-            model.checkpointViewport(rowIDs: context.visibleRowIDs,
+            let firstTileRow = tileRows.first
+            let unknownVisible = visible.contains { index in
+                guard case .placeholder = rows[index] else { return false }
+                return min(layout.starts[index] + rows[index].height(tileSide: side), top + context.viewportHeight)
+                    - max(layout.starts[index], top) > 1
+            }
+            context.firstVisibleAssetID = firstTileRow.flatMap { model.firstAssetIDByRowID[rows[$0].id] }
+            model.checkpointViewport(rowIDs: tileRows.map { rows[$0].id },
                 layout: .init(width: Double(context.viewportWidth), height: Double(context.viewportHeight),
                     scale: Double(displayScale), columns: columnCount), pixels: thumbnailPixelSize(for: side),
-                anchorOffset: Double(top - (firstTileRow.map { layout.starts[$0] } ?? top)), stable: context.isIdle)
+                anchorOffset: Double(top - (firstTileRow.map { layout.starts[$0] } ?? top)), stable: context.isIdle && !unknownVisible,
+                surfaceProvider: { [weak grid = gridController, weak client = session.client] key in
+                    guard let client else { return nil }
+                    return grid?.checkpointSurface(for: key, client: client)
+                })
         }
     }
 
@@ -910,7 +925,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             onPinchEnded: { pinchEnded() },
             configureScrollView: { scrollView in
                 if photosConfiguration != nil {
-                    scrollView.contentInsetAdjustmentBehavior = extendsPhotosBehindBars ? .never : .always
+                    let fullCanvas = (photosConfiguration?.controls.mode ?? .all) == .all
+                    (scrollView as? TimelineGridView)?.usesFullPhotosCanvas = fullCanvas
+                    scrollView.contentInsetAdjustmentBehavior = fullCanvas ? .never : .always
                 }
                 selectionSlideController.attach(to: scrollView)
                 selectionSlideController.configure(
@@ -928,6 +945,10 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     }
 
     private func handleScroll(_ scroll: TimelineGridScroll) {
+        // This callback describes the actual UIScrollView, including its
+        // behind-bar extent and current adjusted insets.
+        scrollContext.viewportHeight = scroll.containerHeight
+        if let layout = model.launchLayout { scrollContext.viewportWidth = CGFloat(layout.width) }
         if let controls = photosConfiguration?.controls, completedPhotosRestoration, !controls.isRestoring {
             if photosConfiguration?.completePeriodIndex == true {
                 controls.observeScroll(offset: scroll.offsetY, endOffset: gridController.endOffset,
@@ -1050,10 +1071,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             .onChange(of: scrollResetTrigger) {
                 gridController.scrollToTop()
             }
-            .onChange(of: geometry.size.height, initial: true) { _, height in
+            .onChange(of: geometry.size.height, initial: true) { _, _ in
                 periodMotion.cancel()
-                scrollContext.viewportHeight = height
-                updateLaunchLayout(width: geometry.size.width, height: height)
                 updateVisibleRows()
             }
             .onChange(of: geometry.size.width, initial: true) { _, width in
@@ -1064,7 +1083,6 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     applyColumnCount(controls.columns, viewportWidth: width, viewportHeight: geometry.size.height,
                                      preservedFraction: scrub.fraction, recordsUserPreference: true)
                 }
-                updateLaunchLayout(width: width, height: geometry.size.height)
             }
             .onChange(of: photosConfiguration?.controls.columns) { _, columns in
                 guard let columns, columns != columnCount else { return }
@@ -1225,10 +1243,6 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             if let client = session.client {
                 model.attach(client, backup: session.backup, hub: session.realtime, preparesLaunchViewport: true)
                 model.columns = columnCount
-                if scrollContext.viewportWidth > 0, scrollContext.viewportHeight > 0 {
-                    model.launchLayout = .init(width: Double(scrollContext.viewportWidth), height: Double(scrollContext.viewportHeight),
-                        scale: Double(displayScale), columns: columnCount)
-                }
                 // capture list only - a self capture would cycle through the
                 // @state storage that owns the model and leak it on pop. the
                 // weak capture is renamed so it does not shadow the strong
@@ -1268,6 +1282,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // the pipeline outlives the screen, so a window left open would keep
         // downloading tiles for a grid nobody is looking at.
         .onDisappear {
+            model.releaseCachedLaunch()
             photosConfiguration?.controls.isSelecting = false
             MediaPresentationCoordinator.shared.cancelCheckpoint()
             prefetcher.cancel()
@@ -1333,15 +1348,6 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 session.backup?.noteRemoteEdits([asset.id])
             }
         }
-    }
-
-    private func updateLaunchLayout(width: CGFloat, height: CGFloat) {
-        guard width > 0, height > 0 else { return }
-        // A size callback may precede the adaptive/remembered column callback.
-        // Resume startup only when both describe the layout the grid will use.
-        let expectedColumns = photosConfiguration?.controls.columns ?? columnTarget(viewportWidth: width)
-        guard columnCount == expectedColumns else { return }
-        model.launchLayout = .init(width: Double(width), height: Double(height), scale: Double(displayScale), columns: columnCount)
     }
 
     // MARK: - rows
@@ -1470,6 +1476,20 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 viewportWidth: context.viewportWidth,
                 columns: model.columns
             )
+            if model.hasRestoredLaunchViewport, let assetID = context.firstVisibleAssetID,
+               let oldRow = model.rowIndex(containingAnyOf: [assetID]), old.indices.contains(oldRow),
+               let oldStart = TimelineModel.rowStart(of: old[oldRow].id, in: old, tileSide: side) {
+                // W0 metadata contains only visible assets. Expanding its day
+                // from the normal cache/server changes row ordinals; preserve
+                // the actual visible subject rather than the provisional rowID.
+                apply()
+                if let newRow = model.rowIndex(containingAnyOf: [assetID]), new.indices.contains(newRow),
+                   let newStart = TimelineModel.rowStart(of: new[newRow].id, in: new, tileSide: side) {
+                    grid.scrollTo(y: max(0, context.offsetY + newStart - oldStart))
+                }
+                grid.reloadRows(animated: false)
+                return
+            }
             if let oldStart = TimelineModel.rowStart(of: anchor, in: old, tileSide: side),
                let newStart = TimelineModel.rowStart(of: anchor, in: new, tileSide: side),
                abs(newStart - oldStart) > 0.5 {

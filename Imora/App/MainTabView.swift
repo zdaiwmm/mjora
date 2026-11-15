@@ -34,6 +34,7 @@ struct MainTabView: View {
                     isSearchPresented = false
                     isSearchFocused = false
                 }
+                if tab != .photos { session.cachedLaunchHandle?.cancel() }
                 selection = tab
             }
         )
@@ -191,7 +192,9 @@ struct MainTabView: View {
         }
         // leaving the locked folder for another tab locks it, whether or
         // not the folder's own disappearance fires on this tab style.
+        .onDisappear { session.cachedLaunchHandle?.cancel() }
         .onChange(of: selection) { _, _ in
+            if selection != .photos { session.cachedLaunchHandle?.cancel() }
             session.lockedFolder?.lock()
             if selection != .search {
                 isSearchPresented = false

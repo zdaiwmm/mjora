@@ -31,6 +31,15 @@ nonisolated final class ImoraClient: Sendable {
     private let sessions = Mutex<[String: URLSession]>([:])
     private let mediaStore = ControlledMediaStore()
     private let verifiedMediaScope = Mutex<StableMediaScope?>(nil)
+    private let mediaRecoveryHandler = Mutex<(@MainActor @Sendable (MediaCacheRecovery.Outcome, String?) -> Void)?>(nil)
+
+    func setMediaRecoveryHandler(_ handler: @escaping @MainActor @Sendable (MediaCacheRecovery.Outcome, String?) -> Void) {
+        mediaRecoveryHandler.withLock { $0 = handler }
+    }
+
+    @MainActor func reportMediaCacheRecovery(outcome: MediaCacheRecovery.Outcome, notice: String?) {
+        mediaRecoveryHandler.withLock { $0 }?(outcome, notice)
+    }
 
     var mediaDisplayScope: StableMediaScope {
         if let scope = verifiedMediaScope.withLock({ $0 }) { return scope }
@@ -147,7 +156,14 @@ nonisolated final class ImoraClient: Sendable {
             session: transportSession(for: request, redirectsAllowed: false))
     }
 
-    func invalidateMediaCache() async { await mediaStore.invalidateCachedFiles() }
+    func invalidateMediaCache(assetIDs: [String]? = nil) async {
+        let failure = ImageLoader.shared.invalidateSubjects(client: self, subjects: assetIDs?.map { .remoteAsset($0) })
+        await MainActor.run {
+            if let failure { MediaCacheRecovery.handle(client: self, failure: failure) }
+            ImageLoadRecovery.shared.contentChanged()
+        }
+        await mediaStore.invalidateCachedFiles()
+    }
 
     func localMediaFile(_ url: URL) async throws -> ControlledMediaFile {
         let request = try authorizedRequest(url: url)
@@ -935,6 +951,7 @@ nonisolated final class ImoraClient: Sendable {
     /// replaces the asset's whole edit list; the server re-renders derivatives.
     func applyEdits(id: String, edits: [AssetEdit]) async throws {
         try await mutate("assets/\(id)/edits", method: "PUT", body: ["edits": edits])
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     /// Enhanced save has one complete mutation, followed by authoritative readback
@@ -947,10 +964,12 @@ nonisolated final class ImoraClient: Sendable {
             if intent.isEmpty { try await self.clearEdits(id: id) }
             else { try await self.applyEdits(id: id, edits: intent) }
         }, read: { try await self.assetEdits(id: id) })
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     func clearEdits(id: String) async throws {
         try await mutate("assets/\(id)/edits", method: "DELETE", body: Optional<Int>.none)
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     /// neutral when the photo has none.
@@ -964,10 +983,12 @@ nonisolated final class ImoraClient: Sendable {
 
     func setImageAdjust(id: String, _ adjust: ImageAdjust) async throws {
         try await mutate("assets/\(id)/adjust", method: "PUT", body: adjust)
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     func removeImageAdjust(id: String) async throws {
         try await mutate("assets/\(id)/adjust", method: "DELETE", body: Optional<Int>.none)
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     /// nil when the video is not trimmed, which the server answers with a 404.
@@ -981,12 +1002,12 @@ nonisolated final class ImoraClient: Sendable {
 
     func setVideoTrim(id: String, start: Double, end: Double) async throws {
         try await mutate("assets/\(id)/trim", method: "PUT", body: VideoTrim(startTime: start, endTime: end))
-        await invalidateMediaCache()
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     func removeVideoTrim(id: String) async throws {
         try await mutate("assets/\(id)/trim", method: "DELETE", body: Optional<Int>.none)
-        await invalidateMediaCache()
+        await invalidateMediaCache(assetIDs: [id])
     }
 
     func setVisibility(ids: [String], _ value: AssetVisibility) async throws {
