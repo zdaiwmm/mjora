@@ -331,6 +331,10 @@ nonisolated struct Asset: Identifiable, Hashable, Codable, Sendable {
     var stackCount: Int? = nil
     /// Device content revision; independent of the server derivative thumbhash.
     var localImageVersion: String? = nil
+    /// Exact PhotoKit subtype when known. Never inferred from a filename.
+    var isScreenshot: Bool? = nil
+    /// Membership in App cloud albums, not the device's Photos albums.
+    var isInAppAlbum: Bool? = nil
 
     var isLocal: Bool { localIdentifier != nil }
     var isStacked: Bool { (stackCount ?? 0) > 1 }

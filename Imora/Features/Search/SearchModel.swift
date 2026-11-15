@@ -238,6 +238,9 @@ extension SearchModel: RealtimeListener {
     func realtimeAssetsRemoved(_ ids: Set<String>) { scheduleRealtimeRefresh() }
     func realtimeAssetUpdated(_ detail: AssetDetail) { scheduleRealtimeRefresh() }
     func realtimeResync() { scheduleRealtimeRefresh() }
+    func realtimeAlbumsChanged() {
+        if filter.notInAlbum { scheduleRealtimeRefresh() }
+    }
 
     private func scheduleRealtimeRefresh() {
         realtimeRefreshTask?.cancel()

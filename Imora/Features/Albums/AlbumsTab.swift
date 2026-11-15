@@ -393,9 +393,19 @@ struct AlbumCard: View {
 struct AlbumPickerSheet: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
-    let assetIDs: [String]
+    @State private var request: AlbumAddSelection
+    private var assetIDs: [String] { request.assetIDs }
+    private var localIdentifiers: [String] { request.localIdentifiers }
     let onApplied: () -> Void
     let onRollback: (Set<String>) -> Void
+
+    init(assetIDs: [String], localIdentifiers: [String] = [], sourceAccountGeneration: UUID? = nil,
+         onApplied: @escaping () -> Void, onRollback: @escaping (Set<String>) -> Void) {
+        _request = State(initialValue: AlbumAddSelection(assetIDs: assetIDs,
+            localIdentifiers: localIdentifiers, accountGeneration: sourceAccountGeneration))
+        self.onApplied = onApplied
+        self.onRollback = onRollback
+    }
 
     @State private var albums: [Album] = []
     @State private var newAlbumName = ""
@@ -404,6 +414,15 @@ struct AlbumPickerSheet: View {
     @State private var isLoading = true
 
     var body: some View {
+        if localIdentifiers.isEmpty {
+            remotePicker
+        } else {
+            AddToAlbumSheet(assetIDs: assetIDs, localIdentifiers: localIdentifiers,
+                            sourceAccountGeneration: request.accountGeneration) { _ in onApplied() }
+        }
+    }
+
+    private var remotePicker: some View {
         NavigationStack {
             List {
                 Section {

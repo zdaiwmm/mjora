@@ -36,6 +36,7 @@ final class SessionStore {
         capabilities.supportsTags && preferences?.tagsEnabled != false
     }
     private(set) var backup: BackupManager?
+    private(set) var favorites: PhotoFavoriteCoordinator?
     private(set) var realtime: RealtimeHub?
     private(set) var lockedFolder: LockedFolderSession?
     private(set) var notifications: NotificationInbox?
@@ -57,6 +58,7 @@ final class SessionStore {
     @ObservationIgnored private var preferenceProjectionRevisions: [String: Int] = [:]
     @ObservationIgnored private var pendingPreferenceMutationCounts: [String: Int] = [:]
     @ObservationIgnored private var refreshUserRevision = 0
+    @ObservationIgnored private var favoriteIdentityTask: Task<Void, Never>?
 
     private static let serverKey = "imora.serverURL"
     private static let tokenKey = "accessToken"
@@ -161,6 +163,10 @@ final class SessionStore {
         RecentSearches.eraseAll()
         realtime?.shutdown()
         realtime = nil
+        favorites?.shutdown()
+        favorites = nil
+        favoriteIdentityTask?.cancel()
+        favoriteIdentityTask = nil
         lockedFolder?.shutdown()
         lockedFolder = nil
         backup?.shutdown()
@@ -215,6 +221,7 @@ final class SessionStore {
             guard revision == refreshUserRevision, self.client === client else { return }
             self.user = user
             SessionCache.noteUserId(user.id)
+            configureFavorites(client: client)
             backup?.userId = user.id
             await backup?.primeLocalState()
         } catch ImoraError.http(401, _) {
@@ -412,6 +419,10 @@ final class SessionStore {
             ShareUploadCoordinator.shared.cancelAll()
             backup?.shutdown()
             realtime?.shutdown()
+            favorites?.shutdown()
+            favorites = nil
+            favoriteIdentityTask?.cancel()
+            favoriteIdentityTask = nil
         }
         LocalServerRouter.shared.activate(external: client.apiURL)
         if profileImageCacheKey == nil {
@@ -442,6 +453,7 @@ final class SessionStore {
             self.adoptServerVersion(version, from: client)
         }
         realtime = hub
+        configureFavorites(client: client)
         let inbox = NotificationInbox(client: client)
         hub.addListener(inbox)
         notifications = inbox
@@ -456,6 +468,65 @@ final class SessionStore {
         Task { await inbox.load() }
         backup.startIfIdle()
         hub.setActive(true)
+    }
+
+    private func configureFavorites(client: ImoraClient) {
+        guard self.client === client,
+              let account = FavoriteAccountIdentity.key(server: client.serverKey,
+                userID: user?.id ?? SessionCache.lastKnownUserId,
+                credentialScope: client.offlineAccountKey),
+              favorites?.account != account else { return }
+        if let provisional = favorites?.account, provisional.hasPrefix("credential:") {
+            if favorites?.isIdle == false {
+                guard favoriteIdentityTask == nil else { return }
+                favoriteIdentityTask = Task { [weak self, weak client, weak previous = favorites] in
+                    await previous?.waitUntilIdle()
+                    guard !Task.isCancelled, let self, let client, let previous,
+                          self.client === client, self.favorites === previous else { return }
+                    self.favoriteIdentityTask = nil
+                    self.configureFavorites(client: client)
+                }
+                return
+            }
+            do { try FavoriteIntentStore.shared.confirmAccount(credentialScope: provisional, account: account) }
+            catch { return } // Keep the existing authenticated queue usable.
+        }
+        favorites?.shutdown()
+        let favorites = PhotoFavoriteCoordinator(account: account,
+            writeLocal: { id, value in
+                try await LocalFavoriteWriter.set(localIdentifier: id, value: value)
+            }, writeRemote: { [weak client] id, value in
+                guard let client else { throw CancellationError() }
+                try await client.setFavorite(ids: [id], value)
+            })
+        favorites.onChange = { [weak self, weak client] in
+            guard let self, let client, self.client === client else { return }
+            self.realtime?.notifyLocalChange()
+        }
+        self.favorites = favorites
+        favorites.start()
+    }
+
+    func projectingFavorite(_ asset: Asset) -> Asset {
+        // PhotoKit is authoritative for the device source. A pending cloud
+        // write must never pretend an inaccessible device photo was changed.
+        guard !asset.isLocal,
+              let value = favorites?.pendingValue(remoteID: asset.id) else { return asset }
+        var projected = asset
+        projected.isFavorite = value
+        return projected
+    }
+
+    func setFavorite(_ asset: Asset, value: Bool) async throws -> FavoriteMutationResult {
+        guard let favorites else { throw PhotoFavoriteCoordinator.Failure.inactive }
+        let paired = backup?.pairedLocalIdentifierByRemoteId[asset.id]
+        let localID = asset.localIdentifier ?? paired.flatMap {
+            LocalFavoriteWriter.isAccessible($0) ? $0 : nil
+        }
+        let remoteID = asset.isLocal
+            ? asset.localIdentifier.flatMap { backup?.remoteIdentifierByLocalId[$0] }
+            : asset.id
+        return try await favorites.set(localID: localID, remoteID: remoteID, value: value)
     }
 }
 

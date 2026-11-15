@@ -318,6 +318,55 @@ struct EditorGlassGlyphLabel: View {
     }
 }
 
+@MainActor
+struct EditorMenuAction {
+    let identifier: String
+    let title: String
+    let systemImage: String
+    var isEnabled = true
+    let action: () -> Void
+}
+
+/// A real button owns the menu's accessibility bounds. SwiftUI Menu can
+/// otherwise adopt the whole shared glass capsule, including sibling glyphs.
+@MainActor
+struct EditorMenuButton: UIViewRepresentable {
+    let systemImage: String
+    let label: String
+    let accessibilityIdentifier: String
+    let actions: [EditorMenuAction]
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        var configuration = UIButton.Configuration.plain()
+        configuration.contentInsets = .zero
+        configuration.baseForegroundColor = .label
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)
+        button.configuration = configuration
+        button.tintColor = .label
+        button.showsMenuAsPrimaryAction = true
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
+        updateUIView(button, context: context)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        button.configuration?.image = UIImage(systemName: systemImage)
+        button.accessibilityIdentifier = accessibilityIdentifier
+        button.accessibilityLabel = label
+        button.menu = UIMenu(children: actions.map { item in
+            UIAction(title: item.title, image: UIImage(systemName: item.systemImage),
+                     identifier: UIAction.Identifier(rawValue: item.identifier),
+                     attributes: item.isEnabled ? [] : [.disabled]) { _ in item.action() }
+        })
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
+        CGSize(width: 40, height: 44)
+    }
+}
+
 /// the tool's name in the middle of the glass row, as photos titles its nav
 /// bar: 14pt semibold caps in the secondary label colour.
 struct EditorBarTitle: View {
@@ -648,5 +697,75 @@ private struct EditorPrimaryBarRoom: ViewModifier {
             .onGeometryChange(for: EditorPrimaryBarLayout.self) { proxy in
                 EditorPrimaryBarLayout(size: proxy.size, safeArea: proxy.safeAreaInsets)
             } action: { layout = $0 }
+    }
+}
+
+nonisolated enum PhotoGeometryTool: String, CaseIterable, Identifiable {
+    case crop, straighten, horizontalPerspective, verticalPerspective
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .crop: String(localized: "Crop")
+        case .straighten: String(localized: "Straighten")
+        case .horizontalPerspective: String(localized: "Horizontal Perspective")
+        case .verticalPerspective: String(localized: "Vertical Perspective")
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .crop: "crop"
+        case .straighten: "dial.low"
+        case .horizontalPerspective: "perspective"
+        case .verticalPerspective: "trapezoid.and.line.vertical"
+        }
+    }
+    func value(_ photo: PhotoAdjust) -> Double {
+        switch self {
+        case .crop: 0
+        case .straighten: photo.straighten / 45
+        case .horizontalPerspective: photo.horizontalPerspective
+        case .verticalPerspective: photo.verticalPerspective
+        }
+    }
+    func set(_ amount: Double, photo: inout PhotoAdjust) {
+        let value = min(1, max(-1, amount))
+        switch self {
+        case .crop: break
+        case .straighten: photo.straighten = (value * 450).rounded() / 10
+        case .horizontalPerspective: photo.horizontalPerspective = (value * 100).rounded() / 100
+        case .verticalPerspective: photo.verticalPerspective = (value * 100).rounded() / 100
+        }
+    }
+}
+
+struct PhotoGeometryControls: View {
+    @Binding var selection: PhotoGeometryTool
+    @Binding var photo: PhotoAdjust
+    let onEditingChanged: (Bool) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 24) {
+                ForEach(PhotoGeometryTool.allCases) { item in
+                    Button { selection = item } label: {
+                        EditorToolButton(systemImage: item.symbol, value: item.value(photo), isSelected: item == selection)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(item.title)
+                    .accessibilityIdentifier("edit-geometry-\(item.rawValue)")
+                    .accessibilityAddTraits(item == selection ? .isSelected : [])
+                }
+            }
+            if selection != .crop {
+                EditorRuler(value: Binding(get: { selection.value(photo) }, set: { selection.set($0, photo: &photo) }), onEditingChanged: onEditingChanged)
+                    .accessibilityLabel(selection.title)
+                    .accessibilityIdentifier("edit-geometry-ruler")
+            } else {
+                Text("Drag the frame to crop").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .overlay(alignment: .top) {
+            EditorToolLabel(text: selection.title).offset(y: -24.33).allowsHitTesting(false)
+        }
     }
 }

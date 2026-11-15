@@ -28,6 +28,9 @@ struct PhotosToolbarConfiguration {
     var onBackup: () -> Void
     var onNotifications: () -> Void
     var onSearch: () -> Void
+    var pendingFavoriteCount = 0
+    var favoriteSyncFailed = false
+    var onRetryFavoriteSync: () -> Void = {}
 }
 
 struct PhotosSourceMenu: View {
@@ -37,7 +40,7 @@ struct PhotosSourceMenu: View {
     private var unreadCount: Int { session.notifications?.unreadCount ?? 0 }
 
     private var title: String {
-        configuration.source.wrappedValue == "local" ? String(localized: "On Device") : String(localized: "Photos")
+        configuration.source.wrappedValue == "local" ? String(localized: "On Device") : String(localized: "Library")
     }
 
     var body: some View {
@@ -47,6 +50,20 @@ struct PhotosSourceMenu: View {
                     .accessibilityIdentifier("photos-source-cloud")
                 Label("On Device", systemImage: "iphone").tag("local")
                     .accessibilityIdentifier("photos-source-local")
+            }
+            if let backup = session.backup, let status = backup.libraryStatus {
+                Section("Backup Status") {
+                    Text(status.completionText(backup.summary))
+                }
+            }
+            if configuration.pendingFavoriteCount > 0 {
+                Section("Favorite Sync") {
+                    Text("\(configuration.pendingFavoriteCount) favorites waiting to sync")
+                    if configuration.favoriteSyncFailed {
+                        Button("Retry Favorite Sync", action: configuration.onRetryFavoriteSync)
+                            .accessibilityIdentifier("photos-retry-favorite-sync")
+                    }
+                }
             }
             Section {
                 Button(action: configuration.onAccount) {
@@ -66,6 +83,11 @@ struct PhotosSourceMenu: View {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(title).font(.largeTitle.bold()).minimumScaleFactor(0.7).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                    if configuration.pendingFavoriteCount > 0 {
+                        Image(systemName: configuration.favoriteSyncFailed ? "exclamationmark.icloud" : "arrow.triangle.2.circlepath.icloud")
+                            .font(.caption)
+                            .accessibilityLabel("Favorites waiting to sync")
+                    }
                     if unreadCount > 0 {
                         Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.red)
                     }
@@ -85,12 +107,16 @@ struct PhotosSourceMenu: View {
         .tint(.primary)
         .accessibilityLabel(title)
         .accessibilityIdentifier("photos-source-menu")
+        .task(id: session.client?.offlineAccountKey) {
+            configuration.controls.loadVisualPreferences(account: session.client?.offlineAccountKey)
+        }
     }
 }
 
 struct PhotosBrowseMenu: View {
     @Bindable var controls: PhotosGridControls
     var supportsDateAdded = true
+    var source = "cloud"
 
     var body: some View {
         Menu {
@@ -106,6 +132,20 @@ struct PhotosBrowseMenu: View {
                     Label("Favorites", systemImage: "heart").tag(PhotoMediaFilter.favorites)
                 }
                 .pickerStyle(.inline)
+                Picker("Library Filters", selection: $controls.mediaFilter) {
+                    ForEach([PhotoMediaFilter.edited, .notInAlbum, .screenshots]) { type in
+                        Label(type.title, systemImage: type.symbol).tag(type)
+                            .disabled(!type.isAvailable(onDevice: source == "local"))
+                    }
+                }
+                .pickerStyle(.inline)
+                if source != "local" {
+                    Text("Screenshots are available On Device. This server does not provide screenshot classification.")
+                }
+                if controls.mediaFilter != .all {
+                    Button("Reset Filters") { controls.mediaFilter = .all }
+                        .accessibilityIdentifier("photos-reset-filters")
+                }
                 Menu("Media Types", systemImage: "photo.on.rectangle") {
                     Picker("Media Types", selection: $controls.mediaFilter) {
                         ForEach([PhotoMediaFilter.photos, .videos, .livePhotos]) { type in
@@ -127,6 +167,8 @@ struct PhotosBrowseMenu: View {
                 Section {
                     Toggle("Original Aspect Ratio Grid", isOn: $controls.usesOriginalAspectRatio)
                     Toggle("Date Group Headers", isOn: $controls.groupsByDate)
+                    Toggle("Show All Backup Statuses", isOn: $controls.showsAllBackupStatuses)
+                        .accessibilityIdentifier("photos-show-all-backup-statuses")
                 }
             } label: {
                 Label("View Options", systemImage: "rectangle.grid.3x3")
@@ -160,7 +202,7 @@ struct PhotoPeriodControls: View {
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
-                .accessibilityLabel("Show Photos and Albums Navigation")
+                .accessibilityLabel("Show Library and Collections Navigation")
                 Picker("Browse Photos", selection: $controls.mode) {
                     ForEach(PhotoBrowseMode.allCases) { mode in Text(mode.title).tag(mode) }
                 }
@@ -196,8 +238,8 @@ struct PhotosNavigationBar: View {
     private var motion: Animation? { reduceMotion ? nil : .smooth(duration: 0.35) }
 
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 12) {
+        GlassEffectContainer(spacing: showsPeriods ? 14 : 12) {
+            HStack(spacing: showsPeriods ? 14 : 12) {
                 if showsPeriods {
                     Button {
                         withAnimation(motion) {
@@ -206,13 +248,15 @@ struct PhotosNavigationBar: View {
                         }
                     } label: {
                         Image(systemName: "photo.on.rectangle.fill")
-                            .frame(width: 36, height: 36)
+                            .font(.system(size: 23, weight: .medium))
+                            .frame(width: 48, height: 48)
                             .contentShape(.circle)
                     }
+                    .foregroundStyle(Color.blue)
                     .buttonStyle(.plain)
                     .glassEffect(.regular.interactive(), in: .circle)
                     .glassEffectID("navigation", in: glassNamespace)
-                    .accessibilityLabel("Show Photos and Albums Navigation")
+                    .accessibilityLabel("Show Library and Collections Navigation")
                     .accessibilityIdentifier("photos-show-navigation")
 
                     NativePhotoPeriodPicker(selection: Binding(get: { controls.mode }, set: { mode in
@@ -221,15 +265,14 @@ struct PhotosNavigationBar: View {
                             controls.mode = mode
                         }
                     }))
-                    .frame(maxWidth: 260)
-                    .frame(height: 36)
-                    .padding(.horizontal, 4)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
                     .glassEffect(.regular, in: .capsule)
                     .glassEffectID("periods", in: glassNamespace)
                 } else {
                     HStack(spacing: 0) {
-                        tab(.photos, title: "Photos", symbol: "photo.on.rectangle")
-                        tab(.albums, title: "Albums", symbol: "rectangle.stack")
+                        tab(.photos, title: "Library", symbol: selection == .photos ? "photo.on.rectangle.fill" : "photo.on.rectangle")
+                        tab(.albums, title: "Collections", symbol: selection == .albums ? "rectangle.stack.fill" : "rectangle.stack")
                     }
                     .padding(4)
                     .glassEffect(.regular.interactive(), in: .capsule)
@@ -238,8 +281,8 @@ struct PhotosNavigationBar: View {
                 }
                 Button(action: onSearch) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: showsPeriods ? 17 : 21, weight: .medium))
-                        .frame(width: showsPeriods ? 36 : 62, height: showsPeriods ? 36 : 62)
+                        .font(.system(size: showsPeriods ? 24 : 21, weight: .medium))
+                        .frame(width: showsPeriods ? 48 : 62, height: showsPeriods ? 48 : 62)
                         .contentShape(.circle)
                 }
                 .buttonStyle(.plain)
@@ -249,9 +292,12 @@ struct PhotosNavigationBar: View {
                 .accessibilityIdentifier("photos-search")
             }
             .frame(maxWidth: .infinity)
+            // Native Photos' date controls end 28pt above the screen edge;
+            // the expanded Library/Collections navigation ends at 21pt.
+            .padding(.bottom, showsPeriods ? 7 : 0)
             .frame(height: 62, alignment: .bottom)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, showsPeriods ? 28 : 20)
         .foregroundStyle(Color.primary)
         .tint(.primary)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -297,6 +343,10 @@ private struct NativePhotoPeriodPicker: UIViewRepresentable {
         control.accessibilityIdentifier = "photos-period-picker"
         control.accessibilityLabel = String(localized: "Browse Photos")
         control.backgroundColor = .clear
+        control.selectedSegmentTintColor = .tertiarySystemFill
+        let title: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 17, weight: .medium)]
+        control.setTitleTextAttributes(title, for: .normal)
+        control.setTitleTextAttributes(title, for: .selected)
         control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
         return control
     }
@@ -316,7 +366,7 @@ private struct NativePhotoPeriodPicker: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UISegmentedControl, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? 240, height: proposal.height ?? 36)
+        CGSize(width: proposal.width ?? 222, height: proposal.height ?? 48)
     }
 
     final class Coordinator: NSObject {

@@ -37,6 +37,7 @@ private final class ScrollContext {
     var isIdle = true
     var viewportWidth: CGFloat = 0
     var viewportHeight: CGFloat = 0
+    var viewportShowsPhotoOverview = false
     /// the previous offset sample and when it was taken, for the velocity.
     var lastSampledOffsetY: CGFloat = 0
     var lastSampleTime: CFTimeInterval = 0
@@ -421,6 +422,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     @State private var scrollContext = ScrollContext()
     @State private var rowLayoutBox = TimelineRowLayoutBox()
     @State private var gridController = TimelineGridController()
+    @State private var periodMotion = PhotoPeriodMotion()
     @State private var openingChromePrewarmOwner = UUID()
     @State private var pendingAlbumAssets: [String]?
     @State private var pendingSpaceAssets: [String]?
@@ -783,7 +785,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         if isSelecting, !isPicking {
             if let configuration = photosConfiguration {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded)
+                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded, source: configuration.source.wrappedValue)
                 }
             }
             if filter.isTrashed != true {
@@ -803,7 +805,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         } else {
             if let configuration = photosConfiguration {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded)
+                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded, source: configuration.source.wrappedValue)
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
             }
@@ -854,6 +856,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             columns: columnCount,
             targetPixelSize: thumbnailPixelSize(for: side),
             showsBackupBadge: mergesLocalPhotos,
+            showsAllBackupStatuses: photosConfiguration?.controls.showsAllBackupStatuses ?? false,
             usesOriginalAspectRatio: photosConfiguration?.controls.usesOriginalAspectRatio ?? false,
             isSelecting: isSelecting,
             selection: selection,
@@ -938,6 +941,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     }
 
     private func handleScrollIdle(_ isIdle: Bool) {
+        if !isIdle { periodMotion.cancel() }
         scrollContext.isIdle = isIdle
         if isIdle {
             settleMotion()
@@ -1037,10 +1041,16 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 gridController.scrollToTop()
             }
             .onChange(of: geometry.size.height, initial: true) { _, height in
+                let overview = photosConfiguration != nil && photosConfiguration?.controls.mode != .all
+                // The overview hides Library's navigation bar. That expected
+                // height change belongs to the current photo transition.
+                if overview == scrollContext.viewportShowsPhotoOverview { periodMotion.cancel() }
+                scrollContext.viewportShowsPhotoOverview = overview
                 scrollContext.viewportHeight = height
                 updateVisibleRows()
             }
             .onChange(of: geometry.size.width, initial: true) { _, width in
+                periodMotion.cancel()
                 applyViewportWidth(width, viewportHeight: geometry.size.height)
                 photosConfiguration?.controls.viewportWidth = width
                 if let controls = photosConfiguration?.controls, columnCount != controls.columns {
@@ -1113,6 +1123,22 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 )
             }
         }
+        .onAppear {
+            periodMotion.reducesMotion = reduceMotion
+            photosConfiguration?.controls.onModeChange = { from, to in preparePeriodTransition(from: from, to: to) }
+        }
+        .onDisappear {
+            photosConfiguration?.controls.onModeChange = nil
+            periodMotion.cancel()
+        }
+        .onChange(of: reduceMotion) { _, enabled in
+            periodMotion.reducesMotion = enabled
+            if enabled { periodMotion.cancel() }
+        }
+        .onChange(of: session.client?.offlineAccountKey) { _, _ in
+            periodMotion.cancel()
+            photosConfiguration?.controls.periodAnchor = nil
+        }
         .navigationTitle(title)
         .preference(key: PhotosSelectionPreferenceKey.self, value: isSelecting)
         .navigationBarTitleDisplayMode(showsLargeTitle ? .large : .inline)
@@ -1121,13 +1147,19 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // where they are instead of sliding away with it. only the tab bar
         // leaves, for the bottom controls, like the photos app.
         .toolbar { timelineToolbar }
+        .toolbarVisibility(photosConfiguration != nil && photosConfiguration?.controls.mode != .all ? .hidden : .automatic,
+                           for: .navigationBar)
         .toolbarVisibility(isSelecting || usesCompactPhotosNavigation ? .hidden : .automatic, for: .tabBar)
         .toolbarBackground(photosConfiguration == nil ? .automatic : .hidden, for: .navigationBar)
         .toolbarColorScheme(extendsPhotosBehindBars ? .dark : nil, for: .navigationBar)
         .overlay(alignment: .top) {
             if extendsPhotosBehindBars {
-                LinearGradient(colors: [.black.opacity(0.4), .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 150).ignoresSafeArea(edges: .top).allowsHitTesting(false)
+                Rectangle().fill(.ultraThinMaterial)
+                    .environment(\.colorScheme, .dark)
+                    .overlay(LinearGradient(colors: [.black.opacity(0.25), .clear], startPoint: .top, endPoint: .bottom))
+                    .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.3),
+                                                  .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                    .frame(height: 165).ignoresSafeArea(edges: .top).allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .navigationBarBackButtonHidden(isSelecting)
@@ -1136,8 +1168,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         .overlay {
             if let configuration = photosConfiguration, configuration.controls.mode != .all {
-                PhotoPeriodsView(model: model, controls: configuration.controls)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                PhotoCalendarOverview(gridModel: model, controls: configuration.controls, motion: periodMotion)
+                    .transition(.identity)
             }
         }
         .overlay(alignment: .bottom) {
@@ -1181,6 +1213,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         // no pull-to-refresh: the realtime hub keeps every grid current.
         .task {
+            model.assetProjection = { [weak session = session] asset in
+                session?.projectingFavorite(asset) ?? asset
+            }
             if let client = session.client {
                 model.attach(client, backup: session.backup, hub: session.realtime)
                 model.columns = columnCount
@@ -1227,11 +1262,16 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             ImageLoader.shared.setSweepPaused(false)
         }
         .sheet(item: $pendingAlbumAssets) { ids in
+            let selected = model.flatAssets.filter { ids.contains($0.id) }
             AlbumPickerSheet(
-                assetIDs: ids,
+                assetIDs: selected.compactMap { serverIdentifier(for: $0) },
+                localIdentifiers: selected.filter { serverIdentifier(for: $0) == nil }.compactMap(\.localIdentifier),
+                sourceAccountGeneration: session.client?.context.id,
                 onApplied: exitSelection,
                 onRollback: { failedIDs in
-                    selection.formUnion(failedIDs)
+                    selection.formUnion(selected.filter { asset in
+                        serverIdentifier(for: asset).map { failedIDs.contains($0) } ?? false
+                    }.map(\.id))
                     isSelecting = !selection.isEmpty
                 }
             )
@@ -1259,8 +1299,18 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
         }
         .fullScreenCover(item: $pendingEditAsset) { asset in
-            AssetEditScreen(asset: asset) { outcome in
+            AssetEditScreen(asset: asset,
+                            localAssetIdentifier: asset.localIdentifier,
+                            onLocalSaved: { _ in
+                LocalImageLoader.shared.noteLibraryChange()
+                model.updateAssets(ids: [asset.id]) { $0.localImageVersion = UUID().uuidString }
+                session.realtime?.notifyLocalChange()
+            }, onRemoteSaveUnconfirmed: { _ in
+                session.backup?.noteRemoteEdits([asset.id])
+                model.realtimeResync()
+            }) { outcome in
                 guard case .saved(let detail) = outcome else { return }
+                guard !asset.isLocal else { return }
                 model.updateAssets(ids: [asset.id]) { current in
                     if let thumbhash = detail?.thumbhash { current.thumbhash = thumbhash }
                     if current.isVideo, let duration = detail?.duration { current.duration = duration }
@@ -1303,24 +1353,57 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         else if filter.order?.lowercased() == "asc" { gridController.scrollToEnd() }
     }
 
+    private func preparePeriodTransition(from: PhotoBrowseMode, to: PhotoBrowseMode) {
+        guard let controls = photosConfiguration?.controls else { return }
+        var tile: TimelineTileView?
+        if from == .all {
+            tile = gridController.periodTile(assetID: controls.periodAnchor?.asset.id) ?? gridController.periodTile()
+            if let asset = tile?.asset,
+               let bucket = model.sections.first(where: { $0.days?.contains(where: { $0.assets.contains(where: { $0.id == asset.id }) }) == true }) {
+                controls.periodAnchor = PhotoPeriodAnchor(asset: asset, bucketID: bucket.id, scrollOffset: gridController.scrollOffset)
+            }
+        }
+        guard let anchor = controls.periodAnchor else { periodMotion.cancel(); return }
+        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile, reduceMotion: periodMotion.reducesMotion)
+        if to == .all {
+            controls.scrollRequest = PhotoScrollRequest(bucketID: anchor.bucketID, assetID: anchor.asset.id)
+        }
+    }
+
     private func revealPhotoPeriod(_ request: PhotoScrollRequest) async {
         guard let controls = photosConfiguration?.controls else { return }
         controls.isRestoring = true
         defer {
-            controls.scrollOffset = gridController.scrollOffset
-            controls.isRestoring = false
+            if controls.scrollRequest == request {
+                controls.scrollOffset = gridController.scrollOffset
+                controls.isRestoring = false
+            }
         }
-        guard let bucketID = request.bucketID else {
+        guard let requestedBucketID = request.bucketID else {
             gridController.scrollToEnd()
             return
         }
+        let bucketID: String
+        if model.filter.groupsByUploadDate, let anchor = controls.periodAnchor,
+           anchor.asset.id == request.assetID {
+            guard let mapped = PhotoCalendarSource.gridBucketID(for: anchor.asset, in: model) else {
+                ErrorToastCenter.shared.show(String(localized: "Couldn't locate this photo in the current sort. Try again."))
+                return
+            }
+            bucketID = mapped
+        } else { bucketID = requestedBucketID }
         await model.loadBucket(bucketID)
         guard controls.scrollRequest == request,
-              let assetID = model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,
+              let assetID = request.assetID ?? model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,
               let rowIndex = model.rowIndex(containingAnyOf: [assetID]) else { return }
         let layout = rowLayout(side: tileSide(for: scrollContext.viewportWidth))
         guard layout.starts.indices.contains(rowIndex) else { return }
-        gridController.scrollTo(y: scrub.headerHeight + layout.starts[rowIndex])
+        gridController.reloadRows(animated: false)
+        let sourceOffset = controls.periodAnchor.flatMap { $0.asset.id == assetID ? $0.scrollOffset : nil }
+        gridController.scrollTo(y: sourceOffset ?? (scrub.headerHeight + layout.starts[rowIndex]))
+        await Task.yield()
+        guard controls.scrollRequest == request, controls.mode == .all else { return }
+        if let tile = gridController.periodTile(assetID: assetID) { periodMotion.arrive(at: tile, mode: .all) }
     }
 
     private func revealPendingTimelineTarget() async {
@@ -1403,7 +1486,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             toggleSelection: { toggle($0) },
             menu: { UIMenu(children: menuElements(for: $0)) },
             makeViewer: { asset, startsAsContextPreview, bounds in
-                viewerController(
+                periodMotion.cancel()
+                return viewerController(
                     for: asset,
                     startsAsContextPreview: startsAsContextPreview,
                     previewBounds: bounds
@@ -1442,13 +1526,13 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 Task { _ = await restore(ids: [serverID]) }
             })
         }
-        if availability.canFavorite, let serverID {
+        if availability.canFavorite {
             primary.append(UIAction(
                 title: asset.isFavorite ? String(localized: "Unfavorite") : String(localized: "Favorite"),
                 image: UIImage(systemName: asset.isFavorite ? "heart.slash" : "heart"),
                 attributes: mutationAttributes
             ) { _ in
-                Task { _ = await favorite(ids: [serverID], value: !asset.isFavorite) }
+                Task { _ = await favorite(ids: [asset.id], value: !session.projectingFavorite(asset).isFavorite) }
             })
         }
         if availability.canEdit {
@@ -1456,9 +1540,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 pendingEditAsset = asset
             })
         }
-        if availability.canAddToAlbum, let serverID {
+        if availability.canAddToAlbum {
             primary.append(UIAction(title: String(localized: "Add to Album"), image: UIImage(systemName: "rectangle.stack.badge.plus")) { _ in
-                pendingAlbumAssets = [serverID]
+                pendingAlbumAssets = [asset.id]
             })
         }
         if canRemoveFromAlbum(asset), let serverID {
@@ -1651,10 +1735,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         onSetAlbumCover != nil && !asset.isLocal && !asset.isTrashed
     }
 
-    /// device photos join selection only while they still need a backup, so
-    /// server actions keep their remote-id contract for everything else.
+    /// Source-specific actions resolve device and server identities separately.
     private func isSelectable(_ asset: Asset) -> Bool {
-        if asset.isLocal { return !asset.isLocalBackedUp }
+        if asset.isLocal { return true }
         return owns(asset)
     }
 
@@ -1698,6 +1781,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     private func pinchChanged(_ magnification: CGFloat, viewportWidth: CGFloat, viewportHeight: CGFloat) {
         guard magnification > 0 else { return }
+        periodMotion.cancel()
         if pinchBaseColumns == nil {
             AssetViewerOpeningChromeCache.shared.cancelPrewarming(
                 owner: openingChromePrewarmOwner
@@ -2046,6 +2130,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         let leavesCurrentFilter = filter.isFavorite.map { $0 != value } ?? false
         var favorite: TimelineFavoriteMutation?
         var removal: TimelineRemoval?
+        let selected = model.flatAssets.filter { requestedIDs.contains($0.id) }
+        guard selected.count == requestedIDs.count else { return false }
+        var allSucceeded = true
         let result: Void? = await OptimisticAction.perform(
             errorMessage: String(localized: "Couldn't update favorites"),
             apply: {
@@ -2062,7 +2149,28 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     model.restore(favorite)
                 }
             },
-            request: { try await client.setFavorite(ids: ids, value) },
+            request: {
+                var failed: Set<String> = []
+                var failure: Error?
+                for asset in selected {
+                    guard session.client === client else { throw CancellationError() }
+                    do {
+                        let outcome = try await session.setFavorite(asset, value: value)
+                        if outcome.storageFailed {
+                            ErrorToastCenter.shared.show(String(localized: "Saved on device. Cloud favorite couldn't be queued."))
+                        }
+                    } catch { failed.insert(asset.id); failure = error }
+                }
+                guard session.client === client else { throw CancellationError() }
+                if failed.count == requestedIDs.count, let failure { throw failure }
+                if !failed.isEmpty {
+                    allSucceeded = false
+                    if let removal { model.restore(removal, ids: failed) }
+                    else if let favorite { model.restore(favorite, ids: failed) }
+                    selection = failed
+                    ErrorToastCenter.shared.show(String(localized: "Some favorites couldn't be updated. Retry the selected photos."))
+                }
+            },
             commit: { _ in
                 if let removal {
                     model.commit(removal)
@@ -2071,7 +2179,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 }
             }
         )
-        return result != nil
+        return result != nil && allSucceeded
     }
 
     @discardableResult

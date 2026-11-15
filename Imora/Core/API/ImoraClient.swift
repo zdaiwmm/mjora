@@ -919,6 +919,18 @@ nonisolated final class ImoraClient: Sendable {
         try await mutate("assets/\(id)/edits", method: "PUT", body: ["edits": edits])
     }
 
+    /// Enhanced save has one complete mutation, followed by authoritative readback
+    /// when the response is lost. No second write is guessed after a timeout.
+    func savePhotoEdits(id: String, edits: [AssetEdit]) async throws {
+        guard await capabilities().supportsPhotoEditsV1 else {
+            throw ImoraError.http(400, String(localized: "This server doesn't support unified photo editing."))
+        }
+        try await PhotoEditPersistence.saveAtomic(intent: edits, write: { intent in
+            if intent.isEmpty { try await self.clearEdits(id: id) }
+            else { try await self.applyEdits(id: id, edits: intent) }
+        }, read: { try await self.assetEdits(id: id) })
+    }
+
     func clearEdits(id: String) async throws {
         try await mutate("assets/\(id)/edits", method: "DELETE", body: Optional<Int>.none)
     }

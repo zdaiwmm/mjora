@@ -66,6 +66,8 @@ struct CollectionsHome: View {
             if section == .pinned {
                 Button("Edit", action: onEditPins)
                     .font(.subheadline.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
                     .accessibilityIdentifier("collections-edit-pins")
             }
             Button {
@@ -99,11 +101,18 @@ struct CollectionsHome: View {
     @ViewBuilder private func content(_ section: CollectionSection) -> some View {
         switch section {
         case .memories:
-            MemoryLane(showsHeading: false, cardWidth: 221, cardHeight: 202,
-                       cornerRadius: 26, contentInset: 0, showsEmptyPlaceholder: true)
-                .padding(.trailing, -16)
+            if layout.previewSize == .none {
+                NavigationLink(value: CollectionsRoute.memories) {
+                    collectionRow(String(localized: "Memories"), symbol: "sparkles.rectangle.stack")
+                }
+            } else {
+                MemoryLane(showsHeading: false, cardWidth: layout.previewSize == .large ? 221 : 160,
+                           cardHeight: layout.previewSize == .large ? 202 : 140,
+                           cornerRadius: 22, contentInset: 0, showsEmptyPlaceholder: true)
+                    .padding(.trailing, -16)
+            }
         case .pinned:
-            horizontalStrip {
+            previewStrip {
                 ForEach(layout.pinnedIDs, id: \.self) { id in pinnedLink(id) }
                 if layout.pinnedIDs.isEmpty {
                     Button(action: onEditPins) {
@@ -114,12 +123,12 @@ struct CollectionsHome: View {
             }
         case .albums:
             if !albums.isEmpty {
-                horizontalStrip {
+                previewStrip {
                     ForEach(albums.prefix(12)) { album in
                         NavigationLink(value: album) {
                             CollectionsPreview(id: "album:\(album.id)", title: album.albumName,
                                                symbol: album.shared ? "person.2.fill" : "rectangle.stack.fill",
-                                               albumCoverID: album.albumThumbnailAssetId)
+                                               albumCoverID: album.albumThumbnailAssetId, previewSize: layout.previewSize)
                         }
                         .buttonStyle(.plain)
                         .disabled(album.isPending)
@@ -147,6 +156,17 @@ struct CollectionsHome: View {
         case .people:
             if people.isEmpty {
                 destination(.people, title: String(localized: "See All People"), symbol: "person.2.fill")
+            } else if layout.previewSize == .none {
+                VStack(spacing: 0) {
+                    ForEach(people.prefix(8)) { person in
+                        NavigationLink(value: person) {
+                            collectionRow(person.name.isEmpty ? String(localized: "Unnamed person") : person.name,
+                                          symbol: person.isPet ? "pawprint" : "person")
+                        }
+                        .disabled(changingPeople.contains(person.id))
+                        .contextMenu { personMenu(person) }
+                    }
+                }
             } else {
                 horizontalStrip {
                     ForEach(people.prefix(8)) { person in
@@ -164,6 +184,9 @@ struct CollectionsHome: View {
                 }
             }
         case .places:
+            if layout.previewSize == .none {
+                destination(.places, title: String(localized: "Explore Your Places"), symbol: "map.fill")
+            } else {
             NavigationLink(value: LibraryDestination.places) {
                 Label("Explore Your Places", systemImage: "map.fill")
                     .font(.headline)
@@ -172,6 +195,7 @@ struct CollectionsHome: View {
                     .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 22))
             }
             .accessibilityIdentifier("collections-places-map")
+            }
         case .media:
             VStack(spacing: 0) {
                 ForEach([PhotoMediaFilter.photos, .videos, .livePhotos]) { type in
@@ -208,15 +232,15 @@ struct CollectionsHome: View {
         if id.hasPrefix("album:"), let album = albums.first(where: { "album:\($0.id)" == id }) {
             NavigationLink(value: album) {
                 CollectionsPreview(id: id, title: album.albumName, symbol: "rectangle.stack.fill",
-                                   albumCoverID: album.albumThumbnailAssetId)
+                                   albumCoverID: album.albumThumbnailAssetId, previewSize: layout.previewSize)
             }.buttonStyle(.plain).disabled(album.isPending)
         } else if id == "recent" {
             NavigationLink(value: CollectionsRoute.recent) {
-                CollectionsPreview(id: id, title: String(localized: "Recently Added"), symbol: "clock")
+                CollectionsPreview(id: id, title: String(localized: "Recently Added"), symbol: "clock", previewSize: layout.previewSize)
             }.buttonStyle(.plain)
         } else if let destination = shortcutDestination(id), isAvailable(destination) {
             NavigationLink(value: destination) {
-                CollectionsPreview(id: id, title: shortcutTitle(id), symbol: shortcutSymbol(id))
+                CollectionsPreview(id: id, title: shortcutTitle(id), symbol: shortcutSymbol(id), previewSize: layout.previewSize)
             }.buttonStyle(.plain)
         }
     }
@@ -235,6 +259,11 @@ struct CollectionsHome: View {
         }
         .frame(minHeight: 49)
         .contentShape(.rect)
+    }
+
+    @ViewBuilder private func previewStrip<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if layout.previewSize == .none { VStack(spacing: 0, content: content) }
+        else { horizontalStrip(content: content) }
     }
 
     private func horizontalStrip<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -290,43 +319,80 @@ private struct CollectionsPreview: View {
     let title: String
     let symbol: String
     var albumCoverID: String? = nil
+    var previewSize: CollectionPreviewSize = .large
     @State private var cover: Asset?
-    @ScaledMetric(relativeTo: .body) private var side = 112.0
+    @State private var portraitURL: URL?
+    @ScaledMetric(relativeTo: .body) private var largeSide = 160.0
+    @ScaledMetric(relativeTo: .body) private var smallSide = 112.0
+    private var side: CGFloat { previewSize == .large ? largeSide : smallSide }
 
     private var assetID: String? { albumCoverID ?? cover?.id }
     var body: some View {
+        Group {
+            if previewSize == .none {
+                HStack(spacing: 12) {
+                    Image(systemName: symbol).font(.title3).frame(width: 27)
+                    Text(title).frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(.primary)
+                .frame(minHeight: 49)
+                .contentShape(.rect)
+            } else { preview }
+        }
+        .accessibilityLabel(title)
+        .task(id: "\(session.client?.offlineAccountKey ?? ""):\(id):\(previewSize.rawValue)") {
+            await loadCover()
+        }
+    }
+
+    private var preview: some View {
         Color(.secondarySystemBackground)
             .frame(width: side, height: side)
             .overlay {
                 if let assetID, let client = session.client {
                     RemoteImage(url: client.thumbnailURL(assetID: assetID), targetPixelSize: 400,
                                 thumbhash: cover?.thumbhash)
+                } else if let portraitURL {
+                    RemoteImage(url: portraitURL, targetPixelSize: 400)
                 } else { Image(systemName: symbol).font(.largeTitle).foregroundStyle(.tertiary) }
             }
             .overlay {
-                if assetID != nil {
+                if assetID != nil || portraitURL != nil {
                     LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
                 }
             }
             .overlay(alignment: .bottomLeading) {
                 Text(title).font(.caption.weight(.semibold)).lineLimit(2)
-                    .foregroundStyle(assetID == nil ? Color.primary : .white)
+                    .foregroundStyle(assetID == nil && portraitURL == nil ? Color.primary : .white)
                     .padding(10)
             }
             .clipShape(.rect(cornerRadius: 18))
-            .accessibilityLabel(title)
-            .task(id: "\(session.client?.offlineAccountKey ?? ""):\(id)") { await loadCover() }
     }
 
     private func loadCover() async {
-        guard albumCoverID == nil, ["favorites", "recent"].contains(id), let client = session.client else { return }
+        cover = nil
+        portraitURL = nil
+        guard previewSize != .none, albumCoverID == nil, let client = session.client else { return }
+        if id == "places" {
+            guard let asset = try? await client.cities().first, !Task.isCancelled, session.client === client else { return }
+            portraitURL = client.thumbnailURL(assetID: asset.id)
+            return
+        }
+        if id == "people" {
+            guard let person = try? await client.people().people.first, !Task.isCancelled, session.client === client else { return }
+            portraitURL = client.personThumbnailURL(personID: person.id, cacheKey: person.updatedAt)
+            return
+        }
         let filter: TimelineFilter
         if id == "recent" { filter = TimelineFilter(orderBy: "createdAt") }
+        else if id == "archive" { filter = TimelineFilter(visibility: .archive) }
+        else if id != "favorites" { return }
         else if session.capabilities.supportsFavoritesAcrossSpaces {
             filter = TimelineFilter(visibility: nil, withPartners: true, withSharedSpaces: true, isFavorite: true)
         } else { filter = TimelineFilter(isFavorite: true) }
         guard let bucket = try? await client.timeBuckets(filter).first,
-              let result = try? await client.timeBucket(bucket.timeBucket, filter: filter), session.client === client else { return }
+              let result = try? await client.timeBucket(bucket.timeBucket, filter: filter), !Task.isCancelled, session.client === client else { return }
         cover = result.assets.first
     }
 }

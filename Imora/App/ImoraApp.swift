@@ -119,6 +119,7 @@ struct RootView: View {
                 // and reconnects the realtime channel, which resyncs grids.
                 session.backup?.startIfIdle()
                 session.realtime?.setActive(true)
+                Task { await session.favorites?.flush() }
                 // the socket is down while backgrounded, so the inbox fetch is
                 // what surfaces anything raised in the meantime.
                 Task { await session.notifications?.load() }

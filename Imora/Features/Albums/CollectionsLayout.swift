@@ -44,21 +44,35 @@ extension SessionStore {
     }
 }
 
+nonisolated enum CollectionPreviewSize: String, CaseIterable, Codable, Identifiable {
+    case large, small, none
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .large: String(localized: "Large")
+        case .small: String(localized: "Small")
+        case .none: String(localized: "None")
+        }
+    }
+}
+
 /// Presentation preferences only; server content and permissions remain authoritative.
 nonisolated struct CollectionsLayout: Codable, Equatable {
     var sectionIDs = CollectionSection.allCases.map(\.rawValue)
     var collapsedIDs: [String] = []
     var pinnedIDs = ["favorites", "recent", "places"]
+    var previewSize: CollectionPreviewSize = .large
 
     var sections: [CollectionSection] { sectionIDs.compactMap(CollectionSection.init(rawValue:)) }
     var collapsed: Set<CollectionSection> { Set(collapsedIDs.compactMap(CollectionSection.init(rawValue:))) }
 
     init() {}
 
-    private enum CodingKeys: String, CodingKey { case sectionIDs, collapsedIDs, pinnedIDs }
+    private enum CodingKeys: String, CodingKey { case sectionIDs, collapsedIDs, pinnedIDs, previewSize }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        previewSize = (try? c.decode(CollectionPreviewSize.self, forKey: .previewSize)) ?? .large
         sectionIDs = try c.decodeIfPresent([String].self, forKey: .sectionIDs) ?? sectionIDs
         collapsedIDs = try c.decodeIfPresent([String].self, forKey: .collapsedIDs) ?? []
         pinnedIDs = try c.decodeIfPresent([String].self, forKey: .pinnedIDs) ?? pinnedIDs

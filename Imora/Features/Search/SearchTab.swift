@@ -6,6 +6,7 @@ struct SearchTab: View {
     @Environment(SessionStore.self) private var session
     @Binding var query: String
     @Binding var searchScope: SearchFilter.TextType
+    @Binding var source: PhotoSearchSource
     var submitRequest = 0
     /// moves focus in or out of the tab's search field, which the shell owns.
     let setSearchFocus: (Bool) -> Void
@@ -43,7 +44,12 @@ struct SearchTab: View {
 
     var body: some View {
         NavigationStack {
-            searchContent
+            if source == .device {
+                LocalPhotoSearchView(source: $source, query: query)
+            } else {
+                searchContent
+                    .onDisappear { model.clear() }
+            }
         }
     }
 
@@ -120,6 +126,12 @@ struct SearchTab: View {
 
     private var searchLayout: some View {
         VStack(spacing: 0) {
+            HStack {
+                PhotoSearchSourcePicker(source: $source)
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.top, 6)
             HStack(spacing: 0) {
                 searchModeMenu
                     .padding(.leading)

@@ -60,6 +60,7 @@ struct BackupScreen: View {
         .task { await session.backup?.refreshLibraryStatus() }
         .navigationTitle("Backup")
         .navigationBarTitleDisplayMode(.inline)
+        .tint(.accentColor)
         .confirmationDialog("Back up now?", isPresented: $confirmBackgroundConditions, titleVisibility: .visible) {
             if let backup = session.backup {
                 Button("Continue Backup in Background") { startBackup(backup) }

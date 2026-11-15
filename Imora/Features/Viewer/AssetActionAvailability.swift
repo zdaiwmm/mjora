@@ -47,10 +47,12 @@ nonisolated struct AssetActionAvailability: Equatable {
         canDownload = isRemoteAsset && isActive && pairedLocalIdentifier == nil
         canDeleteFromDevice = hasDeviceCopy
         canTrashEverywhere = ownsAsset && hasServerCopy && isActive && !isLocked
-        canFavorite = (ownsAsset || perUserFavorites) && isRemoteAsset && isActive
+        canFavorite = (asset.isLocal || ownsAsset || perUserFavorites) && isActive
         let editsMedia = asset.isImage || (trimsVideos && asset.isVideo)
-        canEdit = (serverCanEdit ?? ownsAsset) && isRemoteAsset && editsMedia && isActive
-        canAddToAlbum = hasServerCopy && isActive && !isLocked
+        let editsLocalStill = asset.isLocal && asset.isImage && !asset.isLivePhoto
+        canEdit = isActive && (editsLocalStill ||
+            ((serverCanEdit ?? ownsAsset) && isRemoteAsset && editsMedia))
+        canAddToAlbum = (hasServerCopy || asset.isLocal) && isActive && !isLocked
         canShareLink = ownsAsset && hasServerCopy && !isLocked
         canArchive = ownsAsset && isRemoteAsset && isActive && !isLocked
         canViewInTimeline = ownsAsset && isActive && asset.visibility == .timeline

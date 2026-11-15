@@ -349,6 +349,14 @@ final class TimelineModel {
     let mergesLocal: Bool
     let usesSuppliedAssets: Bool
     @ObservationIgnored var onAssetsChanged: ((TimelineAssetChange) -> Void)?
+    @ObservationIgnored var assetProjection: (Asset) -> Asset = { $0 } {
+        didSet { applyAssetProjection() }
+    }
+
+    private func applyAssetProjection() {
+        let project = assetProjection
+        updateAssets(ids: Set(flatAssets.map(\.id))) { $0 = project($0) }
+    }
     private(set) var sections: [TimelineSection] = []
     private(set) var rows: [TimelineRow] = []
     /// bumped when row geometry changes so the screen's exact row-offset cache
@@ -683,7 +691,7 @@ final class TimelineModel {
         var changed = false
         for index in sections.indices where sections[index].days == nil {
             guard let assets = restored[sections[index].id] else { continue }
-            sections[index].days = Self.groupByDay(assets, byUploadDate: filter.groupsByUploadDate)
+            sections[index].days = Self.groupByDay(assets.map(assetProjection), byUploadDate: filter.groupsByUploadDate)
             staleBucketIDs.insert(sections[index].id)
             changed = true
         }
@@ -785,7 +793,7 @@ final class TimelineModel {
             staleBucketIDs.remove(id)
             markEphemeralIfLocked(resolution.assets)
             let days = Self.groupByDay(
-                resolution.assets,
+                resolution.assets.map(assetProjection),
                 byUploadDate: filter.groupsByUploadDate
             )
             let changed = sections[current].days != days
@@ -826,7 +834,7 @@ final class TimelineModel {
               sections[current].days == nil
         else { return }
         staleBucketIDs.insert(id)
-        sections[current].days = Self.groupByDay(cached, byUploadDate: filter.groupsByUploadDate)
+        sections[current].days = Self.groupByDay(cached.map(assetProjection), byUploadDate: filter.groupsByUploadDate)
         noteProjectionInputsChanged()
         scheduleRebuild()
     }
@@ -914,7 +922,7 @@ final class TimelineModel {
     /// search supplies only its loaded matches; the timeline never fetches buckets.
     func replaceSuppliedAssets(_ assets: [Asset], groupsByDate: Bool) {
         guard usesSuppliedAssets else { return }
-        let next = Self.suppliedSections(assets, groupsByDate: groupsByDate)
+        let next = Self.suppliedSections(assets.map(assetProjection), groupsByDate: groupsByDate)
         guard sections != next else { return }
         sections = next
         noteProjectionInputsChanged()
@@ -1554,7 +1562,7 @@ final class TimelineModel {
                     staleBucketIDs.remove(id)
                     markEphemeralIfLocked(resolution.assets)
                     let days = Self.groupByDay(
-                        resolution.assets,
+                        resolution.assets.map(assetProjection),
                         byUploadDate: filter.groupsByUploadDate
                     )
                     if sections[index].days != days {
@@ -1871,10 +1879,10 @@ final class TimelineModel {
         mutationOverlay.commitFavorite(operationID: favorite.operationID, ids: favorite.ids)
     }
 
-    func restore(_ favorite: TimelineFavoriteMutation) {
+    func restore(_ favorite: TimelineFavoriteMutation, ids requestedIDs: Set<String>? = nil) {
         let ids = mutationOverlay.rollbackFavorite(
             operationID: favorite.operationID,
-            ids: favorite.ids
+            ids: requestedIDs ?? favorite.ids
         )
         guard !ids.isEmpty else { return }
         updateAssets(ids: ids) { asset in
@@ -2302,7 +2310,7 @@ extension TimelineModel: RealtimeListener {
         var fresh: [String: Asset] = [:]
         var projected: [String: Bool] = [:]
         for (id, detail) in details {
-            fresh[id] = detail.asAsset()
+            fresh[id] = assetProjection(detail.asAsset())
             projected[id] = mutationOverlay.favoriteValue(for: id)
         }
         updateAssets(ids: Set(details.keys)) { asset in
@@ -2322,6 +2330,7 @@ extension TimelineModel: RealtimeListener {
     }
 
     func realtimeLocalChanged() {
+        applyAssetProjection()
         Task { await refreshLocalItems() }
     }
 }

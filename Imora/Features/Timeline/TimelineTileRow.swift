@@ -22,6 +22,7 @@ struct TimelineTileRowConfiguration {
     let side: CGFloat
     let targetPixelSize: CGFloat
     let showsBackupBadge: Bool
+    var showsAllBackupStatuses = false
     let usesOriginalAspectRatio: Bool
     let isSelecting: Bool
     let selection: Set<String>
@@ -100,6 +101,7 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
                     session: row.session,
                     motion: row.motion,
                     showsBackupBadge: row.showsBackupBadge,
+                    showsAllBackupStatuses: row.showsAllBackupStatuses,
                     targetPixelSize: row.targetPixelSize,
                     registry: row.registry,
                     usesOriginalAspectRatio: row.usesOriginalAspectRatio
@@ -309,6 +311,7 @@ final class TimelineTileView: UIView {
     private weak var motion: GridMotion?
     private weak var registry: AssetTileRegistry?
     private var showsBackupBadge = false
+    private var showsAllBackupStatuses = false
     private var targetPixelSize: CGFloat = 0
     private var registeredAsset: Asset?
     private var registeredTargetPixelSize: CGFloat?
@@ -376,6 +379,7 @@ final class TimelineTileView: UIView {
         hoverStyle = UIHoverStyle(effect: .highlight)
         content.isUserInteractionEnabled = false
         content.clipsToBounds = true
+        content.layer.cornerRadius = 2
         addSubview(content)
         imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true
@@ -405,6 +409,7 @@ final class TimelineTileView: UIView {
         session: SessionStore,
         motion: GridMotion,
         showsBackupBadge: Bool,
+        showsAllBackupStatuses: Bool = false,
         targetPixelSize: CGFloat,
         registry: AssetTileRegistry,
         usesOriginalAspectRatio: Bool = false
@@ -415,12 +420,14 @@ final class TimelineTileView: UIView {
         self.motion = motion
         let changed = accountChanged || self.asset != asset
             || self.showsBackupBadge != showsBackupBadge
+            || self.showsAllBackupStatuses != showsAllBackupStatuses
             || self.targetPixelSize != targetPixelSize
         if self.asset?.id != asset.id {
             unavailableLocalIdentifier = nil
         }
         self.asset = asset
         self.showsBackupBadge = showsBackupBadge
+        self.showsAllBackupStatuses = showsAllBackupStatuses
         self.targetPixelSize = targetPixelSize
         if changed {
             updateAssetBadges(for: asset)
@@ -783,6 +790,12 @@ final class TimelineTileView: UIView {
             asset.isLocalBackedUp || backup.hasVerifiedBackup(localIdentifier: $0)
         } ?? false
 
+        if !showsAllBackupStatuses {
+            setBackupBadge(nil)
+            if case .failed = uploadState, !hasVerifiedLocalBackup { setUploadOverlay(uploadState) }
+            else { setUploadOverlay(nil) }
+            return
+        }
         if hasVerifiedLocalBackup {
             setBackupBadge("checkmark.icloud")
         } else if uploadState == nil {
@@ -929,7 +942,7 @@ final class TimelineTileView: UIView {
             guard let asset else { return nil }
             var parts = [
                 asset.isVideo ? String(localized: "Video") : (asset.isLivePhoto ? String(localized: "Live Photo") : String(localized: "Photo")),
-                asset.localDate.formatted(date: .long, time: .shortened),
+                PhotoDatePresentation.dateTime(wallClock: asset.localDate),
             ]
             if let duration = asset.durationLabel { parts.append(duration) }
             if asset.isStacked, let count = asset.stackCount { parts.append(String(localized: "Stack of \(count)")) }

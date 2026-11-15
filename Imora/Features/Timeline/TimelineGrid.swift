@@ -71,6 +71,7 @@ struct TimelineGridRowContext {
     let columns: Int
     let targetPixelSize: CGFloat
     let showsBackupBadge: Bool
+    var showsAllBackupStatuses = false
     let usesOriginalAspectRatio: Bool
     let isSelecting: Bool
     let selection: Set<String>
@@ -88,6 +89,7 @@ struct TimelineGridRowContext {
         columns == other.columns
             && targetPixelSize == other.targetPixelSize
             && showsBackupBadge == other.showsBackupBadge
+            && showsAllBackupStatuses == other.showsAllBackupStatuses
             && usesOriginalAspectRatio == other.usesOriginalAspectRatio
             && isSelecting == other.isSelecting
             && reduceMotion == other.reduceMotion
@@ -115,6 +117,10 @@ struct TimelineGridEvents {
 /// ScrollPosition. plain, nothing here is observed.
 @MainActor
 final class TimelineGridController {
+    func periodTile(assetID: String? = nil) -> TimelineTileView? {
+        grid?.periodTile(assetID: assetID)
+    }
+
     var scrollOffset: CGFloat { grid?.offsetY ?? 0 }
     var endOffset: CGFloat {
         guard let grid else { return 0 }
@@ -504,6 +510,17 @@ final class TimelineGridView: UIScrollView {
 
     private var zoomTiles: [TimelineTileView] {
         mounted.flatMap { ($0.view as? TimelineTileRowView)?.zoomTiles ?? [] }
+    }
+
+    func periodTile(assetID: String?) -> TimelineTileView? {
+        layoutIfNeeded()
+        let visible = zoomTiles.filter { $0.convert($0.bounds, to: self).intersects(bounds.inset(by: adjustedContentInset)) }
+        if let assetID, let tile = visible.first(where: { $0.asset?.id == assetID }) { return tile }
+        guard assetID == nil else { return nil }
+        return visible.min { lhs, rhs in
+            abs(lhs.convert(lhs.bounds, to: self).midY - bounds.midY)
+                < abs(rhs.convert(rhs.bounds, to: self).midY - bounds.midY)
+        }
     }
 
     func beginColumnPinch(at midpoint: CGPoint) {
@@ -915,6 +932,7 @@ final class TimelineGridView: UIScrollView {
                     side: side,
                     targetPixelSize: context.targetPixelSize,
                     showsBackupBadge: context.showsBackupBadge,
+                    showsAllBackupStatuses: context.showsAllBackupStatuses,
                     usesOriginalAspectRatio: context.usesOriginalAspectRatio,
                     isSelecting: context.isSelecting,
                     selection: context.selection,
