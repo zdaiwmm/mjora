@@ -80,7 +80,7 @@ nonisolated final class ImageLoader: Sendable {
             let added = Set(assetIDs).subtracting(ids); ids.formUnion(assetIDs); return added
         }
         if !newlyLocked.isEmpty, let client = authorization.client.withLock({ $0 }) {
-            if let failure = invalidateSubjects(client: client, subjects: newlyLocked.map { .remoteAsset($0) }) {
+            if let failure = invalidateSubjects(client: client, subjects: newlyLocked.map { .remoteAsset($0) }, retiresSourceRevisions: false) {
                 MediaCacheRecovery.handle(client: client, failure: failure)
             }
         }
@@ -161,9 +161,10 @@ nonisolated final class ImageLoader: Sendable {
         return surface
     }
 
-    @MainActor func invalidate(asset: Asset, client: ImoraClient) {
+    @MainActor func invalidate(asset: Asset, client: ImoraClient, retiresSourceRevisions: Bool = true, blocksAccess: Bool = false) {
         let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 1)
-        if let failure = invalidateSubjects(client: client, subjects: [key.subject], keys: [key]) {
+        if let failure = invalidateSubjects(client: client, subjects: [key.subject], keys: [key],
+            retiresSourceRevisions: retiresSourceRevisions, blocksAccess: blocksAccess) {
             MediaCacheRecovery.handle(client: client, failure: failure)
         }
     }
@@ -172,7 +173,7 @@ nonisolated final class ImageLoader: Sendable {
     /// including variants not retained in the bounded observed-request index.
     @discardableResult
     func invalidateSubjects(client: ImoraClient, subjects: [MediaDisplayKeyV1.Subject]?, keys: [MediaDisplayKeyV1] = [],
-                            retiresSourceRevisions: Bool = true) -> MediaContentGenerations.RetirementFailure? {
+                            retiresSourceRevisions: Bool = true, blocksAccess: Bool = false) -> MediaContentGenerations.RetirementFailure? {
         var persistenceFailure: MediaContentGenerations.RetirementFailure?
         let scope = client.mediaDisplayScope
         let observed = observedRequests.withLock { requests in
@@ -185,7 +186,7 @@ nonisolated final class ImageLoader: Sendable {
         }
         let knownKeys = observed.compactMap { ($0.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.key }
         do { try MediaContentGenerations.shared.retire(scope: scope, subjects: subjects,
-            keys: retiresSourceRevisions ? keys + knownKeys : []) }
+            keys: retiresSourceRevisions ? keys + knownKeys : [], retiresSourceRevisions: retiresSourceRevisions, blocksAccess: blocksAccess) }
         catch {
             // A failed retirement cannot leave the previous namespace usable.
             // Purge derivative layers only, and retire this runtime authorization.
@@ -211,6 +212,16 @@ nonisolated final class ImageLoader: Sendable {
         prefetcher.stopPrefetching(); diskPrefetcher.stopPrefetching()
         sweepTask.withLock { task in task?.cancel(); task = nil }
         return persistenceFailure
+    }
+
+    @MainActor
+    func authorizePresentation(asset: Asset, client: ImoraClient, captured: MediaContentGenerations.CapturedAccess) -> Bool {
+        guard client.context.isActive, authorization.client.withLock({ $0 === client }),
+              client.mediaDisplayScope == captured.scope else { return false }
+        let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 1)
+        do { return try MediaContentGenerations.shared.authorize(scope: key.scope, subject: key.subject,
+            sourceRevision: key.sourceRevision, captured: captured, visibilityPolicy: asset.visibility.rawValue) }
+        catch { return false } // Failed positive publication leaves access blocked.
     }
 
     func image(for url: URL, targetPixelSize: CGFloat) async throws -> UIImage {
@@ -437,9 +448,12 @@ nonisolated final class ImageLoader: Sendable {
               (try? client.authorizedRequest(url: url)) != nil,
               let index = url.pathComponents.firstIndex(of: "assets"), url.pathComponents.indices.contains(index + 1) else { return nil }
         let revision = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "c" }?.value ?? ""
-        return .init(key: .init(scope: client.mediaDisplayScope, subject: .remoteAsset(url.pathComponents[index + 1]),
+        let scope = client.mediaDisplayScope, subject = MediaDisplayKeyV1.Subject.remoteAsset(url.pathComponents[index + 1])
+        let namespace = MediaContentGenerations.shared.presentationNamespace(scope: scope, subject: subject)
+        return .init(key: .init(scope: scope, subject: subject,
             sourceRevision: revision, presentationRevision: "committed:\(revision)", variant: .grid,
-            pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover", orientationRevision: "source", colorProfile: "source"))
+            pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover", orientationRevision: "source", colorProfile: "source",
+            contentGeneration: namespace.generation, visibilityPolicy: namespace.visibilityPolicy))
     }
 
     /// decoding straight to a thumbnail keeps memory flat while scrolling -

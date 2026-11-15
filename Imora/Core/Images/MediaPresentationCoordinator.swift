@@ -75,7 +75,7 @@ final class MediaPresentationCoordinator {
             sourceRevision: asset.localIdentifier == nil ? (asset.thumbhash ?? "") : (asset.localImageVersion ?? ""),
             presentationRevision: "committed:\(asset.localIdentifier == nil ? (asset.thumbhash ?? "") : (asset.localImageVersion ?? ""))",
             variant: .grid, pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover",
-            orientationRevision: "source", colorProfile: "source")
+            orientationRevision: "source", colorProfile: "source", visibilityPolicy: asset.visibility.rawValue)
     }
 
     nonisolated static func localScope(asset: Asset, client: ImoraClient, pixels: CGFloat) -> String {

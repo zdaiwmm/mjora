@@ -307,6 +307,28 @@ final class Phase4LaunchPreviewTests: XCTestCase {
         XCTAssertFalse(restart.canMigrateLegacy(scope: scope, subject: first))
     }
 
+    func testNamespaceOnlyRetirementHonorsSavedKeysWithoutErasingKnownEditTombstones() async throws {
+        try await withStore { store, root in
+            let saved = key("pair-change")
+            _ = try await store.checkpoint(snapshot: snapshot([saved]), images: [record(saved)])
+            let journal = MediaContentGenerations(root: root)
+            try journal.ensureInitialized()
+            let before = journal.current(scope: scope, subject: saved.subject)
+            try journal.retire(scope: scope, subjects: [saved.subject], keys: [saved], retiresSourceRevisions: false)
+            let restarted = MediaContentGenerations(root: root)
+            XCTAssertNotEqual(restarted.current(scope: scope, subject: saved.subject), before)
+            XCTAssertFalse(restarted.isRetired(scope: scope, subject: saved.subject, sourceRevision: saved.sourceRevision),
+                "Namespace policy applies to explicit AND latest.json source keys")
+            XCTAssertFalse(restarted.canMigrateLegacy(scope: scope, subject: saved.subject))
+            try restarted.retire(scope: scope, subjects: [saved.subject])
+            XCTAssertTrue(restarted.isRetired(scope: scope, subject: saved.subject, sourceRevision: saved.sourceRevision),
+                "A genuine known edit still retires the source contributed by the saved viewport")
+            try restarted.retire(scope: scope, subjects: [saved.subject], retiresSourceRevisions: false)
+            XCTAssertTrue(MediaContentGenerations(root: root).isRetired(scope: scope, subject: saved.subject,
+                sourceRevision: saved.sourceRevision), "Later namespace rotation cannot resurrect a committed old revision")
+        }
+    }
+
     func testInterruptedOrCorruptJournalNeverReturnsToAnOldNamespace() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "phase4-journal-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -324,5 +346,53 @@ final class Phase4LaunchPreviewTests: XCTestCase {
         try corrupt.ensureInitialized()
         XCTAssertNotEqual(corrupt.current(scope: scope, subject: subject), original)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appending(path: ".content-generations-staging").path))
+    }
+
+    func testAccessBlockRequiresCurrentProofAcrossRestartAndRolloverWithoutRevivingEdits() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-access-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root), subject = MediaDisplayKeyV1.Subject.remoteAsset("blocked")
+        try journal.ensureInitialized()
+        let old = journal.current(scope: scope, subject: subject)!
+        try journal.retire(scope: scope, subjects: [subject], retiresSourceRevisions: false, blocksAccess: true)
+        let proof = journal.captureAccess(scope: scope)
+        let blockedGeneration = journal.current(scope: scope, subject: subject)!
+        XCTAssertFalse(journal.isCurrent(scope: scope, subject: subject, sourceRevision: "R", generation: blockedGeneration))
+        let restart = MediaContentGenerations(root: root)
+        try restart.rollover()
+        XCTAssertFalse(restart.isCurrent(scope: scope, subject: subject, sourceRevision: "R", generation: restart.current(scope: scope, subject: subject)!))
+        XCTAssertFalse(try restart.authorize(scope: scope, subject: subject, sourceRevision: "R", captured: proof), "An old readback cannot survive an intervening namespace change")
+        let edited = MediaDisplayKeyV1(scope: scope, subject: subject, sourceRevision: "R", presentationRevision: "committed:R",
+            variant: .grid, pixelBucket: 64, fitMode: "fill", orientationRevision: "up", colorProfile: "sRGB")
+        try restart.retire(scope: scope, subjects: [subject], keys: [edited])
+        let currentProof = restart.captureAccess(scope: scope)
+        XCTAssertFalse(try restart.authorize(scope: scope, subject: subject, sourceRevision: "R", captured: currentProof), "Positive visibility never deletes a committed-edit tombstone")
+        XCTAssertTrue(try restart.authorize(scope: scope, subject: subject, sourceRevision: "new-R", captured: currentProof))
+        let final = MediaContentGenerations(root: root), generation = final.current(scope: scope, subject: subject)!
+        XCTAssertNotEqual(old, generation)
+        XCTAssertTrue(final.isCurrent(scope: scope, subject: subject, sourceRevision: "new-R", generation: generation))
+        XCTAssertFalse(final.isCurrent(scope: scope, subject: subject, sourceRevision: "R", generation: generation))
+        XCTAssertFalse(final.canMigrateLegacy(scope: scope, subject: subject))
+        XCTAssertFalse(final.isCurrent(scope: scope, subject: subject, sourceRevision: "new-R", generation: blockedGeneration))
+    }
+
+    func testFailedPositivePublicationKeepsPersistedAccessBlock() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-positive-write-failure-\(UUID())")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let journal = MediaContentGenerations(root: root), subject = MediaDisplayKeyV1.Subject.remoteAsset("denied")
+        try journal.ensureInitialized()
+        try journal.retire(scope: scope, subjects: [subject], retiresSourceRevisions: false, blocksAccess: true)
+        let proof = journal.captureAccess(scope: scope), generation = journal.current(scope: scope, subject: subject)!
+        let file = root.appending(path: "content-generations.json"), original = try Data(contentsOf: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+        XCTAssertThrowsError(try journal.authorize(scope: scope, subject: subject, sourceRevision: "R",
+            captured: proof, visibilityPolicy: "timeline"))
+        XCTAssertEqual(try Data(contentsOf: file), original)
+        XCTAssertFalse(journal.isCurrent(scope: scope, subject: subject, sourceRevision: "R", generation: generation, visibilityPolicy: "timeline"))
+        XCTAssertFalse(MediaContentGenerations(root: root).isCurrent(scope: scope, subject: subject,
+            sourceRevision: "R", generation: generation, visibilityPolicy: "timeline"))
     }
 }

@@ -165,6 +165,10 @@ nonisolated struct TimelineMutationOverlay {
         rejectFetchesStartedBeforeNextRequest(bucketIDs: bucketIDs)
     }
 
+    func ownsRemoval(operationID: UUID, id: String) -> Bool {
+        removalsByAssetID[id]?.operationID == operationID
+    }
+
     mutating func rollbackRemoval(operationID: UUID, ids: Set<String>) -> [String: Asset] {
         var restored: [String: Asset] = [:]
         for id in ids where removalsByAssetID[id]?.operationID == operationID {
@@ -487,6 +491,7 @@ final class TimelineModel {
     private var prefetchID: UUID?
     private var rebuildTask: Task<Void, Never>?
     private var restoreTask: Task<Void, Never>?
+    private var visibilityReadbacks: [UUID: Task<Void, Never>] = [:]
     /// the launch merge of device photos, running alongside the server load.
     private var localRefreshTask: Task<Void, Never>?
     /// set while the first paint of cached months is held for that merge, so
@@ -554,6 +559,7 @@ final class TimelineModel {
         realtimeFlushTask?.cancel()
         restoreTask?.cancel()
         localRefreshTask?.cancel()
+        visibilityReadbacks.values.forEach { $0.cancel() }
     }
 
     /// rows cover both server sections and merged device photos.
@@ -960,7 +966,8 @@ final class TimelineModel {
         }
         let fetch = mutationOverlay.beginFetch(bucketID: id)
         do {
-            let (assets, payload) = try await client.timeBucket(id, filter: filter)
+            let response = try await client.timeBucket(id, filter: filter)
+            let assets = response.assets, payload = response.payload
             guard client.context.isActive, !Task.isCancelled else { throw CancellationError() }
             try Task.checkCancellation()
             guard !isViewerSuspended,
@@ -977,6 +984,9 @@ final class TimelineModel {
             sections[current].days = days
             sections[current].leadingUnloadedAssetCount = 0
             sections[current].trailingUnloadedAssetCount = 0
+            if resolution.isAuthoritative {
+                response.authorizePresented(resolution.assets, visibility: filter.visibility, using: client)
+            }
             if resolution.isAuthoritative {
                 cacheBucket(id, payload: payload)
             }
@@ -1787,6 +1797,9 @@ final class TimelineModel {
                     }
                     sections[index].days = days
                     if resolution.isAuthoritative {
+                        fetched.authorizePresented(resolution.assets, visibility: filter.visibility, using: client)
+                    }
+                    if resolution.isAuthoritative {
                         cacheBucket(id, payload: fetched.payload)
                     }
                 }
@@ -2035,7 +2048,10 @@ final class TimelineModel {
                             || before.localImageVersion != assets[a].localImageVersion
                             || before.isEdited != assets[a].isEdited
                             || before.visibility != assets[a].visibility || before.isTrashed != assets[a].isTrashed {
-                            ImageLoader.shared.invalidate(asset: before, client: client)
+                            let contentChanged = before.thumbhash != assets[a].thumbhash
+                                || before.localImageVersion != assets[a].localImageVersion || before.isEdited != assets[a].isEdited
+                            ImageLoader.shared.invalidate(asset: before, client: client,
+                                retiresSourceRevisions: contentChanged, blocksAccess: !contentChanged)
                             MediaPresentationCoordinator.shared.cancelCheckpoint()
                         }
                         changedAssets[assets[a].id] = assets[a]
@@ -2233,7 +2249,9 @@ final class TimelineModel {
     private func removeAssetsNow(ids: Set<String>, operationID: UUID?) -> TimelineRemoval {
         if let client {
             MediaPresentationCoordinator.shared.invalidate(client: client)
-            for asset in flatAssets where ids.contains(asset.id) { ImageLoader.shared.invalidate(asset: asset, client: client) }
+            for asset in flatAssets where ids.contains(asset.id) {
+                ImageLoader.shared.invalidate(asset: asset, client: client, retiresSourceRevisions: false, blocksAccess: true)
+            }
         }
         let targetBucketIDs = bucketIDs(containing: ids)
         mutationOverlay.rejectFetchesStartedBeforeNextRequest(
@@ -2332,9 +2350,18 @@ final class TimelineModel {
 
     func commit(_ removal: TimelineRemoval, ids: Set<String>? = nil) {
         guard let operationID = removal.operationID else { return }
+        let committed = ids ?? Set(removal.placements.map(\.asset.id))
+        if let client {
+            for placement in removal.placements where committed.contains(placement.asset.id)
+                && mutationOverlay.ownsRemoval(operationID: operationID, id: placement.asset.id) {
+                // An accepted mutation fences any response that raced while
+                // it was pending; an older resolved token cannot revoke anew.
+                ImageLoader.shared.invalidate(asset: placement.asset, client: client, retiresSourceRevisions: false, blocksAccess: true)
+            }
+        }
         mutationOverlay.commitRemoval(
             operationID: operationID,
-            ids: ids ?? Set(removal.placements.map(\.asset.id))
+            ids: committed
         )
     }
 
@@ -2391,6 +2418,46 @@ final class TimelineModel {
         noteProjectionInputsChanged()
         scheduleOptimisticRebuild()
         onAssetsChanged?(.restored(placements.map { restoredAssets[$0.asset.id] ?? $0.asset }))
+        validateRestoredVisibility(placements.map { restoredAssets[$0.asset.id] ?? $0.asset })
+    }
+
+    private func validateRestoredVisibility(_ assets: [Asset]) {
+        guard let client else { return }
+        let captured = MediaContentGenerations.shared.captureAccess(scope: client.mediaDisplayScope)
+        guard !captured.isEmpty else { return }
+        let id = UUID()
+        visibilityReadbacks[id] = Task { [weak self] in
+            defer { self?.visibilityReadbacks[id] = nil }
+            for asset in assets {
+                guard !Task.isCancelled, client.context.isActive else { return }
+                if let local = asset.localIdentifier {
+                    guard let self, self.client === client, self.containsAsset(asset.id),
+                          asset.visibility == self.filter.visibility, !asset.isTrashed,
+                          asset.visibility == .timeline || asset.visibility == .archive else { continue }
+                    let permission = LocalImageLoader.shared.permissionGeneration
+                    guard let revision = LocalImageLoader.currentModificationRevision(local), revision == asset.localImageVersion,
+                          permission == LocalImageLoader.shared.permissionGeneration else { continue }
+                    let changed = ImageLoader.shared.authorizePresentation(asset: asset, client: client, captured: captured)
+                    if permission != LocalImageLoader.shared.permissionGeneration
+                        || LocalImageLoader.currentModificationRevision(local) != revision {
+                        ImageLoader.shared.invalidate(asset: asset, client: client, retiresSourceRevisions: false, blocksAccess: true)
+                    } else if changed { ImageLoadRecovery.shared.contentChanged() }
+                    continue
+                }
+                guard let response = try? await client.authenticatedAsset(id: asset.id), let self,
+                      !Task.isCancelled, self.client === client, response.explicitVisibility,
+                      let canonical = response.assets.first, response.matches(client, asset: canonical),
+                      self.containsAsset(asset.id) else { continue }
+                if canonical.isTrashed || canonical.visibility != self.filter.visibility
+                    || canonical.visibility == .locked || canonical.visibility == .hidden {
+                    self.removeAssets(ids: [asset.id])
+                    continue
+                }
+                // Metadata/policy is canonical before the positive grant.
+                self.updateAssets(ids: [asset.id]) { $0 = canonical }
+                response.authorizePresented([canonical], visibility: self.filter.visibility, using: client)
+            }
+        }
     }
 
     private func projectionSources(in sections: [TimelineSection]) -> [String: TimelineProjectionSource] {

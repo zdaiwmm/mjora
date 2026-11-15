@@ -858,7 +858,9 @@ nonisolated final class ImoraClient: Sendable {
     /// alongside the decode that produced it. the raw payload comes back with
     /// it so the offline store can keep the bytes instead of re-encoding them.
     @concurrent
-    func timeBucket(_ bucket: String, filter: TimelineFilter) async throws -> (assets: [Asset], payload: Data) {
+    func timeBucket(_ bucket: String, filter: TimelineFilter) async throws -> AuthenticatedMediaRead {
+        let scope = mediaDisplayScope, session = context.id
+        let captured = MediaContentGenerations.shared.captureAccess(scope: scope)
         var query = filter.queryItems
         query.append(URLQueryItem(name: "timeBucket", value: bucket))
         let data = try await send(path: "timeline/bucket", query: query)
@@ -868,12 +870,24 @@ nonisolated final class ImoraClient: Sendable {
         } catch {
             throw ImoraError.decoding("\(error)")
         }
-        return (columnar.assets(), data)
+        try Task.checkCancellation()
+        return .init(assets: columnar.assets(), payload: data, explicitVisibility: columnar.visibility != nil,
+            client: self, scope: scope, session: session, captured: captured)
     }
 
     // MARK: - assets
 
     func assetDetail(id: String) async throws -> AssetDetail { try await get("assets/\(id)") }
+
+    func authenticatedAsset(id: String) async throws -> AuthenticatedMediaRead {
+        let scope = mediaDisplayScope, session = context.id
+        let captured = MediaContentGenerations.shared.captureAccess(scope: scope)
+        let detail = try await assetDetail(id: id)
+        try Task.checkCancellation()
+        guard detail.id == id else { throw ImoraError.decoding("Asset readback identity mismatch") }
+        return .init(assets: [detail.asAsset()], payload: Data(), explicitVisibility: detail.visibility != nil,
+            client: self, scope: scope, session: session, captured: captured)
+    }
 
     /// the spatial scene depth map, a grey png where white is nearest.
     func depthMap(assetID: String) async throws -> Data { try await send(path: "assets/\(assetID)/depth") }
@@ -2169,6 +2183,53 @@ nonisolated final class ImoraClient: Sendable {
 }
 
 // MARK: - timeline filter
+
+/// Constructed only by successful authenticated client responses. Cached
+/// payloads/arbitrary Asset arrays cannot manufacture presentation authority.
+nonisolated struct AuthenticatedMediaRead: Sendable {
+    let assets: [Asset]
+    let payload: Data
+    let explicitVisibility: Bool
+    private let client: ImoraClient
+    private let scope: StableMediaScope
+    private let session: UUID
+    private let captured: MediaContentGenerations.CapturedAccess
+
+    fileprivate init(assets: [Asset], payload: Data, explicitVisibility: Bool, client: ImoraClient,
+                     scope: StableMediaScope, session: UUID, captured: MediaContentGenerations.CapturedAccess) {
+        self.assets = assets; self.payload = payload; self.explicitVisibility = explicitVisibility
+        self.client = client; self.scope = scope; self.session = session; self.captured = captured
+    }
+
+    func matches(_ candidate: ImoraClient, asset: Asset) -> Bool {
+        candidate === client && client.context.isActive && client.context.id == session
+            && client.mediaDisplayScope == scope && scope.accountID != nil && !captured.isEmpty
+            && MediaContentGenerations.shared.matchesAccess(scope: scope, subject: .remoteAsset(asset.id), captured: captured)
+    }
+
+    /// Call only after accepting/publishing the canonical projection for this
+    /// visibility. A timeline rollback cannot borrow an archive page's proof.
+    @MainActor
+    func authorizePresented(_ presented: [Asset], visibility: AssetVisibility?, using candidate: ImoraClient) {
+        guard !captured.isEmpty, explicitVisibility, visibility == .timeline || visibility == .archive else { return }
+        var changed = false
+        let canonicalByID = Dictionary(assets.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        for asset in presented where asset.localIdentifier == nil {
+            let subject = MediaDisplayKeyV1.Subject.remoteAsset(asset.id)
+            guard captured.needsConfirmation(subject: subject, visibilityPolicy: asset.visibility.rawValue),
+                  let canonical = canonicalByID[asset.id], canonical.thumbhash == asset.thumbhash,
+                  canonical.isEdited == asset.isEdited, matches(candidate, asset: asset) else { continue }
+            guard canonical.visibility == visibility, asset.visibility == visibility,
+                  !canonical.isTrashed, !asset.isTrashed else {
+                ImageLoader.shared.invalidate(asset: canonical, client: candidate, retiresSourceRevisions: false, blocksAccess: true)
+                changed = true
+                continue
+            }
+            changed = ImageLoader.shared.authorizePresentation(asset: asset, client: candidate, captured: captured) || changed
+        }
+        if changed { ImageLoadRecovery.shared.contentChanged() }
+    }
+}
 
 nonisolated struct TimelineFilter: Hashable {
     var visibility: AssetVisibility? = .timeline

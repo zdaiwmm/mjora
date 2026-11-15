@@ -507,6 +507,17 @@ final class TimelineTileView: UIView {
                       targetPixelSize: CGFloat) {
         self.asset = asset
         self.targetPixelSize = targetPixelSize
+        if let client {
+            let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: targetPixelSize)
+            if !key.isCurrentContent {
+                cancelLoads()
+                imageView.image = nil; showsPicture = false; shownDisplayKey = nil
+                boundSurface = nil; boundSurfaceID = nil
+                loadKey = nil; loadedKey = nil
+                projectionClient = client; projectionSource = source; activeDisplayKey = key
+                return
+            }
+        }
         // Reuse proof only within this synchronous projection. A later
         // projection and every asynchronous delivery obtain current evidence.
         var revisions: [String: String?] = [:]

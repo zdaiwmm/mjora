@@ -18,6 +18,372 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
               duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
     }
 
+    func testPairNamespaceRetirementAfterSavedPackStillBindsCurrentRemoteRevision() async throws {
+        let bytes = try XCTUnwrap(solidImage(pixels: 512).jpegData(compressionQuality: 0.8))
+        let server = try LocalHTTPServer { _ in .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "pair-retirement-\(UUID())")
+        client.confirmMediaAccount("pair-retirement-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let value = asset(), pixels: CGFloat = 416
+        let snapshot = try await makeSavedPack(client: client)
+        let previous = try XCTUnwrap(snapshot.visibleKeys.first)
+        XCTAssertTrue(previous.isCurrentContent)
+        XCTAssertNil(ImageLoader.shared.invalidateSubjects(client: client, subjects: [previous.subject], retiresSourceRevisions: false))
+        let current = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: pixels)
+        XCTAssertNotEqual(current.contentGeneration, previous.contentGeneration)
+        XCTAssertFalse(previous.isCurrentContent, "The replaced pairing's captured producer must stay retired")
+        XCTAssertTrue(current.isCurrentContent, "A saved latest.json must respect namespace-only retirement of the unchanged remote revision")
+        let restarted = MediaContentGenerations(root: LaunchPreviewStore.rootDirectory)
+        XCTAssertEqual(restarted.current(scope: current.scope, subject: current.subject), current.contentGeneration)
+        XCTAssertFalse(restarted.isRetired(scope: current.scope, subject: current.subject, sourceRevision: current.sourceRevision))
+        let tile = TimelineTileView(frame: .init(x: 0, y: 0, width: 132, height: 132))
+        tile.projectImage(asset: value, source: .init(assetID: value.id, localIdentifier: nil,
+            pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+            client: client, generation: 0, targetPixelSize: pixels)
+        for _ in 0..<150 {
+            if tile.checkpointSurface(for: current, client: client) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let surface = try XCTUnwrap(tile.checkpointSurface(for: current, client: client))
+        XCTAssertNil(surface.localProvenance)
+        XCTAssertGreaterThanOrEqual(min(surface.image.size.width, surface.image.size.height) * surface.image.scale, pixels)
+        XCTAssertTrue(server.received.contains { $0.path.contains("/thumbnail") })
+    }
+
+    func testFailedVisibilityRemovalRollsBackRealModelAndBindsSameRevisionAfterCurrentReadback() async throws {
+        let value = asset()
+        let bytes = try XCTUnwrap(solidImage(pixels: 512).jpegData(compressionQuality: 0.8))
+        let detail = Data("""
+        {"id":"same-id","ownerId":"alice","type":"IMAGE","originalFileName":"fixture.jpg",
+        "thumbhash":"revision-one","fileCreatedAt":"2023-11-14T00:00:00Z","localDateTime":"2023-11-14T00:00:00Z",
+        "isFavorite":false,"isTrashed":false,"visibility":"timeline","width":512,"height":512}
+        """.utf8)
+        let server = try LocalHTTPServer { request in
+            if request.method == "PUT" { return .init(status: 400, body: Data("{\"message\":\"rejected fixture mutation\"}".utf8)) }
+            if request.path == "/api/assets/same-id" { return .init(headers: ["Content-Type": "application/json"], body: detail) }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "rollback-\(UUID())")
+        client.confirmMediaAccount("rollback-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [value])
+        model.suppliedLaunchContext = "real-removal-fixture"
+        model.attach(client)
+        let old = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        var removal: TimelineRemoval?
+        let outcome: Void? = await OptimisticAction.perform(errorMessage: "fixture failure", apply: {
+            removal = model.removeAssetsForOptimisticAction(ids: [value.id])
+            XCTAssertTrue(model.sections.flatMap { $0.days?.flatMap(\.assets) ?? [] }.isEmpty)
+        }, rollback: { if let removal { model.restore(removal) } },
+            request: { try await client.setVisibility(ids: [value.id], .archive) }, reportFailure: { _, _ in })
+        XCTAssertNil(outcome)
+        XCTAssertEqual(model.sections.flatMap { $0.days?.flatMap(\.assets) ?? [] }, [value], "Actual failed action rollback restores the same metadata and placement")
+        let confirmed = try await client.assetDetail(id: value.id)
+        XCTAssertEqual(confirmed.visibility, .timeline)
+        XCTAssertEqual(confirmed.thumbhash, value.thumbhash)
+        for _ in 0..<150 {
+            if MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let current = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        XCTAssertFalse(old.isCurrentContent)
+        XCTAssertNotEqual(current.contentGeneration, old.contentGeneration)
+        XCTAssertTrue(current.isCurrentContent, "A failed visibility action plus fresh authorized readback cannot permanently tombstone unchanged image content")
+        let journal = MediaContentGenerations(root: LaunchPreviewStore.rootDirectory)
+        XCTAssertFalse(journal.isRetired(scope: current.scope, subject: current.subject, sourceRevision: current.sourceRevision))
+        let tile = TimelineTileView(frame: .init(x: 0, y: 0, width: 132, height: 132))
+        tile.projectImage(asset: value, source: .init(assetID: value.id, localIdentifier: nil,
+            pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+            client: client, generation: 0, targetPixelSize: 416)
+        for _ in 0..<150 {
+            if tile.checkpointSurface(for: current, client: client) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(tile.checkpointSurface(for: current, client: client))
+        XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image)
+        XCTAssertTrue(server.received.contains { $0.method == "PUT" && $0.path == "/api/assets" })
+        XCTAssertTrue(server.received.contains { $0.path.contains("/thumbnail") })
+        model.commit(try XCTUnwrap(removal))
+        XCTAssertTrue(current.isCurrentContent, "A resolved old commit token cannot revoke a successfully rolled-back surface")
+        XCTAssertNotNil(tile.checkpointSurface(for: current, client: client))
+    }
+
+    func testFreshCanonicalTimelineProducerRecoversRemovedSameRevisionAfterRestart() async throws {
+        let month = "2023-11-01T00:00:00.000Z"
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["timeline"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 512).jpegData(compressionQuality: 0.8))
+        let server = try LocalHTTPServer { request in
+            if request.path.hasPrefix("/api/timeline/buckets?") {
+                return .init(body: Data("[{\"timeBucket\":\"\(month)\",\"count\":1}]".utf8))
+            }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "canonical-\(UUID())")
+        client.confirmMediaAccount("canonical-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let model = TimelineModel(filter: TimelineFilter())
+        model.attach(client); await model.load()
+        let value = try XCTUnwrap(model.flatAssets.first)
+        let before = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        model.removeAssets(ids: [value.id])
+        XCTAssertFalse(before.isCurrentContent)
+        let restarted = TimelineModel(filter: TimelineFilter())
+        restarted.attach(client); await restarted.load()
+        await restarted.loadBucket(month, refresh: true)
+        XCTAssertGreaterThanOrEqual(server.received.filter { $0.path.hasPrefix("/api/timeline/bucket?") }.count, 2)
+        XCTAssertEqual(restarted.flatAssets.map(\.id), [value.id])
+        let current = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        XCTAssertTrue(current.isCurrentContent, "A fresh authenticated canonical list must be an actual recovery producer, not only a special rollback detail request")
+        XCTAssertFalse(before.isCurrentContent)
+        do {
+            let image = try await ImageLoader.shared.image(for: client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash), targetPixelSize: 416)
+            XCTAssertGreaterThanOrEqual(min(image.size.width, image.size.height) * image.scale, 416)
+        } catch { XCTFail("Fresh canonical producer could not decode its current endpoint: \(type(of: error)): \(error)") }
+        let journal = MediaContentGenerations(root: LaunchPreviewStore.rootDirectory)
+        XCTAssertFalse(journal.isRetired(scope: current.scope, subject: current.subject, sourceRevision: current.sourceRevision))
+    }
+
+    func testUnknownArchiveOutcomeCannotReauthorizeRestoredTimelineFromArchiveReadback() async throws {
+        let detail = Data(#"{"id":"same-id","ownerId":"alice","type":"IMAGE","originalFileName":"fixture.jpg","thumbhash":"revision-one","fileCreatedAt":"2023-11-14T00:00:00Z","localDateTime":"2023-11-14T00:00:00Z","isFavorite":false,"isTrashed":false,"visibility":"archive"}"#.utf8)
+        let server = try LocalHTTPServer { request in
+            if request.method == "PUT" { return .init(status: 503) }
+            return .init(body: detail)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "unknown-outcome-\(UUID())")
+        client.confirmMediaAccount("unknown-outcome-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let value = asset(), model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [asset()])
+        model.suppliedLaunchContext = "unknown-outcome-fixture"; model.attach(client)
+        var removal: TimelineRemoval?
+        let result: Void? = await OptimisticAction.perform(errorMessage: "unknown fixture", apply: {
+            removal = model.removeAssetsForOptimisticAction(ids: [value.id])
+        }, rollback: { if let removal { model.restore(removal) } },
+            request: { try await client.setVisibility(ids: [value.id], .archive) }, reportFailure: { _, _ in })
+        XCTAssertNil(result)
+        for _ in 0..<150 {
+            if model.sections.flatMap({ $0.days?.flatMap(\.assets) ?? [] }).isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.sections.flatMap { $0.days?.flatMap(\.assets) ?? [] }.isEmpty,
+            "Fresh archive authority must replace the stale timeline rollback projection before any image grant")
+        XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent)
+        XCTAssertTrue(server.received.contains { $0.method == "GET" && $0.path == "/api/assets/same-id" })
+        XCTAssertFalse(server.received.contains { $0.path.contains("/thumbnail") })
+    }
+
+    func testAuthenticatedArchiveProjectionCannotGrantOldTimelineMetadataTheSameSurface() async throws {
+        let month = "2023-11-01T00:00:00.000Z"
+        let policy = Mutex("archive")
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["archive"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 512).jpegData(compressionQuality: 0.8))
+        let server = try LocalHTTPServer { request in
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data("[{\"timeBucket\":\"\(month)\",\"count\":1}]".utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") {
+                return .init(body: Data(String(decoding: payload, as: UTF8.self)
+                    .replacingOccurrences(of: "\"archive\"", with: "\"\(policy.withLock { $0 })\"").utf8))
+            }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "archive-policy-\(UUID())")
+        client.confirmMediaAccount("archive-policy-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let staleTimelineAsset = asset(), original = TimelineModel(filter: TimelineFilter(), suppliedAssets: [asset()])
+        original.suppliedLaunchContext = "archive-policy-fixture"; original.attach(client)
+        _ = try await makeSavedPack(client: client)
+        original.removeAssets(ids: [staleTimelineAsset.id])
+        ImageLoader.shared.markEphemeral(assetIDs: [staleTimelineAsset.id])
+        let archive = TimelineModel(filter: TimelineFilter(visibility: .archive))
+        archive.attach(client); await archive.load()
+        let canonical = try XCTUnwrap(archive.flatAssets.first)
+        XCTAssertEqual(canonical.visibility, .archive)
+        let archiveKey = MediaPresentationCoordinator.gridKey(asset: canonical, client: client, pixels: 416)
+        XCTAssertTrue(archiveKey.isCurrentContent)
+        XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: staleTimelineAsset, client: client, pixels: 416).isCurrentContent,
+            "A different page's positive archive response cannot revive stale timeline presentation metadata")
+        let image = try await ImageLoader.shared.image(for: client.thumbnailURL(assetID: canonical.id, cacheKey: canonical.thumbhash), targetPixelSize: 416)
+        XCTAssertNotNil(image.cgImage)
+        let stale = TimelineTileView(frame: .init(x: 0, y: 0, width: 132, height: 132))
+        stale.projectImage(asset: staleTimelineAsset, source: .init(assetID: staleTimelineAsset.id, localIdentifier: nil,
+            pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+            client: client, generation: 0, targetPixelSize: 416)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertNil((stale.makeZoomReplica() as? UIImageView)?.image)
+        policy.withLock { $0 = "timeline" }
+        let returned = TimelineModel(filter: TimelineFilter())
+        returned.attach(client); await returned.load(); await returned.loadBucket(month, refresh: true)
+        let visible = try XCTUnwrap(returned.flatAssets.first)
+        XCTAssertEqual(visible.visibility, .timeline)
+        let returnedKey = MediaPresentationCoordinator.gridKey(asset: visible, client: client, pixels: 416)
+        XCTAssertTrue(returnedKey.isCurrentContent, "Another device's authenticated canonical visibility restoration must recover without deleting source history")
+        XCTAssertFalse(archiveKey.isCurrentContent, "Old publishers remain rejected even when content hash repeats across legitimate visibility changes")
+        XCTAssertFalse(MediaContentGenerations(root: LaunchPreviewStore.rootDirectory).isRetired(scope: returnedKey.scope,
+            subject: returnedKey.subject, sourceRevision: returnedKey.sourceRevision))
+    }
+
+    func testMountedBlockedTileAutomaticallyRebindsAfterAuthenticatedRollbackProof() async throws {
+        let userID = "mounted-recovery-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let detail = Data(#"{"id":"same-id","ownerId":"alice","type":"IMAGE","originalFileName":"fixture.jpg","thumbhash":"revision-one","fileCreatedAt":"2023-11-14T00:00:00Z","localDateTime":"2023-11-14T00:00:00Z","isFavorite":false,"isTrashed":false,"visibility":"timeline"}"#.utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 512).jpegData(compressionQuality: 0.8))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/assets/same-id" { return .init(body: detail) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "mounted-fixture", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let host = UIViewController(), tile = TimelineTileView(frame: .init(x: 20, y: 150, width: 132, height: 132))
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen; host.view.addSubview(tile)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            parent.present(host, animated: false) { continuation.resume() }
+        }
+        func finish() async {
+            tile.unregister()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                host.dismiss(animated: false) { continuation.resume() }
+            }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        do {
+            let client = try XCTUnwrap(session.client), value = asset()
+            let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [value])
+            model.suppliedLaunchContext = "mounted-proof-fixture"; model.attach(client)
+            let removal = model.removeAssetsForOptimisticAction(ids: [value.id])
+            let blocked = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            let registry = AssetTileRegistry()
+            tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false,
+                targetPixelSize: 416, registry: registry)
+            XCTAssertFalse(blocked.isCurrentContent)
+            XCTAssertNil((tile.makeZoomReplica() as? UIImageView)?.image)
+            model.restore(removal)
+            // No manual configure/project/notification after proof: UIKit's
+            // existing observed recovery generation must update this same view.
+            for _ in 0..<200 {
+                if (tile.makeZoomReplica() as? UIImageView)?.image != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let current = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image)
+            XCTAssertNotNil(tile.checkpointSurface(for: current, client: client))
+            XCTAssertFalse(blocked.isCurrentContent)
+            XCTAssertTrue(server.received.contains { $0.path.contains("/thumbnail") })
+        } catch {
+            await finish(); throw error
+        }
+        await finish()
+    }
+
+    func testCurrentPhotoKitProofRestoresLocalRollbackWithoutGrantingFromMetadataAlone() async throws {
+        let (local, _) = try await createSurfaceFixture()
+        let client = client(UUID().uuidString)
+        client.confirmMediaAccount("local-rollback-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        var value = asset(); value.localIdentifier = local
+        value.localImageVersion = try XCTUnwrap(LocalImageLoader.currentModificationRevision(local))
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [value])
+        model.suppliedLaunchContext = "local-rollback-fixture"; model.attach(client)
+        let old = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        let removal = model.removeAssetsForOptimisticAction(ids: [value.id])
+        let denied = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        XCTAssertFalse(denied.isCurrentContent)
+        model.restore(removal)
+        for _ in 0..<100 {
+            if MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent)
+        XCTAssertFalse(old.isCurrentContent); XCTAssertFalse(denied.isCurrentContent)
+        // A still-present row cannot turn a retired local revision into proof.
+        var stale = value; stale.localImageVersion = "not-the-current-PhotoKit-revision"
+        model.updateAssets(ids: [value.id]) { $0 = stale }
+        let again = model.removeAssetsForOptimisticAction(ids: [value.id]); model.restore(again)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: stale, client: client, pixels: 416).isCurrentContent)
+    }
+
+    func testDeniedAndUnknownReadbacksNeverClearPresentationBlock() async throws {
+        for (status, visibility) in [(403, "timeline"), (404, "timeline"), (503, "timeline"), (200, "hidden"), (200, "locked"), (200, "unknown")] {
+            let policy = visibility == "unknown" ? "" : ",\"visibility\":\"\(visibility)\""
+            let detail = Data("{\"id\":\"same-id\",\"ownerId\":\"alice\",\"type\":\"IMAGE\",\"originalFileName\":\"fixture.jpg\",\"thumbhash\":\"revision-one\",\"fileCreatedAt\":\"2023-11-14T00:00:00Z\",\"localDateTime\":\"2023-11-14T00:00:00Z\",\"isFavorite\":false,\"isTrashed\":false\(policy)}".utf8)
+            let server = try LocalHTTPServer { _ in .init(status: status, body: detail) }
+            try await server.start(); defer { server.stop() }
+            let client = ImoraClient(apiURL: server.apiURL, accessToken: "denied-proof-\(UUID())")
+            client.confirmMediaAccount("denied-proof-\(UUID())")
+            ImageLoader.shared.configure(client: client)
+            defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+            let value = asset(), model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [asset()])
+            model.suppliedLaunchContext = "denied-readback-fixture"; model.attach(client)
+            let removal = model.removeAssetsForOptimisticAction(ids: [value.id]); model.restore(removal)
+            for _ in 0..<100 {
+                if server.received.contains(where: { $0.path == "/api/assets/same-id" }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            // Also await an actual response to discriminate network absence
+            // from a rejected/unknown policy. This API alone grants nothing.
+            do { _ = try await client.assetDetail(id: value.id) }
+            catch { if status == 200 { XCTFail("Unexpected fixture decode failure: \(error)") } }
+            model.replaceSuppliedAssets([value], groupsByDate: true)
+            XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent,
+                "\(status)/\(visibility): cached/ordinary Asset arrays and rejected/unknown authority cannot reopen access")
+            XCTAssertFalse(server.received.contains { $0.path.contains("/thumbnail") })
+        }
+    }
+
+    func testLateAuthenticatedProofCannotCrossAnotherBlockOrClient() async throws {
+        let detail = Data(#"{"id":"same-id","ownerId":"alice","type":"IMAGE","originalFileName":"fixture.jpg","thumbhash":"revision-one","fileCreatedAt":"2023-11-14T00:00:00Z","localDateTime":"2023-11-14T00:00:00Z","isFavorite":false,"isTrashed":false,"visibility":"timeline"}"#.utf8)
+        let server = try LocalHTTPServer { _ in
+            Thread.sleep(forTimeInterval: 0.1)
+            return .init(body: detail)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "late-proof-\(UUID())")
+        client.confirmMediaAccount("late-proof-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let value = asset()
+        ImageLoader.shared.invalidate(asset: value, client: client, retiresSourceRevisions: false, blocksAccess: true)
+        let request = Task { try await client.authenticatedAsset(id: value.id) }
+        for _ in 0..<100 where server.received.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(server.received.isEmpty)
+        ImageLoader.shared.invalidate(asset: value, client: client, retiresSourceRevisions: false, blocksAccess: true)
+        let response = try await request.value
+        response.authorizePresented([value], visibility: .timeline, using: client)
+        XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent)
+        let beforeCancellation = server.received.count
+        let cancelled = Task { try await client.authenticatedAsset(id: value.id) }
+        for _ in 0..<100 where server.received.count == beforeCancellation { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertGreaterThan(server.received.count, beforeCancellation)
+        cancelled.cancel()
+        do { _ = try await cancelled.value; XCTFail("Cancelled readback produced positive evidence") }
+        catch is CancellationError {}
+        catch let error as URLError where error.code == .cancelled {}
+        catch { XCTFail("Unexpected cancellation error: \(type(of: error)): \(error)") }
+        XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent)
+        let replacement = ImoraClient(apiURL: server.apiURL, accessToken: "different-client")
+        replacement.confirmMediaAccount("different-account"); ImageLoader.shared.configure(client: replacement)
+        defer { replacement.invalidate() }
+        response.authorizePresented([value], visibility: .timeline, using: replacement)
+        XCTAssertFalse(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent)
+    }
+
     func testOneProjectionReadsEachLocalRevisionOnceButNextProjectionRechecksAccess() async throws {
         let (localID, image) = try await createSurfaceFixture()
         let client = client(UUID().uuidString)
