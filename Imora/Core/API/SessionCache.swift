@@ -35,6 +35,8 @@ nonisolated enum SessionCache {
         UserDefaults.standard.set(id, forKey: userKey)
     }
 
+    static var lastKnownUserId: String? { UserDefaults.standard.string(forKey: userKey) }
+
     static func load(host: String) -> Snapshot? {
         guard let data = UserDefaults.standard.data(forKey: key),
               let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),

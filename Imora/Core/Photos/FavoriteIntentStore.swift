@@ -53,6 +53,25 @@ final class FavoriteIntentStore {
         do { try persist() } catch { intents = previous; throw error }
     }
 
+    /// Only the same authenticated client may promote its provisional queue
+    /// after confirming a user ID. Never call this between login sessions.
+    func confirmAccount(credentialScope: String, account: String) throws {
+        guard credentialScope.hasPrefix("credential:"), !account.hasPrefix("credential:"),
+              intents.contains(where: { $0.account == credentialScope }) else { return }
+        guard !unreadable else { throw Failure.unreadableStore }
+        let previous = intents
+        let merged = intents.filter { $0.account == account || $0.account == credentialScope }
+            .sorted { $0.createdAt < $1.createdAt }
+        var latest: [String: FavoriteIntent] = [:]
+        for intent in merged {
+            latest[intent.remoteID] = FavoriteIntent(id: intent.id, account: account,
+                remoteID: intent.remoteID, localID: intent.localID, value: intent.value, createdAt: intent.createdAt)
+        }
+        intents.removeAll { $0.account == account || $0.account == credentialScope }
+        intents.append(contentsOf: latest.values)
+        do { try persist() } catch { intents = previous; throw error }
+    }
+
     private func persist() throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(intents).write(to: url, options: .atomic)

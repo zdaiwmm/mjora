@@ -23,6 +23,23 @@ final class PhotoStateConsistencyTests: XCTestCase {
         XCTAssertFalse(LocalPhotoSearch.matches(record, query: "mountain"))
     }
 
+    func testPhotographerDateRemainsOnTheCorrectSideOfMidnightAcrossOffsets() throws {
+        let parser = ISO8601DateFormatter()
+        let cases: [(String, Double, String, String)] = [
+            ("2026-01-01T18:30:00Z", 8, "2026-01-02", "02:30"),
+            ("2026-01-01T02:30:00Z", -5, "2025-12-31", "21:30"),
+            ("2026-01-01T00:15:00Z", 0, "2026-01-01", "00:15")
+        ]
+        for (utc, offset, date, time) in cases {
+            var asset = sampleAsset(date: try XCTUnwrap(parser.date(from: utc)))
+            asset.localOffsetHours = offset
+            let tokens = PhotoDatePresentation.searchDates(wallClock: asset.localDate)
+            XCTAssertTrue(tokens.contains(date), tokens.description)
+            XCTAssertTrue(PhotoDatePresentation.dateTime(wallClock: asset.localDate,
+                locale: Locale(identifier: "zh_CN")).contains(time))
+        }
+    }
+
     func testSearchSourceDefaultsAndInheritedDeviceScopeAreExplicit() {
         XCTAssertEqual(PhotoSearchSource(librarySource: "local"), .device)
         XCTAssertEqual(PhotoSearchSource(librarySource: "cloud"), .cloud)
@@ -42,6 +59,26 @@ final class PhotoStateConsistencyTests: XCTestCase {
         XCTAssertTrue(reloaded.pending(account: "C").isEmpty)
     }
 
+    func testFavoriteAccountIdentitySurvivesTokenRotationWithoutCrossingUsersOrServers() {
+        let first = FavoriteAccountIdentity.key(server: "https://one/api", userID: "A", credentialScope: "token-one")
+        XCTAssertEqual(first, FavoriteAccountIdentity.key(server: "https://one/api", userID: "A", credentialScope: "token-two"))
+        XCTAssertNotEqual(first, FavoriteAccountIdentity.key(server: "https://one/api", userID: "B", credentialScope: "token-one"))
+        XCTAssertNotEqual(first, FavoriteAccountIdentity.key(server: "https://two/api", userID: "A", credentialScope: "token-one"))
+        XCTAssertNil(FavoriteAccountIdentity.key(server: "https://one/api", userID: nil, credentialScope: nil))
+    }
+
+    func testConfirmedIdentityMigratesOnlyTheCurrentProvisionalAccountQueue() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FavoriteIntentStore(url: directory.appendingPathComponent("favorites.json"))
+        _ = try store.record(account: "credential:current", remoteID: "photo", localID: "local", value: true)
+        _ = try store.record(account: "credential:other", remoteID: "photo", localID: nil, value: false)
+        try store.confirmAccount(credentialScope: "credential:current", account: "server|user:A")
+        XCTAssertTrue(store.pending(account: "credential:current").isEmpty)
+        XCTAssertEqual(store.pending(account: "server|user:A").map(\.value), [true])
+        XCTAssertEqual(store.pending(account: "credential:other").map(\.value), [false])
+    }
+
     func testLateFavoriteAcknowledgementCannotEraseNewerIntent() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -54,10 +91,95 @@ final class PhotoStateConsistencyTests: XCTestCase {
         XCTAssertTrue(store.pending(account: "A").isEmpty)
     }
 
+    func testAcceptedDeviceFavoriteSurvivesCloudFailureAndRetriesOnlyItsAccount() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FavoriteIntentStore(url: directory.appendingPathComponent("favorites.json"))
+        let transport = FavoriteTestTransport()
+        let local = FavoriteTestDevice()
+        let coordinator = PhotoFavoriteCoordinator(account: "A", store: store,
+            writeLocal: { id, value in await local.set(id, value) },
+            writeRemote: { id, value in try await transport.set(id, value) })
+        let outcome = try await coordinator.set(localID: "device", remoteID: "remote", value: true)
+        await coordinator.flush()
+        let localValue = await local.value("device")
+        XCTAssertEqual(localValue, true)
+        XCTAssertTrue(outcome.localCommitted)
+        XCTAssertEqual(store.pending(account: "A").map(\.value), [true])
+        _ = try store.record(account: "B", remoteID: "other", localID: nil, value: false)
+        await transport.recover()
+        await coordinator.flush()
+        XCTAssertTrue(store.pending(account: "A").isEmpty)
+        XCTAssertEqual(store.pending(account: "B").count, 1)
+        coordinator.shutdown()
+        do {
+            _ = try await coordinator.set(localID: "afterLogout", remoteID: nil, value: true)
+            XCTFail("An inactive account cannot start a PhotoKit mutation")
+        } catch {}
+        let afterLogout = await local.value("afterLogout")
+        XCTAssertNil(afterLogout)
+    }
+
+    func testDeviceStillActionsDoNotRequireAnExistingCloudCopy() {
+        let asset = sampleAsset(date: .distantPast)
+        let local = AssetActionAvailability(asset: asset, ownsAsset: true)
+        XCTAssertTrue(local.canFavorite)
+        XCTAssertTrue(local.canEdit)
+        XCTAssertTrue(local.canAddToAlbum)
+        XCTAssertTrue(local.canBackUp)
+        XCTAssertFalse(local.canShareLink)
+        var live = asset
+        live.hasLocalMotion = true
+        XCTAssertFalse(AssetActionAvailability(asset: live, ownsAsset: true).canEdit)
+    }
+
+    func testSlowFirstPhotoKitWriteCannotOverwriteTheLatestFavoriteIntent() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FavoriteIntentStore(url: directory.appendingPathComponent("favorites.json"))
+        let local = FavoriteTestDevice(delayFirstWrite: true)
+        let coordinator = PhotoFavoriteCoordinator(account: "A", store: store,
+            writeLocal: { id, value in await local.set(id, value) },
+            writeRemote: { _, _ in throw URLError(.notConnectedToInternet) })
+        let first = Task { try await coordinator.set(localID: "device", remoteID: "remote", value: true) }
+        for _ in 0..<100 {
+            if await local.startedWrites > 0 { break }
+            await Task.yield()
+        }
+        let last = Task { try await coordinator.set(localID: "device", remoteID: "remote", value: false) }
+        _ = try await first.value
+        _ = try await last.value
+        let localValue = await local.value("device")
+        XCTAssertEqual(localValue, false)
+        XCTAssertEqual(store.pending(account: "A").map(\.value), [false])
+        coordinator.shutdown()
+    }
+
     private func sampleAsset(date: Date) -> Asset {
         Asset(id: "local-fixture", ownerId: "", isImage: true, isFavorite: false,
               isTrashed: false, visibility: .timeline, thumbhash: nil, fileCreatedAt: date,
               localOffsetHours: 0, duration: nil, livePhotoVideoId: nil, ratio: 1,
               city: nil, country: nil, createdAt: nil, localIdentifier: "fixture")
     }
+}
+
+private actor FavoriteTestTransport {
+    private var fails = true
+    func set(_ id: String, _ value: Bool) throws {
+        if fails { throw URLError(.notConnectedToInternet) }
+    }
+    func recover() { fails = false }
+}
+
+private actor FavoriteTestDevice {
+    private var values: [String: Bool] = [:]
+    private let delayFirstWrite: Bool
+    private(set) var startedWrites = 0
+    init(delayFirstWrite: Bool = false) { self.delayFirstWrite = delayFirstWrite }
+    func set(_ id: String, _ value: Bool) async {
+        startedWrites += 1
+        if delayFirstWrite && startedWrites == 1 { try? await Task.sleep(for: .milliseconds(50)) }
+        values[id] = value
+    }
+    func value(_ id: String) -> Bool? { values[id] }
 }

@@ -17,6 +17,7 @@ struct MainTabView: View {
     @State private var selection: TabKey = .photos
     @State private var searchText = ""
     @State private var searchScope: SearchFilter.TextType = .context
+    @State private var searchSource: PhotoSearchSource = .cloud
     @State private var searchSubmitRequest = 0
     @State private var isSearchPresented = false
     @FocusState private var isSearchFocused: Bool
@@ -25,6 +26,9 @@ struct MainTabView: View {
         Binding(
             get: { selection },
             set: { tab in
+                if tab == .search, selection != .search {
+                    searchSource = selection == .photos ? PhotoSearchSource(librarySource: source) : .cloud
+                }
                 if tab == .search, selection == .search { focusSearch() }
                 if tab != .search {
                     isSearchPresented = false
@@ -82,20 +86,22 @@ struct MainTabView: View {
                 .accessibilityHidden(true)
 
             TabView(selection: tabSelection) {
-                Tab("Photos", systemImage: "photo.on.rectangle", value: TabKey.photos) {
+                Tab("Library", systemImage: selection == .photos ? "photo.on.rectangle.fill" : "photo.on.rectangle", value: TabKey.photos) {
                     TimelineTab(cloudControls: cloudControls, deviceControls: deviceControls)
                         .id(session.client?.offlineAccountKey)
                 }
-                Tab("Albums", systemImage: "rectangle.stack", value: TabKey.albums) {
+                Tab("Collections", systemImage: selection == .albums ? "rectangle.stack.fill" : "rectangle.stack", value: TabKey.albums) {
                     AlbumsTab(account: session.client?.offlineAccountKey)
                         .id(session.client?.offlineAccountKey)
                         .toolbarVisibility(showsLibrarySection ? .automatic : .hidden, for: .tabBar)
                 }
                 Tab("Search", systemImage: "magnifyingglass", value: TabKey.search, role: .search) {
                     SearchTab(query: $searchText, searchScope: $searchScope,
+                              source: $searchSource,
                               submitRequest: searchSubmitRequest, setSearchFocus: setSearchFocus)
+                        .id(session.client?.offlineAccountKey)
                         .searchable(text: $searchText, isPresented: $isSearchPresented,
-                                    placement: .toolbar, prompt: searchScope.prompt)
+                                    placement: .toolbar, prompt: searchSource.prompt)
                         .searchFocused($isSearchFocused)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -160,7 +166,7 @@ struct MainTabView: View {
                 PhotosNavigationBar(controls: photoControls, showsPeriods: showsDateNavigation,
                     selection: tabSelection, onSearch: {
                         withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
-                            selection = .search
+                            activateSearch()
                         }
                     })
                     // Match the native floating bar's clearance independently
@@ -205,7 +211,7 @@ struct MainTabView: View {
         }
         .onChange(of: timelineRouter.searchRequested) { _, requested in
             if requested {
-                selection = .search
+                activateSearch()
                 timelineRouter.searchRequested = false
             }
         }
@@ -213,6 +219,13 @@ struct MainTabView: View {
 
     private func focusSearch() {
         setSearchFocus(true)
+    }
+
+    private func activateSearch() {
+        if selection != .search {
+            searchSource = selection == .photos ? PhotoSearchSource(librarySource: source) : .cloud
+        }
+        selection = .search
     }
 
     /// dropping focus keeps the field presented, so the typed query and the
