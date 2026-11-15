@@ -18,7 +18,7 @@ struct AlbumsTab: View {
         }
     }
 
-    @State private var layout = CollectionsLayout()
+    @State private var layout: CollectionsLayout
     @State private var showLayoutEditor = false
     @State private var showPinnedEditor = false
     @State private var showSettings = false
@@ -41,6 +41,10 @@ struct AlbumsTab: View {
     @State private var albumLoadGate = LatestAlbumLoadGate()
     @State private var pendingAlbumLoadGate = LatestAlbumLoadGate()
     private var router: NotificationRouter { .shared }
+
+    init(account: String? = nil) {
+        _layout = State(initialValue: CollectionsLayoutStore().load(account: account))
+    }
 
     private var visibleAlbums: [Album] {
         var result = albums
@@ -113,7 +117,6 @@ struct AlbumsTab: View {
                 .navigationDestination(for: SharedSpace.self) { SpaceScreen(space: $0) }
                 .navigationDestination(for: CleanupRoute.self) { CleanupRouteScreen(route: $0) }
                 .task {
-                    layout = layoutStore.load(account: session.client?.offlineAccountKey)
                     await load()
                 }
                 .task(id: router.pendingAlbumID) { await openPendingAlbum() }
@@ -127,6 +130,7 @@ struct AlbumsTab: View {
                 .sheet(isPresented: $showPinnedEditor) { PinnedCollectionsEditor(layout: $layout, albums: albums) }
                 .sheet(isPresented: $showSettings) { SettingsView() }
         }
+        .tint(.primary)
         .alert("New Album", isPresented: $showCreate) {
             TextField("Album name", text: $newAlbumName)
             Button("Create") { Task { await createAlbum() } }

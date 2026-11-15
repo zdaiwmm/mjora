@@ -63,7 +63,7 @@ struct MemoryLane: View {
                 .contentMargins(.horizontal, contentInset, for: .scrollContent)
                 .scrollTargetBehavior(.viewAligned)
             }
-            .padding(.top, 4)
+            .padding(.top, showsHeading ? 4 : 0)
             .fullScreenCover(item: $viewer.route) { route in
                 AssetViewerScreen(
                     assets: route.assets,
@@ -200,7 +200,7 @@ struct MemoryLane: View {
     private func load() async {
         guard let client = session.client, memories.isEmpty else { return }
         defer { hasLoaded = true }
-        if let fetched = try? await client.memories(for: Date()) {
+        if let fetched = try? await client.memories() {
             guard session.client === client else { return }
             loadFailed = false
             // birthdays lead, like the official clients.

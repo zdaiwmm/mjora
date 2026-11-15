@@ -16,6 +16,7 @@ struct CollectionsHome: View {
     let onEditPins: () -> Void
     @State private var people: [Person] = []
     @State private var changingPeople = Set<String>()
+    @ScaledMetric(relativeTo: .body) private var previewSide = 112.0
 
     private var availableSections: [CollectionSection] {
         layout.sections.filter {
@@ -30,7 +31,7 @@ struct CollectionsHome: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 24) {
                 ForEach(availableSections) { section in
                     VStack(alignment: .leading, spacing: 10) {
                         sectionHeader(section)
@@ -76,7 +77,7 @@ struct CollectionsHome: View {
                     .background(.quaternary, in: .circle)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.tint)
+            .foregroundStyle(Color.secondary)
             .accessibilityLabel(layout.collapsed.contains(section) ? "Expand \(section.title)" : "Collapse \(section.title)")
             .accessibilityIdentifier("collections-collapse-\(section.rawValue)")
         }
@@ -131,14 +132,14 @@ struct CollectionsHome: View {
                     }
                 }
             } else if isLoading {
-                ProgressView().frame(maxWidth: .infinity, minHeight: 94)
+                ProgressView().frame(maxWidth: .infinity, minHeight: previewSide)
             } else if loadFailed {
                 Button(action: onRetry) { Label("Couldn't load albums. Retry", systemImage: "arrow.clockwise") }
-                    .frame(minHeight: 52)
+                    .frame(minHeight: previewSide)
             } else {
                 NavigationLink(value: CollectionsRoute.albums) {
                     Label("Create Your First Album", systemImage: "rectangle.stack.badge.plus")
-                        .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: previewSide, alignment: .leading)
                         .padding(.horizontal, 16)
                         .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 22))
                 }
@@ -227,7 +228,7 @@ struct CollectionsHome: View {
 
     private func collectionRow(_ title: String, symbol: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: symbol).font(.title3).foregroundStyle(.tint).frame(width: 27)
+            Image(systemName: symbol).font(.title3).foregroundStyle(Color.primary).frame(width: 27)
             Text(title).foregroundStyle(.primary)
             Spacer(minLength: 8)
             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)

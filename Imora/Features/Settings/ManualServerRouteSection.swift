@@ -61,7 +61,7 @@ struct ManualServerRouteSection: View {
             }
             .accessibilityIdentifier("server-route-use-external")
 
-            if showsConfigurationLink, router.config?.isUsable != true {
+            if showsConfigurationLink {
                 NavigationLink {
                     LocalNetworkScreen()
                 } label: {

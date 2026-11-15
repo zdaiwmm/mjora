@@ -27,6 +27,22 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         }
         let later = app.buttons.matching(NSPredicate(format: "label IN %@", ["以后", "Not Now", "Later"])).firstMatch
         if later.waitForExistence(timeout: 2), later.isHittable { later.tap() }
+        let ready = NSPredicate { _, _ in
+            // Password AutoFill can present its save prompt after the main
+            // screen mounts. Decline it while waiting for usable navigation.
+            if later.exists && later.isHittable { later.tap() }
+            let title = app.buttons["photos-source-menu"]
+            let albums = app.buttons["shell-albums"]
+            return title.exists && title.isHittable && albums.exists && albums.isHittable
+        }
+        let readiness = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 25)
+        if readiness != .completed {
+            snapshot(app, "login-navigation-not-ready")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "login-navigation-hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        }
+        XCTAssertEqual(readiness, .completed,
+                       "Wait for signed-in navigation and dismiss the synthetic password prompt")
         return app
     }
 
@@ -84,8 +100,8 @@ final class PhotosCollectionsFlowTests: XCTestCase {
 
     func testCollectionsPreservesUtilitiesAndAlbumCreation() throws {
         let app = try launch()
-        XCTAssertTrue(app.tabBars.buttons["相册"].waitForExistence(timeout: 25))
-        app.tabBars.buttons["相册"].tap()
+        XCTAssertTrue(app.buttons["shell-albums"].waitForExistence(timeout: 25))
+        app.buttons["shell-albums"].tap()
         XCTAssertTrue(app.scrollViews["collections-home"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["albums-all-cloud-photos"].exists)
         snapshot(app, "native-collections-home")
@@ -117,7 +133,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
 
     func testCollectionsPinsAndCollapsePersistAcrossLaunches() throws {
         let app = try launch()
-        app.tabBars.buttons["相册"].tap()
+        app.buttons["shell-albums"].tap()
         let collapse = app.buttons["collections-collapse-memories"]
         XCTAssertTrue(collapse.waitForExistence(timeout: 10))
         if collapse.label.hasPrefix("展开") { collapse.tap() }
@@ -133,7 +149,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         app.buttons["完成"].tap()
         app.terminate()
         app.launch()
-        app.tabBars.buttons["相册"].tap()
+        app.buttons["shell-albums"].tap()
         XCTAssertTrue(collapse.waitForExistence(timeout: 10))
         XCTAssertTrue(collapse.label.hasPrefix("展开"))
         tap(app, "collections-edit-pins")
@@ -147,6 +163,65 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(app.switches.firstMatch.waitForExistence(timeout: 5))
         snapshot(app, "native-collections-layout-editor")
         app.buttons["完成"].tap()
+    }
+
+    func testCompactCollectionsHasOnlyOneBottomNavigation() throws {
+        let app = try launch()
+        XCTAssertTrue(app.buttons["shell-albums"].waitForExistence(timeout: 20))
+        app.buttons["shell-albums"].tap()
+        XCTAssertTrue(app.scrollViews["collections-home"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.tabBars.firstMatch.exists, "The native tab bar must not duplicate the compact glass navigation")
+        XCTAssertFalse(app.searchFields.firstMatch.exists, "Global photo search belongs to its dedicated tab")
+        snapshot(app, "feedback-collections-single-navigation")
+    }
+
+    func testCollectionTimelineSelectionOwnsBottomControls() throws {
+        let previous = try launch()
+        previous.buttons["photos-source-menu"].tap()
+        previous.buttons["账号与设置"].tap()
+        tap(previous, "settings-sign-out")
+        let confirmation = previous.buttons.matching(identifier: "settings-confirm-sign-out")
+            .allElementsBoundByIndex.first(where: \.isHittable)
+        try XCTUnwrap(confirmation).tap()
+        XCTAssertTrue(previous.textFields["auth-server"].waitForExistence(timeout: 20))
+        previous.terminate()
+        let app = try launch()
+        XCTAssertTrue(app.buttons["shell-albums"].waitForExistence(timeout: 20))
+        app.buttons["shell-albums"].tap()
+        tap(app, "collections-media-photos")
+        XCTAssertTrue(app.buttons["timeline-select"].waitForExistence(timeout: 15))
+        app.buttons["timeline-select"].tap()
+        XCTAssertTrue(app.buttons["selection-cancel"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["shell-photos"].exists, "Collection selection owns the bottom controls")
+        snapshot(app, "feedback-collection-selection")
+        app.buttons["selection-cancel"].tap()
+        XCTAssertTrue(app.buttons["shell-photos"].waitForExistence(timeout: 5))
+    }
+
+    func testScrollingToNewestRestoresCompactNavigationAndDateButtonsAlign() throws {
+        let app = try launch()
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 20))
+        let newest = app.buttons.matching(identifier: "asset-tile")
+            .matching(NSPredicate(format: "label CONTAINS '2026年11月'")).firstMatch
+        let ready = NSPredicate { _, _ in newest.exists && newest.isHittable }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 20), .completed,
+                       "Wait for cold-login restoration before exercising scroll gestures")
+        let picker = app.segmentedControls["photos-period-picker"]
+        for _ in 0..<3 where !picker.exists { app.swipeDown() }
+        XCTAssertTrue(picker.waitForExistence(timeout: 8))
+        let search = app.buttons["photos-search"]
+        XCTAssertEqual(picker.frame.midY, search.frame.midY, accuracy: 2)
+        XCTAssertLessThanOrEqual(abs(picker.frame.height - search.frame.height), 4)
+        XCTAssertLessThanOrEqual(search.frame.height, 40)
+        snapshot(app, "feedback-compact-date-navigation")
+        for _ in 0..<12 where !app.buttons["shell-photos"].exists { app.swipeUp() }
+        XCTAssertTrue(app.buttons["shell-photos"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["shell-albums"].exists)
+        XCTAssertFalse(picker.exists)
+        snapshot(app, "feedback-newest-navigation-restored")
+        app.buttons["photos-search"].tap()
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 8))
+        snapshot(app, "feedback-search-transition")
     }
 
     func testLongLibraryRestoresSourceAnchorAndDrillsIntoPeriods() throws {

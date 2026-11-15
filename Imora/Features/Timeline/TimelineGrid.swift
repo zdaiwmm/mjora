@@ -115,6 +115,12 @@ struct TimelineGridEvents {
 /// ScrollPosition. plain, nothing here is observed.
 @MainActor
 final class TimelineGridController {
+    var scrollOffset: CGFloat { grid?.offsetY ?? 0 }
+    var endOffset: CGFloat {
+        guard let grid else { return 0 }
+        return max(0, grid.contentSize.height - grid.bounds.height
+                   + grid.adjustedContentInset.top + grid.adjustedContentInset.bottom)
+    }
     fileprivate weak var grid: TimelineGridView?
 
     /// 1 towards the bottom, -1 towards the top, 0 while slow or at rest.

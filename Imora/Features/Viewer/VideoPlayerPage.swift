@@ -165,6 +165,14 @@ final class VideoPlayback {
         }
     }
 
+    /// Warm only a locally available Live Photo. A press that already started
+    /// loading, or a page that left the viewport, always keeps its ownership.
+    func prepareLocalItem(_ item: AVPlayerItem, assetID: String) {
+        guard ownerID == assetID, pendingItemMaker != nil, releaseTask == nil else { return }
+        pendingItemMaker = nil
+        install(item, generation: generation)
+    }
+
     /// builds the deferred item on first engagement. the still stays on
     /// screen and the bar shows buffering until the clip is ready.
     private func engagePendingItem(thenPlays: Bool) {
@@ -578,11 +586,14 @@ struct MediaSurfaceStack: View {
                         onReady: { onPosterReady?() }
                     )
                 }
-                if showsVideo, let player = playback.player {
+                if playback.ownerID == assetID, let player = playback.player {
                     VideoPlayerSurface(
                         player: player,
                         onReady: { onPosterReady?() }
                     )
+                    .opacity(showsVideo ? 1 : 0)
+                    .allowsHitTesting(showsVideo)
+                    .transaction { $0.animation = nil }
                 }
             }
         }

@@ -1804,6 +1804,11 @@ nonisolated final class ImoraClient: Sendable {
 
     /// immich switched `for` to a bare day in 3.1, gallery in a 3.0 based
     /// release, so the api level only picks the first try and a 400 flips it.
+    func memories() async throws -> [Memory] {
+        try await get("memories", query: [URLQueryItem(name: "isUpcoming", value: "false"),
+                                         URLQueryItem(name: "size", value: "24")])
+    }
+
     func memories(for date: Date) async throws -> [Memory] {
         let learned = memoryQueryDateOnly.withLock { $0 }
         var dateOnly: Bool

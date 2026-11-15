@@ -4,8 +4,8 @@ struct TimelineTab: View {
     @Environment(SessionStore.self) private var session
     @Bindable private var router = TimelineNavigationRouter.shared
     @AppStorage("imora.photos.source") private var source = "cloud"
-    @State private var cloudControls = PhotosGridControls()
-    @State private var deviceControls = PhotosGridControls()
+    var cloudControls = PhotosGridControls()
+    var deviceControls = PhotosGridControls()
     @State private var showSettings = false
     @State private var showBackupSettings = false
 

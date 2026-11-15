@@ -109,6 +109,18 @@ final class PhotosGridControls {
     @ObservationIgnored var scrollOffset: CGFloat?
     @ObservationIgnored var isRestoring = false
 
+    func observeScroll(offset: CGFloat, endOffset: CGFloat, isUserScrolling: Bool) {
+        guard !isRestoring else { return }
+        let previous = scrollOffset
+        scrollOffset = offset
+        guard mode == .all else { return }
+        if endOffset <= 0 || endOffset - offset <= 8 {
+            browsingPast = false
+        } else if isUserScrolling, let previous, offset < previous {
+            browsingPast = true
+        }
+    }
+
     func zoomIn(viewportWidth: CGFloat) { adjustZoom(inward: true, width: viewportWidth) }
     func zoomOut(viewportWidth: CGFloat) { adjustZoom(inward: false, width: viewportWidth) }
     func reveal(bucketID: String?) {

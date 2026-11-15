@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PhotoPeriodsView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(SessionStore.self) private var session
     let model: TimelineModel
     @Bindable var controls: PhotosGridControls
@@ -15,18 +16,22 @@ struct PhotoPeriodsView: View {
             LazyVStack(alignment: .leading, spacing: 16) {
                 if controls.mode == .months, controls.selectedYear != nil {
                     Button {
-                        controls.selectedYear = nil
-                        controls.mode = .years
+                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                            controls.selectedYear = nil
+                            controls.mode = .years
+                        }
                     } label: { Label("All Years", systemImage: "chevron.left") }
                     .padding(.vertical, 4)
                 }
                 ForEach(periods) { period in
                     Button {
-                        if controls.mode == .years {
-                            controls.selectedYear = period.year
-                            controls.mode = .months
-                        } else {
-                            controls.reveal(bucketID: period.representativeBucketID)
+                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                            if controls.mode == .years {
+                                controls.selectedYear = period.year
+                                controls.mode = .months
+                            } else {
+                                controls.reveal(bucketID: period.representativeBucketID)
+                            }
                         }
                     } label: { periodCard(period) }
                     .buttonStyle(.plain)
@@ -39,6 +44,8 @@ struct PhotoPeriodsView: View {
                     ContentUnavailableView("No photos yet", systemImage: "photo.on.rectangle")
                 }
             }
+            .id(controls.mode)
+            .transition(.opacity)
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 90)

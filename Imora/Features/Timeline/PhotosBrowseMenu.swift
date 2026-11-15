@@ -1,4 +1,23 @@
 import SwiftUI
+import UIKit
+
+struct PhotosSelectionPreferenceKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+private struct CompactPhotosNavigationKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var usesCompactPhotosNavigation: Bool {
+        get { self[CompactPhotosNavigationKey.self] }
+        set { self[CompactPhotosNavigationKey.self] = newValue }
+    }
+}
 
 struct PhotosToolbarConfiguration {
     var source: Binding<String>
@@ -63,6 +82,7 @@ struct PhotosSourceMenu: View {
             .contentShape(.rect)
         }
         .menuIndicator(.hidden)
+        .tint(.primary)
         .accessibilityLabel(title)
         .accessibilityIdentifier("photos-source-menu")
     }
@@ -123,6 +143,7 @@ struct PhotosBrowseMenu: View {
 }
 
 struct PhotoPeriodControls: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var controls: PhotosGridControls
     let onSearch: () -> Void
 
@@ -130,10 +151,12 @@ struct PhotoPeriodControls: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 12) {
                 Button {
-                    controls.mode = .all
-                    controls.browsingPast = false
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                        controls.reveal(bucketID: nil)
+                        controls.browsingPast = false
+                    }
                 } label: {
-                    Image(systemName: "photo.on.rectangle.fill").frame(width: 44, height: 44)
+                    Image(systemName: "photo.on.rectangle.fill").frame(width: 36, height: 36)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
@@ -142,10 +165,11 @@ struct PhotoPeriodControls: View {
                     ForEach(PhotoBrowseMode.allCases) { mode in Text(mode.title).tag(mode) }
                 }
                 .pickerStyle(.segmented)
+                .frame(height: 36)
                 .glassEffect(.regular, in: .capsule)
                 .accessibilityIdentifier("photos-period-picker")
                 Button(action: onSearch) {
-                    Image(systemName: "magnifyingglass").frame(width: 44, height: 44)
+                    Image(systemName: "magnifyingglass").frame(width: 36, height: 36)
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
@@ -155,5 +179,152 @@ struct PhotoPeriodControls: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 8)
         .tint(.primary)
+    }
+}
+
+/// One persistent glass container owns both compact navigation states, so
+/// changing the timeline position morphs existing controls in place.
+struct PhotosNavigationBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Bindable var controls: PhotosGridControls
+    let showsPeriods: Bool
+    @Binding var selection: MainTabView.TabKey
+    let onSearch: () -> Void
+    @Namespace private var glassNamespace
+    @Namespace private var selectionNamespace
+
+    private var motion: Animation? { reduceMotion ? nil : .smooth(duration: 0.35) }
+
+    var body: some View {
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 12) {
+                if showsPeriods {
+                    Button {
+                        withAnimation(motion) {
+                            controls.reveal(bucketID: nil)
+                            controls.browsingPast = false
+                        }
+                    } label: {
+                        Image(systemName: "photo.on.rectangle.fill")
+                            .frame(width: 36, height: 36)
+                            .contentShape(.circle)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: .circle)
+                    .glassEffectID("navigation", in: glassNamespace)
+                    .accessibilityLabel("Show Photos and Albums Navigation")
+                    .accessibilityIdentifier("photos-show-navigation")
+
+                    NativePhotoPeriodPicker(selection: Binding(get: { controls.mode }, set: { mode in
+                        withAnimation(motion) {
+                            controls.selectedYear = nil
+                            controls.mode = mode
+                        }
+                    }))
+                    .frame(maxWidth: 260)
+                    .frame(height: 36)
+                    .padding(.horizontal, 4)
+                    .glassEffect(.regular, in: .capsule)
+                    .glassEffectID("periods", in: glassNamespace)
+                } else {
+                    HStack(spacing: 0) {
+                        tab(.photos, title: "Photos", symbol: "photo.on.rectangle")
+                        tab(.albums, title: "Albums", symbol: "rectangle.stack")
+                    }
+                    .padding(4)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .glassEffectID("navigation", in: glassNamespace)
+                    Spacer(minLength: 12)
+                }
+                Button(action: onSearch) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: showsPeriods ? 17 : 21, weight: .medium))
+                        .frame(width: showsPeriods ? 36 : 62, height: showsPeriods ? 36 : 62)
+                        .contentShape(.circle)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .glassEffectID("search", in: glassNamespace)
+                .accessibilityLabel("Search")
+                .accessibilityIdentifier("photos-search")
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 62, alignment: .bottom)
+        }
+        .padding(.horizontal, 20)
+        .foregroundStyle(Color.primary)
+        .tint(.primary)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .animation(motion, value: showsPeriods)
+    }
+
+    private func tab(_ key: MainTabView.TabKey, title: LocalizedStringKey, symbol: String) -> some View {
+        Button {
+            withAnimation(motion) { selection = key }
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: symbol).font(.system(size: 20, weight: .medium))
+                Text(title).font(.system(size: 10, weight: .semibold))
+            }
+            .frame(width: 90, height: 54)
+            .foregroundStyle(selection == key ? Color.blue : Color.primary)
+            .background {
+                if selection == key {
+                    Capsule().fill(.quaternary)
+                        .matchedGeometryEffect(id: "selection", in: selectionNamespace)
+                }
+            }
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(title))
+        .accessibilityAddTraits(selection == key ? .isSelected : [])
+        .accessibilityIdentifier(key == .photos ? "shell-photos" : "shell-albums")
+    }
+}
+
+/// The system segmented control fills the same bounds as the adjacent glass
+/// buttons. SwiftUI's segmented Picker keeps a smaller intrinsic control inside
+/// a taller frame, which leaves the selected region visibly shorter.
+private struct NativePhotoPeriodPicker: UIViewRepresentable {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: PhotoBrowseMode
+
+    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let control = UISegmentedControl(items: PhotoBrowseMode.allCases.map(\.title))
+        control.accessibilityIdentifier = "photos-period-picker"
+        control.accessibilityLabel = String(localized: "Browse Photos")
+        control.backgroundColor = .clear
+        control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        return control
+    }
+
+    func updateUIView(_ control: UISegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        let index = PhotoBrowseMode.allCases.firstIndex(of: selection) ?? 2
+        guard control.selectedSegmentIndex != index else { return }
+        if reduceMotion || control.selectedSegmentIndex == UISegmentedControl.noSegment {
+            control.selectedSegmentIndex = index
+        } else {
+            UIView.animate(withDuration: 0.25) {
+                control.selectedSegmentIndex = index
+                control.layoutIfNeeded()
+            }
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UISegmentedControl, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 240, height: proposal.height ?? 36)
+    }
+
+    final class Coordinator: NSObject {
+        var selection: Binding<PhotoBrowseMode>
+        init(selection: Binding<PhotoBrowseMode>) { self.selection = selection }
+        @objc func changed(_ control: UISegmentedControl) {
+            guard PhotoBrowseMode.allCases.indices.contains(control.selectedSegmentIndex) else { return }
+            selection.wrappedValue = PhotoBrowseMode.allCases[control.selectedSegmentIndex]
+        }
     }
 }
