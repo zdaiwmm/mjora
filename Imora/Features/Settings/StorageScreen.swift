@@ -208,13 +208,15 @@ struct StorageScreen: View {
                 TimelineCache.diskUsage() + OfflineCache.diskUsage() + ControlledMediaStore.diskUsage()
             )
         }.value
-        imageBytes = sizes.0
+        imageBytes = sizes.0 + (await LaunchPreviewStore.shared.diskUsage())
         libraryBytes = sizes.1
         await refreshShareStorage()
     }
 
     private func clearCache() async {
         isClearing = true
+        MediaPresentationCoordinator.shared.cancelCheckpoint()
+        try? await LaunchPreviewStore.shared.removeAll()
         await Task.detached(priority: .userInitiated) {
             ImageLoader.shared.clearCache()
             TimelineCache.removeAll()

@@ -425,6 +425,26 @@ final class TimelineModel {
     @ObservationIgnored var applyRowsUpdate: ((_ old: [TimelineRow], _ new: [TimelineRow], _ animated: Bool, _ apply: () -> Void) -> Void)?
 
     private var client: ImoraClient?
+    @ObservationIgnored var launchLayout: LaunchViewportSnapshot.Layout? {
+        didSet {
+            guard launchLayout != nil else { return }
+            let waiters = launchLayoutWaiters.values
+            launchLayoutWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+    @ObservationIgnored private var launchLayoutWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    /// Only explicit main-library supplied models participate; search/album results do not.
+    @ObservationIgnored var suppliedLaunchContext: String? {
+        didSet {
+            if suppliedLaunchContext != oldValue { hasLoaded = false; restoredLaunchViewport = false }
+        }
+    }
+    private var launchCacheKey: String? { usesSuppliedAssets ? suppliedLaunchContext : TimelineCache.key(for: filter) }
+    private(set) var launchCheckpointMiss = false
+    private var restoredLaunchViewport = false
+    var hasRestoredLaunchViewport: Bool { restoredLaunchViewport }
+    @ObservationIgnored var pendingLaunchAnchor: (id: String, offset: Double)?
     private var backup: BackupManager?
     private var inflightBuckets: Set<String> = []
     @ObservationIgnored private var bucketWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -534,13 +554,17 @@ final class TimelineModel {
         flatAssetIndexByID
     }
 
-    func attach(_ client: ImoraClient, backup: BackupManager? = nil, hub: RealtimeHub? = nil) {
-        guard !usesSuppliedAssets else { return }
+    func attach(_ client: ImoraClient, backup: BackupManager? = nil, hub: RealtimeHub? = nil,
+                preparesLaunchViewport: Bool = false) {
+        if usesSuppliedAssets {
+            if suppliedLaunchContext != nil { self.client = client }
+            return
+        }
         if self.client == nil {
             self.client = client
             // Restore headers only after an immutable account is attached.
             // Cached payloads are restored by load(), including while offline.
-            if client.context.isActive, sections.isEmpty,
+            if client.context.isActive, sections.isEmpty, !preparesLaunchViewport,
                let account = client.offlineAccountKey,
                let cached = TimelineCache.buckets(for: filter, account: account) {
                 sections = Self.sections(from: cached)
@@ -554,17 +578,52 @@ final class TimelineModel {
     }
 
     func load() async {
-        guard !usesSuppliedAssets else { return }
+        guard !usesSuppliedAssets || suppliedLaunchContext != nil else { return }
         guard let client, !hasLoaded, !isLoading else { return }
         isLoading = true
         loadError = nil
         defer { isLoading = false }
 
+        // Prepare W0 before publishing metadata. Probes, scans and backup work
+        // remain outside this dependency chain.
+        if let key = launchCacheKey, let layout = launchLayout,
+           let prepared = try? await MediaPresentationCoordinator.shared.restore(client: client, filter: key, layout: layout),
+           client.context.isActive, !Task.isCancelled {
+            launchCheckpointMiss = prepared.checkpointMiss || !prepared.missingKeys.isEmpty
+            if usesSuppliedAssets {
+                pendingLaunchAnchor = (prepared.snapshot.anchor, prepared.snapshot.anchorOffset)
+                replaceSuppliedAssets(prepared.assets, groupsByDate: true)
+            } else {
+            let cached = prepared.snapshot.bucketList.flatMap { try? JSONDecoder().decode([TimeBucket].self, from: $0) }
+                ?? TimelineCache.buckets(for: filter, account: client.offlineAccountKey ?? "") ?? []
+            sections = Self.sections(from: cached)
+            let grouped = Dictionary(grouping: prepared.assets) { asset in
+                prepared.snapshot.bucketIDByAssetID[asset.id]
+                    ?? Self.monthKey(for: filter.groupsByUploadDate ? asset.uploadLocalDate : asset.localDate)
+            }
+            for (id, assets) in grouped {
+                let days = Self.groupByDay(assets.map(assetProjection), byUploadDate: filter.groupsByUploadDate)
+                if let index = sections.firstIndex(where: { $0.id == id }) { sections[index].days = days }
+                else { sections.append(.init(id: id, monthTitle: Self.monthTitle(for: id), count: assets.count, days: days)) }
+            }
+            pendingLaunchAnchor = (prepared.snapshot.anchor, prepared.snapshot.anchorOffset)
+            staleBucketIDs.formUnion(sections.map(\.id))
+            noteProjectionInputsChanged()
+            rebuildRows(rebuildAssets: true)
+            }
+            restoredLaunchViewport = true
+        }
+        if usesSuppliedAssets { hasLoaded = true; return }
+        if sections.isEmpty, client.context.isActive,
+           let account = client.offlineAccountKey, let cached = TimelineCache.buckets(for: filter, account: account) {
+            sections = Self.sections(from: cached)
+        }
+
         // device photos come from the library, not the server, so their scan
         // starts here and overlaps the disk restore and the network round
         // trip instead of queueing behind both. it also covers a launch with
         // the server away - device photos still belong in the grid then.
-        holdsFirstPaint = mergesLocal
+        holdsFirstPaint = mergesLocal && !restoredLaunchViewport
         startLocalRefresh()
         // paint everything the offline store has before touching the network,
         // so the grid is browsable instantly - and stays that way offline.
@@ -583,6 +642,21 @@ final class TimelineModel {
         } catch {
             noteRejection(error)
             loadError = error.localizedDescription
+        }
+    }
+
+    /// Geometry is a local prerequisite, supplied by the first GeometryReader
+    /// callback; cancellation releases waiters without polling or launch timers.
+    func waitForLaunchLayout() async {
+        guard launchLayout == nil, !Task.isCancelled else { return }
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if launchLayout != nil || Task.isCancelled { continuation.resume() }
+                else { launchLayoutWaiters[id] = continuation }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in self?.launchLayoutWaiters.removeValue(forKey: id)?.resume() }
         }
     }
 
@@ -2008,6 +2082,10 @@ final class TimelineModel {
     }
 
     private func removeAssetsNow(ids: Set<String>, operationID: UUID?) -> TimelineRemoval {
+        if let client {
+            MediaPresentationCoordinator.shared.invalidate(client: client)
+            for asset in flatAssets where ids.contains(asset.id) { ImageLoader.shared.invalidate(asset: asset, client: client) }
+        }
         let targetBucketIDs = bucketIDs(containing: ids)
         mutationOverlay.rejectFetchesStartedBeforeNextRequest(
             bucketIDs: targetBucketIDs
@@ -2056,6 +2134,30 @@ final class TimelineModel {
         }
         onAssetsChanged?(.removed(Set(placements.map(\.asset.id))))
         return TimelineRemoval(operationID: operationID, placements: placements)
+    }
+
+    /// Actual visible rows, including stationary layout changes; never a fixed asset count.
+    func checkpointViewport(rowIDs: [String], layout: LaunchViewportSnapshot.Layout, pixels: CGFloat,
+                            anchorOffset: Double, stable: Bool) {
+        guard let client, client.context.isActive, let filterKey = launchCacheKey else { return }
+        let visible = Set(rowIDs)
+        let assets = rows.filter { visible.contains($0.id) }.flatMap { row -> [Asset] in
+            guard case .tiles(_, let runs) = row else { return [] }
+            return runs.flatMap(\.assets)
+        }
+        guard !assets.isEmpty, assets.allSatisfy({ !$0.isTrashed && $0.visibility != .locked && $0.visibility != .hidden }),
+              let metadata = try? JSONEncoder().encode(assets) else { return }
+        let keys = assets.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: pixels) }
+        var snapshot = LaunchViewportSnapshot(scope: client.mediaDisplayScope, source: usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud"),
+            filter: filterKey, sort: filter.order ?? "desc", anchor: assets[0].id, layout: layout,
+            visibleKeys: keys, metadata: metadata)
+        snapshot.bucketList = try? JSONEncoder().encode(sections.map { TimeBucket(timeBucket: $0.id, count: $0.count) })
+        snapshot.bucketIDByAssetID = Dictionary(uniqueKeysWithValues: assets.compactMap { asset in
+            bucketIDByAssetID[asset.id].map { (asset.id, $0) }
+        })
+        snapshot.anchorOffset = anchorOffset
+        if stable { MediaPresentationCoordinator.shared.checkpoint(snapshot: snapshot, assets: assets, client: client) }
+        else { MediaPresentationCoordinator.shared.noteViewport(snapshot: snapshot, client: client) }
     }
 
     func commit(_ removal: TimelineRemoval, ids: Set<String>? = nil) {

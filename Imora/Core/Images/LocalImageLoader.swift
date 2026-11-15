@@ -48,6 +48,39 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     private let previews: NSCache<NSString, UIImage>
     private let assets: NSCache<NSString, PHAsset>
     private let libraryGeneration = OSAllocatedUnfairLock(initialState: 0)
+    var permissionGeneration: Int {
+        libraryGeneration.withLock { $0 } * 10 + PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue
+    }
+
+    @concurrent
+    func canReadPrepared(_ localIdentifier: String) async -> Bool {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return false }
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else { return false }
+        return !asset.isHidden
+    }
+
+    /// Only exact current PhotoKit metadata may justify a small final source.
+    /// Cached image dimensions, filenames and backup pairing are not evidence.
+    @concurrent
+    func nativeResolution(localIdentifier: String, sourceRevision: String) async -> NativeImageResolution? {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited, !sourceRevision.isEmpty,
+              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+              !asset.isHidden,
+              let modified = asset.modificationDate,
+              String(modified.timeIntervalSinceReferenceDate.bitPattern) == sourceRevision,
+              asset.pixelWidth > 0, asset.pixelHeight > 0 else { return nil }
+        return .init(sourceRevision: sourceRevision, pixelWidth: asset.pixelWidth, pixelHeight: asset.pixelHeight)
+    }
+
+    func installPrepared(_ image: UIImage, localIdentifier: String, targetPixelSize: CGFloat,
+                         cacheScope: String, permission: Int) {
+        guard permission == permissionGeneration else { return }
+        store(image, localIdentifier: localIdentifier, targetPixelSize: targetPixelSize,
+              contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope)
+        storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
+    }
     /// exported live photo motion files in least-recently-used order.
     private let motionFiles = OSAllocatedUnfairLock<[URL]>(initialState: [])
     /// a window can hold dozens of identifiers and every miss is a synchronous
@@ -120,7 +153,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         coversTarget: Bool,
         cacheScope: String = ""
     ) -> NSString {
-        "\(cacheScope)|\(localIdentifier)#\(Int(size))#\(contentMode.rawValue)\(coversTarget ? "#cover" : "")" as NSString
+        "\(permissionGeneration)|\(cacheScope)|\(localIdentifier)#\(Int(size))#\(contentMode.rawValue)\(coversTarget ? "#cover" : "")" as NSString
     }
 
     /// the photokit target for a request. a covering fit puts the tile's
@@ -183,7 +216,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     }
 
     private func storePreview(_ image: UIImage, localIdentifier: String, cacheScope: String = "") {
-        previews.setObject(image, forKey: "\(cacheScope)|\(localIdentifier)" as NSString, cost: Self.cost(of: image))
+        previews.setObject(image, forKey: "\(permissionGeneration)|\(cacheScope)|\(localIdentifier)" as NSString, cost: Self.cost(of: image))
     }
 
     func cachedImage(
@@ -193,12 +226,16 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         coversTarget: Bool = false,
         cacheScope: String = ""
     ) -> UIImage? {
-        cache.object(forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope))
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return nil }
+        return cache.object(forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope))
     }
 
     /// the last preview photokit handed over for the asset, at whatever size.
     func cachedPreview(localIdentifier: String, cacheScope: String = "") -> UIImage? {
-        previews.object(forKey: "\(cacheScope)|\(localIdentifier)" as NSString)
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return nil }
+        return previews.object(forKey: "\(permissionGeneration)|\(cacheScope)|\(localIdentifier)" as NSString)
     }
 
     /// the sharp render alone, for callers that want exactly one image.

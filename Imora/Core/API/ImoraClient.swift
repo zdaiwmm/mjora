@@ -30,6 +30,24 @@ nonisolated final class ImoraClient: Sendable {
     let context: AccountRequestContext
     private let sessions = Mutex<[String: URLSession]>([:])
     private let mediaStore = ControlledMediaStore()
+    private let verifiedMediaScope = Mutex<StableMediaScope?>(nil)
+
+    var mediaDisplayScope: StableMediaScope {
+        if let scope = verifiedMediaScope.withLock({ $0 }) { return scope }
+        if let credential = offlineAccountKey,
+           let scope = SessionCache.verifiedMediaScope(credential: credential), scope.serverIdentity == serverKey {
+            return scope
+        }
+        return .credential(offlineAccountKey ?? context.id.uuidString, server: serverKey)
+    }
+
+    /// Only a currentUser response for this immutable client may establish this binding.
+    func confirmMediaAccount(_ userID: String) {
+        guard context.isActive, !userID.isEmpty, let credential = offlineAccountKey else { return }
+        let scope = StableMediaScope.verified(server: serverKey, accountID: userID)
+        verifiedMediaScope.withLock { $0 = scope }
+        SessionCache.bindMediaScope(scope, credential: credential)
+    }
     /// `apiURL` with a trailing slash, so media urls are plain concatenation.
     private let mediaBase: String
     /// what `URL.appending(queryItems:)` actually escapes in a value. matched

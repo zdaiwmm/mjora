@@ -605,6 +605,7 @@ final class TimelineTileView: UIView {
         accessibilityValue = nil
         accessibilityCustomActions = nil
         showsPicture = true
+        MediaPresentationCoordinator.shared.imageArrived()
         guard fading else {
             imageView.image = image
             return
@@ -621,7 +622,7 @@ final class TimelineTileView: UIView {
     /// a fade only earns its place over a flat placeholder, while the grid is
     /// slow enough for fades to read, and when the load was not instant.
     private func fades(since start: ContinuousClock.Instant) -> Bool {
-        motion?.isFast != true && !showsPicture && ContinuousClock.now - start >= .milliseconds(120)
+        false
     }
 
     private func loadRemote(
@@ -634,6 +635,12 @@ final class TimelineTileView: UIView {
     ) {
         begin(key: key, generation: generation)
         thumbnailState = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
+        if let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize),
+           min(cached.size.width, cached.size.height) * cached.scale >= targetPixelSize {
+            _ = thumbnailState.remoteResult(pixels: Double(targetPixelSize), isPreview: true)
+            show(cached, key: key, fading: false)
+            return
+        }
         imageView.image = placeholder
         showsPicture = placeholder != nil
         startRemote(url, previewURL: previewURL, key: key)

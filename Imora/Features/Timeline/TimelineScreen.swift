@@ -622,7 +622,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // bucket landing keeps the same indices while the rows behind them
         // are all new, and stale ids would anchor the prefetch window and the
         // scroll compensation to rows that no longer exist.
-        if visible != context.visibleRange || context.visibleLayoutVersion != layout.version {
+        let viewportChanged = visible != context.visibleRange || context.visibleLayoutVersion != layout.version
+        if viewportChanged {
             context.visibleRange = visible
             context.visibleLayoutVersion = layout.version
             context.firstVisibleRowID = rows[visibleLow].id
@@ -642,6 +643,15 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
         }
         prewarmOpeningChrome(in: rows, visibleRange: visible)
+        if context.isIdle || viewportChanged {
+            let firstTileRow = visible.first { index in
+                if case .tiles = rows[index] { return true }; return false
+            }
+            model.checkpointViewport(rowIDs: context.visibleRowIDs,
+                layout: .init(width: Double(context.viewportWidth), height: Double(context.viewportHeight),
+                    scale: Double(displayScale), columns: columnCount), pixels: thumbnailPixelSize(for: side),
+                anchorOffset: Double(top - (firstTileRow.map { layout.starts[$0] } ?? top)), stable: context.isIdle)
+        }
     }
 
     /// velocity and direction from the offset samples. they steer the mount
@@ -940,6 +950,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     }
 
     private func handleScrollIdle(_ isIdle: Bool) {
+        if !isIdle { MediaPresentationCoordinator.shared.cancelCheckpoint() }
         if !isIdle { periodMotion.cancel() }
         scrollContext.isIdle = isIdle
         if isIdle {
@@ -1042,6 +1053,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             .onChange(of: geometry.size.height, initial: true) { _, height in
                 periodMotion.cancel()
                 scrollContext.viewportHeight = height
+                updateLaunchLayout(width: geometry.size.width, height: height)
                 updateVisibleRows()
             }
             .onChange(of: geometry.size.width, initial: true) { _, width in
@@ -1052,6 +1064,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     applyColumnCount(controls.columns, viewportWidth: width, viewportHeight: geometry.size.height,
                                      preservedFraction: scrub.fraction, recordsUserPreference: true)
                 }
+                updateLaunchLayout(width: width, height: geometry.size.height)
             }
             .onChange(of: photosConfiguration?.controls.columns) { _, columns in
                 guard let columns, columns != columnCount else { return }
@@ -1210,8 +1223,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 session?.projectingFavorite(asset) ?? asset
             }
             if let client = session.client {
-                model.attach(client, backup: session.backup, hub: session.realtime)
+                model.attach(client, backup: session.backup, hub: session.realtime, preparesLaunchViewport: true)
                 model.columns = columnCount
+                if scrollContext.viewportWidth > 0, scrollContext.viewportHeight > 0 {
+                    model.launchLayout = .init(width: Double(scrollContext.viewportWidth), height: Double(scrollContext.viewportHeight),
+                        scale: Double(displayScale), columns: columnCount)
+                }
                 // capture list only - a self capture would cycle through the
                 // @state storage that owns the model and leak it on pop. the
                 // weak capture is renamed so it does not shadow the strong
@@ -1223,7 +1240,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     )
                 }
                 model.onUnauthorized = onUnauthorized
-                await model.load()
+                await model.waitForLaunchLayout()
+                guard !Task.isCancelled else { return }
+                if !model.usesSuppliedAssets { await model.load() }
                 await revealPendingTimelineTarget()
                 await restorePhotosPositionIfNeeded()
             }
@@ -1250,6 +1269,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // downloading tiles for a grid nobody is looking at.
         .onDisappear {
             photosConfiguration?.controls.isSelecting = false
+            MediaPresentationCoordinator.shared.cancelCheckpoint()
             prefetcher.cancel()
             model.resumeRebuilds()
             ImageLoader.shared.setSweepPaused(false)
@@ -1315,6 +1335,15 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
     }
 
+    private func updateLaunchLayout(width: CGFloat, height: CGFloat) {
+        guard width > 0, height > 0 else { return }
+        // A size callback may precede the adaptive/remembered column callback.
+        // Resume startup only when both describe the layout the grid will use.
+        let expectedColumns = photosConfiguration?.controls.columns ?? columnTarget(viewportWidth: width)
+        guard columnCount == expectedColumns else { return }
+        model.launchLayout = .init(width: Double(width), height: Double(height), scale: Double(displayScale), columns: columnCount)
+    }
+
     // MARK: - rows
 
     private var extendsPhotosBehindBars: Bool {
@@ -1331,6 +1360,10 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         guard let controls = photosConfiguration?.controls, !restoredPhotosPosition,
               !model.sections.isEmpty, scrollContext.viewportWidth > 0 else { return }
         restoredPhotosPosition = true
+        if model.hasRestoredLaunchViewport {
+            completedPhotosRestoration = true
+            return
+        }
         let savedOffset = controls.scrollOffset
         controls.isRestoring = true
         defer {

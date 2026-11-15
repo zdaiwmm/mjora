@@ -141,6 +141,7 @@ final class SessionStore {
         SessionCache.noteUserId(response.userId)
         let client = ImoraClient(apiURL: apiURL, accessToken: response.accessToken)
         let user = try? await client.currentUser()
+        if let user { client.confirmMediaAccount(user.id) }
         adopt(client: client, user: user)
     }
 
@@ -154,6 +155,7 @@ final class SessionStore {
         let signingOutClient = client
         ShareTransfer.revoke()
         ShareUploadCoordinator.shared.cancelAll()
+        MediaPresentationCoordinator.shared.cancelCheckpoint()
         ImageLoader.shared.configure(client: nil)
         refreshUserRevision &+= 1
         KeychainStore.delete(Self.tokenKey)
@@ -220,6 +222,7 @@ final class SessionStore {
             let user = try await client.currentUser()
             guard revision == refreshUserRevision, self.client === client else { return }
             self.user = user
+            client.confirmMediaAccount(user.id)
             SessionCache.noteUserId(user.id)
             configureFavorites(client: client)
             backup?.userId = user.id

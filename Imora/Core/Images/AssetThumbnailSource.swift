@@ -8,7 +8,11 @@ nonisolated struct AssetThumbnailSource {
     let preferredLocalIdentifier: String?
 
     static func localCacheScope(accountKey: String?, version: String?, pixels: CGFloat) -> String {
-        "\(accountKey ?? "device")|\(version ?? "")|fit-cover|\(Int(pixels.rounded(.up)))"
+        let verified = accountKey.flatMap { SessionCache.verifiedMediaScope(credential: $0) }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let stable = verified.flatMap { try? encoder.encode($0) }.map(MediaDisplayKeyV1.digest)
+        return "\(stable ?? accountKey ?? "device")|\(version ?? "")|fit-cover|\(Int(pixels.rounded(.up)))"
     }
 
     /// Namespace passed by the prefetch adapter to LocalImageLoader.

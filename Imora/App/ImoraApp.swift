@@ -150,7 +150,15 @@ struct RootView: View {
         )) { _ in
             ImageLoadRecovery.shared.protectedDataBecameAvailable()
             session.restoreSessionIfAvailable()
+            ImageLoader.shared.configure(client: session.client)
             ShareUploadCoordinator.shared.resumePending()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.protectedDataWillBecomeUnavailableNotification
+        )) { _ in
+            MediaPresentationCoordinator.shared.cancelCheckpoint()
+            ImageLoader.shared.configure(client: nil)
+            LocalImageLoader.shared.noteLibraryChange()
         }
     }
 }

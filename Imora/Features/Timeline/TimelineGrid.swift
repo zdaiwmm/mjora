@@ -719,6 +719,12 @@ final class TimelineGridView: UIScrollView {
 
         let size = CGSize(width: width, height: headerHeight + layout.total + footerHeight + tailPadding)
         if contentSize != size { contentSize = size }
+        if let anchor = model.pendingLaunchAnchor,
+           let row = model.rowIndex(containingAnyOf: [anchor.id]), layout.starts.indices.contains(row) {
+            model.pendingLaunchAnchor = nil
+            // Restore before mounting any row, so the first content frame is W0.
+            scroll(toOffsetY: headerHeight + layout.starts[row] + CGFloat(anchor.offset))
+        }
         place(headerView, CGRect(x: 0, y: 0, width: width, height: headerHeight))
         let footerFrame = CGRect(x: 0, y: headerHeight + layout.total, width: width, height: footerHeight)
         place(footerView, footerFrame)

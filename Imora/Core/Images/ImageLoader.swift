@@ -24,7 +24,8 @@ nonisolated final class ImageLoader: Sendable {
         // an aggressive data cache instead of urlcache: immich thumbnails are
         // immutable per cache key, so revalidating them is wasted latency.
         let dataCache = try? DataCache(name: "imora-images")
-        dataCache?.sizeLimit = 1 << 30
+        // Reserve the protected W0 pack inside the existing 1 GiB budget.
+        dataCache?.sizeLimit = (1 << 30) - LaunchPreviewStore.budget
         self.dataCache = dataCache
 
         let authorization = self.authorization
@@ -56,7 +57,9 @@ nonisolated final class ImageLoader: Sendable {
         authorization.networkTasks.withLock { tasks in
             tasks.values.forEach { $0.cancel() }; tasks.removeAll()
         }
-        pipeline.cache.removeAll()
+        // Pinned Nuke removeAll() clears disk too. Content is scoped below;
+        // rotating runtime authorization retires tasks and memory, not valid bytes.
+        pipeline.cache.removeAll(caches: [.memory])
         authorization.ephemeralAssetIDs.withLock { $0.removeAll() }
         authorization.client.withLock { $0 = client }
     }
@@ -72,16 +75,43 @@ nonisolated final class ImageLoader: Sendable {
     }
 
     func cachedImage(for url: URL, targetPixelSize: CGFloat) -> UIImage? {
-        pipeline.cache[request(for: url, targetPixelSize: targetPixelSize)]?.image
+        guard let client = authorization.client.withLock({ $0 }),
+              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+        return pipeline.cache[request(for: url, targetPixelSize: targetPixelSize)]?.image
+    }
+
+    @concurrent
+    func diskImage(for url: URL, targetPixelSize: CGFloat) async -> UIImage? {
+        guard let client = authorization.client.withLock({ $0 }),
+              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+        let image = pipeline.cache.cachedImage(for: request(for: url, targetPixelSize: targetPixelSize), caches: [.disk])?.image
+        guard client.context.isActive, authorization.client.withLock({ $0 === client }), !Task.isCancelled else { return nil }
+        return image
+    }
+
+    func installPrepared(_ image: UIImage, url: URL, targetPixelSize: CGFloat, client: ImoraClient) {
+        guard authorization.client.withLock({ $0 === client }),
+              (try? client.authorizedRequest(url: url)) != nil else { return }
+        pipeline.cache[request(for: url, targetPixelSize: targetPixelSize)] = ImageContainer(image: image)
+    }
+
+    func invalidate(asset: Asset, client: ImoraClient) {
+        for size in ["thumbnail", "preview"] {
+            let url = client.thumbnailURL(assetID: asset.id, size: size, cacheKey: asset.thumbhash)
+            for pixels in [CGFloat(512), CGFloat(1024)] {
+                pipeline.cache.removeCachedImage(for: request(for: url, targetPixelSize: pixels))
+            }
+        }
     }
 
     func image(for url: URL, targetPixelSize: CGFloat) async throws -> UIImage {
+        guard let client = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
+        _ = try client.authorizedRequest(url: url)
         var request = request(for: url, targetPixelSize: targetPixelSize)
+        migrateCredentialData(to: request, client: client)
         // a tile on screen beats every prefetch and sweep request queued
         // ahead of it; those run low and very low.
         request.priority = .high
-        guard let client = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
-        _ = try client.authorizedRequest(url: url)
         let id = UUID()
         let task = pipeline.imageTask(with: request)
         visibleTasks.withLock { $0[id] = task }
@@ -141,11 +171,11 @@ nonisolated final class ImageLoader: Sendable {
 
     /// downloads to the disk cache without decoding, for tiles further out.
     func startPrefetchingData(urls: [URL]) {
-        diskPrefetcher.startPrefetching(with: urls)
+        diskPrefetcher.startPrefetching(with: requests(for: urls, targetPixelSize: 512))
     }
 
     func stopPrefetchingData(urls: [URL]) {
-        diskPrefetcher.stopPrefetching(with: urls)
+        diskPrefetcher.stopPrefetching(with: requests(for: urls, targetPixelSize: 512))
     }
 
     // MARK: - offline sweep
@@ -165,7 +195,7 @@ nonisolated final class ImageLoader: Sendable {
                 var iterator = urls.prefix(Self.sweepLimit).makeIterator()
                 func nextRequest() -> ImageRequest? {
                     while let url = iterator.next() {
-                        var request = ImageRequest(url: url)
+                        var request = self.request(for: url, targetPixelSize: 512)
                         request.priority = .veryLow
                         if !pipeline.cache.containsData(for: request) { return request }
                     }
@@ -229,10 +259,42 @@ nonisolated final class ImageLoader: Sendable {
 
     // MARK: - requests
 
+    /// Import only a requested, revisioned derivative from the *same* verified
+    /// credential. Old UUID-fragment-only cache entries cannot be proven and
+    /// are intentionally left to normal eviction, never bulk-copied.
+    private func migrateCredentialData(to request: ImageRequest, client: ImoraClient) {
+        guard client.mediaDisplayScope.accountID != nil, let credential = client.offlineAccountKey,
+              let url = request.url, url.lastPathComponent == "thumbnail",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.queryItems?.contains(where: { $0.name == "c" && $0.value?.isEmpty == false }) == true,
+              !pipeline.cache.containsData(for: request) else { return }
+        var legacy = request
+        legacy.imageID = Self.contentID(scope: .credential(credential, server: client.serverKey), components: components)
+        if let bytes = pipeline.cache.cachedData(for: legacy), client.context.isActive,
+           authorization.client.withLock({ $0 === client }) {
+            pipeline.cache.storeCachedData(bytes, for: request)
+        }
+    }
+
+    private static func contentID(scope: StableMediaScope, components: URLComponents) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let encoded = try? encoder.encode(scope) else { return nil }
+        return "media-v1|\(MediaDisplayKeyV1.digest(encoded))|\(components.percentEncodedPath)|\(components.percentEncodedQuery ?? "")"
+    }
+
     /// decoding straight to a thumbnail keeps memory flat while scrolling -
     /// the full-size bitmap never exists.
     private func request(for url: URL, targetPixelSize: CGFloat) -> ImageRequest {
         var request = ImageRequest(url: url)
+        if let client = authorization.client.withLock({ $0 }),
+           (try? client.authorizedRequest(url: url)) != nil {
+            if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                // Trust policy validates host/context first. Only then may a LAN/WAN
+                // route share content; query preserves edited/size/revision semantics.
+                request.imageID = Self.contentID(scope: client.mediaDisplayScope, components: components)
+            }
+        }
         let maxPixelSize = Self.normalizedPixelSize(targetPixelSize, for: url)
         request.thumbnail = ImageRequest.ThumbnailOptions(maxPixelSize: Float(maxPixelSize))
         request.userInfo[FittingThumbnailDecoder.maxPixelSizeKey] = maxPixelSize
@@ -321,10 +383,18 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
     /// nuke asks before every disk read and write; nil keeps a locked asset
     /// memory only.
     nonisolated func dataCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any DataCaching)? {
+        guard let url = request.url, let client = client.withLock({ $0 }),
+              (try? client.authorizedRequest(url: url)) != nil else { return nil }
         if let id = Self.assetID(in: request.url), ephemeralAssetIDs.withLock({ $0.contains(id) }) {
             return nil
         }
         return pipeline.configuration.dataCache
+    }
+
+    nonisolated func imageCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any ImageCaching)? {
+        guard let url = request.url, let client = client.withLock({ $0 }),
+              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+        return pipeline.configuration.imageCache
     }
 
     /// the asset id follows the assets segment in every media url.

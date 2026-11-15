@@ -63,7 +63,7 @@ struct DeviceLibraryScreen: View {
             }
             .onDisappear { loadTask?.cancel() }
             .overlay {
-                if filterLoading {
+                if filterLoading && !model.hasRestoredLaunchViewport {
                     ProgressView(photosConfiguration?.controls.mediaFilter == .notInAlbum
                                  ? String(localized: "Checking App album membership") : String(localized: "Loading photos"))
                         .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(.systemBackground))
@@ -86,6 +86,13 @@ struct DeviceLibraryScreen: View {
         filterLoading = true
         loadTask = Task {
             defer { if loadID == requested { filterLoading = false } }
+            if let client {
+                model.suppliedLaunchContext = "device|\(selectedFilter.rawValue)|\(photosConfiguration?.controls.sortByAdded == true ? "added" : "date")"
+                model.attach(client, preparesLaunchViewport: true)
+                await model.waitForLaunchLayout()
+                guard !Task.isCancelled else { return }
+                await model.load()
+            }
             var assets: [Asset]
             if PhotoLibraryService.hasFullAccess, let backup = session.backup {
                 assets = await backup.localTimelineAssets().map { $0.device.asAsset(backedUp: $0.backedUp) }

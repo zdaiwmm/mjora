@@ -7,6 +7,23 @@ import CryptoKit
 nonisolated enum SessionCache {
     private static let key = "imora.sessionSnapshot"
     private static let userKey = "imora.userId"
+    private static let mediaBindingsKey = "imora.verifiedMediaBindings.v1"
+
+    /// A host snapshot is display metadata, not evidence that a token belongs to its user.
+    static func verifiedMediaScope(credential: String) -> StableMediaScope? {
+        guard let data = UserDefaults.standard.dictionary(forKey: mediaBindingsKey)?[credential] as? Data,
+              let scope = try? JSONDecoder().decode(StableMediaScope.self, from: data),
+              scope.accountID?.isEmpty == false, scope.credentialScope == nil else { return nil }
+        return scope
+    }
+
+    static func bindMediaScope(_ scope: StableMediaScope, credential: String) {
+        guard scope.accountID?.isEmpty == false, scope.credentialScope == nil,
+              let data = try? JSONEncoder().encode(scope) else { return }
+        var bindings = UserDefaults.standard.dictionary(forKey: mediaBindingsKey) ?? [:]
+        bindings[credential] = data
+        UserDefaults.standard.set(bindings, forKey: mediaBindingsKey)
+    }
 
     struct Snapshot: Codable {
         var host: String
