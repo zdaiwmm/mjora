@@ -585,6 +585,11 @@ struct AssetEditScreen: View {
         } label: {
             EditorGlassGlyphLabel(systemImage: "ellipsis")
         }
+        // Automatic menu styling can claim the shared glass capsule's full
+        // accessibility frame, overlapping the neighboring aspect button.
+        .buttonStyle(.plain)
+        .frame(width: 40, height: 44)
+        .contentShape(.rect)
         .foregroundStyle(.primary)
         .accessibilityLabel("More")
         .accessibilityIdentifier("edit-more")
