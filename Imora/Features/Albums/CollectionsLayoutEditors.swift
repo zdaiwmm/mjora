@@ -7,6 +7,14 @@ struct CollectionsLayoutEditor: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Collection Previews") {
+                    Picker("Preview Size", selection: $layout.previewSize) {
+                        ForEach(CollectionPreviewSize.allCases) { size in Text(size.title).tag(size) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("collections-preview-size")
+                }
+                Section("Sections") {
                 ForEach(layout.sections) { section in
                     Toggle(section.title, isOn: Binding(
                         get: { !layout.collapsed.contains(section) },
@@ -15,6 +23,7 @@ struct CollectionsLayoutEditor: View {
                         }))
                 }
                 .onMove { layout.moveSections(from: $0, to: $1) }
+                }
             }
             .environment(\.editMode, .constant(.active))
             .navigationTitle("Customize Collections")

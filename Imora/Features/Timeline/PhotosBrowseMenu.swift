@@ -37,7 +37,7 @@ struct PhotosSourceMenu: View {
     private var unreadCount: Int { session.notifications?.unreadCount ?? 0 }
 
     private var title: String {
-        configuration.source.wrappedValue == "local" ? String(localized: "On Device") : String(localized: "Photos")
+        configuration.source.wrappedValue == "local" ? String(localized: "On Device") : String(localized: "Library")
     }
 
     var body: some View {
@@ -47,6 +47,11 @@ struct PhotosSourceMenu: View {
                     .accessibilityIdentifier("photos-source-cloud")
                 Label("On Device", systemImage: "iphone").tag("local")
                     .accessibilityIdentifier("photos-source-local")
+            }
+            if let backup = session.backup, let status = backup.libraryStatus {
+                Section("Backup Status") {
+                    Text(status.completionText(backup.summary))
+                }
             }
             Section {
                 Button(action: configuration.onAccount) {
@@ -85,6 +90,9 @@ struct PhotosSourceMenu: View {
         .tint(.primary)
         .accessibilityLabel(title)
         .accessibilityIdentifier("photos-source-menu")
+        .task(id: session.client?.offlineAccountKey) {
+            configuration.controls.loadVisualPreferences(account: session.client?.offlineAccountKey)
+        }
     }
 }
 
@@ -127,6 +135,8 @@ struct PhotosBrowseMenu: View {
                 Section {
                     Toggle("Original Aspect Ratio Grid", isOn: $controls.usesOriginalAspectRatio)
                     Toggle("Date Group Headers", isOn: $controls.groupsByDate)
+                    Toggle("Show All Backup Statuses", isOn: $controls.showsAllBackupStatuses)
+                        .accessibilityIdentifier("photos-show-all-backup-statuses")
                 }
             } label: {
                 Label("View Options", systemImage: "rectangle.grid.3x3")
@@ -160,7 +170,7 @@ struct PhotoPeriodControls: View {
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
-                .accessibilityLabel("Show Photos and Albums Navigation")
+                .accessibilityLabel("Show Library and Collections Navigation")
                 Picker("Browse Photos", selection: $controls.mode) {
                     ForEach(PhotoBrowseMode.allCases) { mode in Text(mode.title).tag(mode) }
                 }
@@ -212,7 +222,7 @@ struct PhotosNavigationBar: View {
                     .buttonStyle(.plain)
                     .glassEffect(.regular.interactive(), in: .circle)
                     .glassEffectID("navigation", in: glassNamespace)
-                    .accessibilityLabel("Show Photos and Albums Navigation")
+                    .accessibilityLabel("Show Library and Collections Navigation")
                     .accessibilityIdentifier("photos-show-navigation")
 
                     NativePhotoPeriodPicker(selection: Binding(get: { controls.mode }, set: { mode in
@@ -228,8 +238,8 @@ struct PhotosNavigationBar: View {
                     .glassEffectID("periods", in: glassNamespace)
                 } else {
                     HStack(spacing: 0) {
-                        tab(.photos, title: "Photos", symbol: "photo.on.rectangle")
-                        tab(.albums, title: "Albums", symbol: "rectangle.stack")
+                        tab(.photos, title: "Library", symbol: selection == .photos ? "photo.on.rectangle.fill" : "photo.on.rectangle")
+                        tab(.albums, title: "Collections", symbol: selection == .albums ? "rectangle.stack.fill" : "rectangle.stack")
                     }
                     .padding(4)
                     .glassEffect(.regular.interactive(), in: .capsule)

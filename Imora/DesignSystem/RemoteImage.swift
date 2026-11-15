@@ -472,6 +472,7 @@ struct AssetTile: View {
     /// backup status in the corner plus the upload progress overlay. only
     /// the main timeline shows these, matching the official client.
     var showsBackupBadge = false
+    var showsAllBackupStatuses = false
     var targetPixelSize: CGFloat = 640
     /// false lets the host pick the frame and drops the corner badges, for
     /// strips too small to carry them.
@@ -583,7 +584,7 @@ struct AssetTile: View {
                     )
                 }
             }
-            .clipped()
+            .clipShape(.rect(cornerRadius: isGridTile ? 2 : 0))
             .overlay(alignment: .topTrailing) {
                 if isGridTile, let duration = asset.durationLabel {
                     Label(duration, systemImage: "play.fill")
@@ -622,10 +623,10 @@ struct AssetTile: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if showsBackupBadge { backupBadge }
+                if showsBackupBadge, showsAllBackupStatuses || isCloudDeleted { backupBadge }
             }
             .overlay {
-                if showsBackupBadge { uploadOverlay }
+                if showsBackupBadge, showsAllBackupStatuses || uploadState == .failed { uploadOverlay }
             }
             .contentShape(.rect)
             .accessibilityElement(children: .ignore)

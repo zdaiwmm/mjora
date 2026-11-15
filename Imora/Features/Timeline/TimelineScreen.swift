@@ -421,6 +421,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     @State private var scrollContext = ScrollContext()
     @State private var rowLayoutBox = TimelineRowLayoutBox()
     @State private var gridController = TimelineGridController()
+    @State private var periodMotion = PhotoPeriodMotion()
     @State private var openingChromePrewarmOwner = UUID()
     @State private var pendingAlbumAssets: [String]?
     @State private var pendingSpaceAssets: [String]?
@@ -854,6 +855,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             columns: columnCount,
             targetPixelSize: thumbnailPixelSize(for: side),
             showsBackupBadge: mergesLocalPhotos,
+            showsAllBackupStatuses: photosConfiguration?.controls.showsAllBackupStatuses ?? false,
             usesOriginalAspectRatio: photosConfiguration?.controls.usesOriginalAspectRatio ?? false,
             isSelecting: isSelecting,
             selection: selection,
@@ -1037,10 +1039,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 gridController.scrollToTop()
             }
             .onChange(of: geometry.size.height, initial: true) { _, height in
+                periodMotion.cancel()
                 scrollContext.viewportHeight = height
                 updateVisibleRows()
             }
             .onChange(of: geometry.size.width, initial: true) { _, width in
+                periodMotion.cancel()
                 applyViewportWidth(width, viewportHeight: geometry.size.height)
                 photosConfiguration?.controls.viewportWidth = width
                 if let controls = photosConfiguration?.controls, columnCount != controls.columns {
@@ -1113,6 +1117,22 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 )
             }
         }
+        .onAppear {
+            periodMotion.reducesMotion = reduceMotion
+            photosConfiguration?.controls.onModeChange = { from, to in preparePeriodTransition(from: from, to: to) }
+        }
+        .onDisappear {
+            photosConfiguration?.controls.onModeChange = nil
+            periodMotion.cancel()
+        }
+        .onChange(of: reduceMotion) { _, enabled in
+            periodMotion.reducesMotion = enabled
+            if enabled { periodMotion.cancel() }
+        }
+        .onChange(of: session.client?.offlineAccountKey) { _, _ in
+            periodMotion.cancel()
+            photosConfiguration?.controls.periodAnchor = nil
+        }
         .navigationTitle(title)
         .preference(key: PhotosSelectionPreferenceKey.self, value: isSelecting)
         .navigationBarTitleDisplayMode(showsLargeTitle ? .large : .inline)
@@ -1126,8 +1146,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         .toolbarColorScheme(extendsPhotosBehindBars ? .dark : nil, for: .navigationBar)
         .overlay(alignment: .top) {
             if extendsPhotosBehindBars {
-                LinearGradient(colors: [.black.opacity(0.4), .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 150).ignoresSafeArea(edges: .top).allowsHitTesting(false)
+                Rectangle().fill(.ultraThinMaterial)
+                    .environment(\.colorScheme, .dark)
+                    .overlay(LinearGradient(colors: [.black.opacity(0.25), .clear], startPoint: .top, endPoint: .bottom))
+                    .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.3),
+                                                  .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                    .frame(height: 165).ignoresSafeArea(edges: .top).allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .navigationBarBackButtonHidden(isSelecting)
@@ -1136,8 +1160,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         .overlay {
             if let configuration = photosConfiguration, configuration.controls.mode != .all {
-                PhotoPeriodsView(model: model, controls: configuration.controls)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                PhotoPeriodsView(model: model, controls: configuration.controls, motion: periodMotion)
+                    .transition(.identity)
             }
         }
         .overlay(alignment: .bottom) {
@@ -1303,12 +1327,31 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         else if filter.order?.lowercased() == "asc" { gridController.scrollToEnd() }
     }
 
+    private func preparePeriodTransition(from: PhotoBrowseMode, to: PhotoBrowseMode) {
+        guard let controls = photosConfiguration?.controls else { return }
+        var tile: TimelineTileView?
+        if from == .all {
+            tile = gridController.periodTile(assetID: controls.periodAnchor?.asset.id) ?? gridController.periodTile()
+            if let asset = tile?.asset,
+               let bucket = model.sections.first(where: { $0.days?.contains(where: { $0.assets.contains(where: { $0.id == asset.id }) }) == true }) {
+                controls.periodAnchor = PhotoPeriodAnchor(asset: asset, bucketID: bucket.id, scrollOffset: gridController.scrollOffset)
+            }
+        }
+        guard let anchor = controls.periodAnchor else { periodMotion.cancel(); return }
+        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile, reduceMotion: periodMotion.reducesMotion)
+        if to == .all {
+            controls.scrollRequest = PhotoScrollRequest(bucketID: anchor.bucketID, assetID: anchor.asset.id)
+        }
+    }
+
     private func revealPhotoPeriod(_ request: PhotoScrollRequest) async {
         guard let controls = photosConfiguration?.controls else { return }
         controls.isRestoring = true
         defer {
-            controls.scrollOffset = gridController.scrollOffset
-            controls.isRestoring = false
+            if controls.scrollRequest == request {
+                controls.scrollOffset = gridController.scrollOffset
+                controls.isRestoring = false
+            }
         }
         guard let bucketID = request.bucketID else {
             gridController.scrollToEnd()
@@ -1316,11 +1359,16 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         await model.loadBucket(bucketID)
         guard controls.scrollRequest == request,
-              let assetID = model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,
+              let assetID = request.assetID ?? model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,
               let rowIndex = model.rowIndex(containingAnyOf: [assetID]) else { return }
         let layout = rowLayout(side: tileSide(for: scrollContext.viewportWidth))
         guard layout.starts.indices.contains(rowIndex) else { return }
-        gridController.scrollTo(y: scrub.headerHeight + layout.starts[rowIndex])
+        gridController.reloadRows(animated: false)
+        let sourceOffset = controls.periodAnchor.flatMap { $0.asset.id == assetID ? $0.scrollOffset : nil }
+        gridController.scrollTo(y: sourceOffset ?? (scrub.headerHeight + layout.starts[rowIndex]))
+        await Task.yield()
+        guard controls.scrollRequest == request, controls.mode == .all else { return }
+        if let tile = gridController.periodTile(assetID: assetID) { periodMotion.arrive(at: tile, mode: .all) }
     }
 
     private func revealPendingTimelineTarget() async {

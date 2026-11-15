@@ -54,19 +54,22 @@ nonisolated struct PhotoPeriod: Identifiable {
     let count: Int
     let bucketIDs: [String]
     let cover: Asset?
+    let coverBucketID: String?
 
-    var representativeBucketID: String { bucketIDs[0] }
+    var representativeBucketID: String { coverBucketID ?? bucketIDs[0] }
     var date: Date { TimelineModel.bucketDate(representativeBucketID)! }
     var title: String {
         month == nil ? String(year) : date.formatted(.dateTime.year().month(.wide).utc())
     }
 
-    static func years(in sections: [TimelineSection]) -> [Self] { periods(in: sections, groupedByYear: true, year: nil) }
-    static func months(in sections: [TimelineSection], year: Int? = nil) -> [Self] {
-        periods(in: sections, groupedByYear: false, year: year)
+    static func years(in sections: [TimelineSection], preferredAssetID: String? = nil) -> [Self] {
+        periods(in: sections, groupedByYear: true, year: nil, preferredAssetID: preferredAssetID)
+    }
+    static func months(in sections: [TimelineSection], year: Int? = nil, preferredAssetID: String? = nil) -> [Self] {
+        periods(in: sections, groupedByYear: false, year: year, preferredAssetID: preferredAssetID)
     }
 
-    private static func periods(in sections: [TimelineSection], groupedByYear: Bool, year: Int?) -> [Self] {
+    private static func periods(in sections: [TimelineSection], groupedByYear: Bool, year: Int?, preferredAssetID: String?) -> [Self] {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .gmt
         let valid = sections.compactMap { section -> (TimelineSection, Int, Int)? in
@@ -81,9 +84,13 @@ nonisolated struct PhotoPeriod: Identifiable {
         return groups.keys.sorted(by: >).compactMap { key in
             let values = groups[key]!.sorted { $0.0.id > $1.0.id }
             guard let first = values.first else { return nil }
+            let loaded = values.flatMap { value in
+                (value.0.days ?? []).flatMap(\.assets).map { (asset: $0, bucketID: value.0.id) }
+            }
+            let chosen = loaded.first(where: { $0.asset.id == preferredAssetID }) ?? loaded.first
             return Self(id: key, year: first.1, month: groupedByYear ? nil : first.2,
                         count: values.reduce(0) { $0 + $1.0.count }, bucketIDs: values.map { $0.0.id },
-                        cover: values.lazy.compactMap { $0.0.days?.first?.assets.first }.first)
+                        cover: chosen?.asset, coverBucketID: chosen?.bucketID)
         }
     }
 }
@@ -91,6 +98,13 @@ nonisolated struct PhotoPeriod: Identifiable {
 nonisolated struct PhotoScrollRequest: Equatable {
     let id = UUID()
     let bucketID: String?
+    var assetID: String? = nil
+}
+
+nonisolated struct PhotoPeriodAnchor {
+    let asset: Asset
+    let bucketID: String
+    var scrollOffset: CGFloat? = nil
 }
 
 @MainActor @Observable
@@ -102,7 +116,22 @@ final class PhotosGridControls {
     var mediaFilter: PhotoMediaFilter = .all
     var isSelecting = false
     var browsingPast = false
-    var mode: PhotoBrowseMode = .all
+    var mode: PhotoBrowseMode = .all {
+        didSet { if oldValue != mode { onModeChange?(oldValue, mode) } }
+    }
+    var periodAnchor: PhotoPeriodAnchor?
+    var showsAllBackupStatuses = false {
+        didSet { visualStore.save(PhotosVisualPreferences(showsAllBackupStatuses: showsAllBackupStatuses), account: visualAccount) }
+    }
+    @ObservationIgnored var onModeChange: ((PhotoBrowseMode, PhotoBrowseMode) -> Void)?
+    @ObservationIgnored private var visualAccount: String?
+    @ObservationIgnored private var visualStore = PhotosVisualPreferencesStore()
+
+    func loadVisualPreferences(account: String?) {
+        guard visualAccount != account else { return }
+        visualAccount = account
+        showsAllBackupStatuses = visualStore.load(account: account).showsAllBackupStatuses
+    }
     var selectedYear: Int?
     var scrollRequest: PhotoScrollRequest?
     @ObservationIgnored var viewportWidth: CGFloat = 393
@@ -123,9 +152,10 @@ final class PhotosGridControls {
 
     func zoomIn(viewportWidth: CGFloat) { adjustZoom(inward: true, width: viewportWidth) }
     func zoomOut(viewportWidth: CGFloat) { adjustZoom(inward: false, width: viewportWidth) }
-    func reveal(bucketID: String?) {
+    func reveal(bucketID: String?, assetID: String? = nil) {
+        if bucketID == nil { periodAnchor = nil }
+        scrollRequest = PhotoScrollRequest(bucketID: bucketID, assetID: assetID)
         mode = .all
-        scrollRequest = PhotoScrollRequest(bucketID: bucketID)
     }
 
     private func adjustZoom(inward: Bool, width: CGFloat) {

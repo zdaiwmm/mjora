@@ -1,40 +1,43 @@
 import SwiftUI
 
 struct PhotoPeriodsView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(SessionStore.self) private var session
     let model: TimelineModel
     @Bindable var controls: PhotosGridControls
+    let motion: PhotoPeriodMotion
 
     private var periods: [PhotoPeriod] {
-        controls.mode == .years ? PhotoPeriod.years(in: model.sections)
-            : PhotoPeriod.months(in: model.sections, year: controls.selectedYear)
+        controls.mode == .years ? PhotoPeriod.years(in: model.sections, preferredAssetID: controls.periodAnchor?.asset.id)
+            : PhotoPeriod.months(in: model.sections, year: controls.selectedYear, preferredAssetID: controls.periodAnchor?.asset.id)
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 if controls.mode == .months, controls.selectedYear != nil {
                     Button {
-                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
-                            controls.selectedYear = nil
-                            controls.mode = .years
-                        }
+                        controls.selectedYear = nil
+                        controls.mode = .years
                     } label: { Label("All Years", systemImage: "chevron.left") }
                     .padding(.vertical, 4)
                 }
                 ForEach(periods) { period in
                     Button {
-                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                            if let asset = period.cover {
+                                let restoredOffset = controls.periodAnchor?.asset.id == asset.id ? controls.periodAnchor?.scrollOffset : nil
+                                controls.periodAnchor = PhotoPeriodAnchor(asset: asset, bucketID: period.representativeBucketID,
+                                                                         scrollOffset: restoredOffset)
+                            }
                             if controls.mode == .years {
                                 controls.selectedYear = period.year
                                 controls.mode = .months
                             } else {
-                                controls.reveal(bucketID: period.representativeBucketID)
+                                controls.reveal(bucketID: period.representativeBucketID, assetID: period.cover?.id)
                             }
-                        }
                     } label: { periodCard(period) }
                     .buttonStyle(.plain)
+                    .id(period.id)
                     .accessibilityIdentifier("photos-period-\(period.id)")
                     .task(id: period.id) {
                         if period.cover == nil { await model.loadBucket(period.representativeBucketID) }
@@ -45,26 +48,26 @@ struct PhotoPeriodsView: View {
                 }
             }
             .id(controls.mode)
-            .transition(.opacity)
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 90)
         }
         .background(Color(.systemBackground))
         .accessibilityIdentifier("photos-periods")
+        .onChange(of: controls.mode, initial: true) { _, _ in
+            if let id = periods.first(where: { $0.cover?.id == controls.periodAnchor?.asset.id })?.id {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        }
     }
 
     private func periodCard(_ period: PhotoPeriod) -> some View {
         Color(.secondarySystemBackground)
-            .frame(height: 224)
+            .frame(height: controls.mode == .years ? 224 : 184)
             .overlay {
                 if let asset = period.cover {
-                    if let localID = asset.localIdentifier {
-                        PhotoPeriodDeviceCover(localIdentifier: localID)
-                    } else if let client = session.client {
-                        RemoteImage(url: client.thumbnailURL(assetID: asset.id, size: "preview"),
-                                    targetPixelSize: 900, thumbhash: asset.thumbhash)
-                    }
+                    PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion)
                 }
             }
             .overlay {
@@ -80,22 +83,5 @@ struct PhotoPeriodsView: View {
             }
             .clipShape(.rect(cornerRadius: 26))
             .accessibilityElement(children: .combine)
-    }
-}
-
-private struct PhotoPeriodDeviceCover: View {
-    let localIdentifier: String
-    @State private var image: UIImage?
-
-    var body: some View {
-        GeometryReader { proxy in
-            if let image {
-                Image(uiImage: image).resizable().scaledToFill()
-                    .frame(width: proxy.size.width, height: proxy.size.height).clipped()
-            }
-        }
-        .task(id: localIdentifier) {
-            image = await LocalImageLoader.shared.image(localIdentifier: localIdentifier, targetPixelSize: 900)
-        }
     }
 }
