@@ -74,8 +74,10 @@ struct PhotoPeriodsView: View {
                     .id(controls.mode)
                     .padding(.horizontal, PhotoPeriodCardLayout.horizontalInset)
                     .padding(.top, 12)
-                    // MainTabView already reserves the floating controls.
-                    .padding(.bottom, 10)
+                    // The overview overlay can extend through the tab's safe
+                    // area. Reserve the actual 48pt date controls so the last
+                    // day cards can scroll entirely above the floating glass.
+                    .padding(.bottom, 10 + 48)
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .scrollEdgeEffectStyle(.soft, for: .top)

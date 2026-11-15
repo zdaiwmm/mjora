@@ -130,6 +130,12 @@ struct PhotoPeriodCoverSurface: UIViewRepresentable {
     func updateUIView(_ view: PeriodPhotoImageView, context: Context) {
         view.configure(asset: asset, mode: mode, session: session, motion: motion)
     }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PeriodPhotoImageView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        // A decoded UIImage has its own intrinsic size. The real UIKit
+        // transition surface and AX bounds must stay inside the day card.
+        return CGSize(width: width, height: height)
+    }
     static func dismantleUIView(_ view: PeriodPhotoImageView, coordinator: ()) { view.cancelLoad() }
 }
 
