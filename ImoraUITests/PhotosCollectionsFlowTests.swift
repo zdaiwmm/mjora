@@ -50,10 +50,23 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         let a = XCTAttachment(screenshot: app.screenshot()); a.name = name; a.lifetime = .keepAlways; add(a)
     }
 
+    private func chooseSourceItem(_ app: XCUIApplication, _ title: String) {
+        let items = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@", title, "photos-source-menu"))
+        let visible = items.allElementsBoundByIndex.first(where: \.isHittable) ?? items.firstMatch
+        XCTAssertTrue(visible.waitForExistence(timeout: 5)); visible.tap()
+    }
+
     private func tap(_ app: XCUIApplication, _ id: String) {
         let item = app.buttons.matching(identifier: id).firstMatch
-        for _ in 0..<6 where !item.exists || !item.isHittable { app.swipeUp() }
+        let ready = NSPredicate { _, _ in item.exists && item.isHittable }
+        if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 2) != .completed {
+            for _ in 0..<6 where !item.exists || !item.isHittable {
+                if item.exists, item.frame.midY < app.frame.midY { app.swipeDown() }
+                else { app.swipeUp() }
+            }
+        }
         XCTAssertTrue(item.waitForExistence(timeout: 10), id)
+        XCTAssertTrue(item.isHittable, id)
         item.tap()
     }
 
@@ -74,6 +87,9 @@ final class PhotosCollectionsFlowTests: XCTestCase {
             XCTAssertTrue(crop.waitForExistence(timeout: 15)); crop.tap()
         }
         XCTAssertTrue(aspect.waitForExistence(timeout: 15))
+        // Glass publishes a shared AX rectangle for its native menu. Verify
+        // real aspect/menu actions below; EditorMenuGeometryTests separately
+        // proves their physical bounds and native hit areas do not overlap.
         snapshot(app, "editor-crop-tools")
         aspect.tap()
         let square = app.buttons.matching(NSPredicate(format: "label IN %@", ["SQUARE", "正方形"])).firstMatch
@@ -303,8 +319,8 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         let app = try launch()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 20))
         let newest = app.buttons.matching(identifier: "asset-tile")
-            .matching(NSPredicate(format: "label CONTAINS '2026年11月'")).firstMatch
-        let ready = NSPredicate { _, _ in newest.exists && newest.isHittable }
+            .matching(NSPredicate(format: "label CONTAINS '2026年11月'"))
+        let ready = NSPredicate { _, _ in newest.allElementsBoundByIndex.contains(where: \.isHittable) }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 20), .completed,
                        "Wait for cold-login restoration before exercising scroll gestures")
         let picker = app.segmentedControls["photos-period-picker"]
@@ -312,8 +328,19 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 8))
         let search = app.buttons["photos-search"]
         XCTAssertEqual(picker.frame.midY, search.frame.midY, accuracy: 2)
-        XCTAssertLessThanOrEqual(abs(picker.frame.height - search.frame.height), 4)
-        XCTAssertLessThanOrEqual(search.frame.height, 40)
+        let navigation = app.buttons["photos-show-navigation"]
+        // Measured on system Photos, same iPhone17/iOS27.2: 48pt controls,
+        // 28pt side/bottom margins and 14pt gaps (222pt center at 402pt width).
+        XCTAssertEqual(picker.frame.height, 48, accuracy: 1)
+        XCTAssertEqual(search.frame.height, 48, accuracy: 1)
+        XCTAssertEqual(navigation.frame.height, 48, accuracy: 1)
+        XCTAssertEqual(navigation.frame.minX, 28, accuracy: 1)
+        XCTAssertEqual(app.frame.width - search.frame.maxX, 28, accuracy: 1)
+        XCTAssertEqual(picker.frame.minX - navigation.frame.maxX, 14, accuracy: 1)
+        XCTAssertEqual(search.frame.minX - picker.frame.maxX, 14, accuracy: 1)
+        XCTAssertEqual(app.frame.height - search.frame.maxY, 28, accuracy: 1)
+        let bounds = XCTAttachment(string: "System reference: 48pt high; side/bottom28pt; gap14pt. Current navigation=\(navigation.frame); picker=\(picker.frame); search=\(search.frame).")
+        bounds.name = "native-reference-date-row-comparison"; bounds.lifetime = .keepAlways; add(bounds)
         snapshot(app, "feedback-compact-date-navigation")
         for _ in 0..<12 where !app.buttons["shell-photos"].exists { app.swipeUp() }
         XCTAssertTrue(app.buttons["shell-photos"].waitForExistence(timeout: 8))
@@ -328,6 +355,8 @@ final class PhotosCollectionsFlowTests: XCTestCase {
     func testLongLibraryRestoresSourceAnchorAndDrillsIntoPeriods() throws {
         let app = try launch()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 20))
+        app.buttons["photos-source-menu"].tap()
+        chooseSourceItem(app, "云端照片")
         let tiles = app.buttons.matching(identifier: "asset-tile")
         func visibleLabels() -> [String] {
             tiles.allElementsBoundByIndex.filter {
@@ -337,14 +366,17 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(visibleLabels().contains { $0.contains("2026年11月") }, "A cold cloud library opens at its newest end")
         app.swipeDown()
         app.swipeDown()
+        let anchorLoaded = NSPredicate { _, _ in !visibleLabels().isEmpty }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: anchorLoaded, object: nil)], timeout: 25), .completed,
+                       "Scrolling into an unloaded date bucket must finish before capturing its anchor")
         let anchor = try XCTUnwrap(visibleLabels().first)
         snapshot(app, "native-long-library-anchor")
         app.buttons["photos-source-menu"].tap()
-        app.buttons["本机"].tap()
+        chooseSourceItem(app, "本机")
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 10))
         snapshot(app, "native-device-library")
         app.buttons["photos-source-menu"].tap()
-        app.buttons["云端照片"].tap()
+        chooseSourceItem(app, "云端照片")
         let restored = NSPredicate { _, _ in visibleLabels().contains(anchor) }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: nil)], timeout: 15), .completed)
         let picker = app.segmentedControls["photos-period-picker"]
@@ -355,9 +387,11 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(year.waitForExistence(timeout: 10))
         snapshot(app, "native-years")
         year.tap()
-        XCTAssertTrue(app.buttons["所有年份"].waitForExistence(timeout: 5))
+        let months = app.buttons.matching(NSPredicate(format: "identifier MATCHES '^photos-period-[0-9]{4}-[0-9]{2}$'"))
+        let monthReady = NSPredicate { _, _ in months.allElementsBoundByIndex.contains(where: \.isHittable) }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: monthReady, object: nil)], timeout: 5), .completed)
         snapshot(app, "native-months")
-        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'photos-period-'")).firstMatch.tap()
+        try XCTUnwrap(months.allElementsBoundByIndex.first(where: \.isHittable)).tap()
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10))
         snapshot(app, "native-period-revealed")
     }

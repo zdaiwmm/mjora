@@ -58,7 +58,10 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
     }
 
     private func labelButton(_ app: XCUIApplication, _ labels: [String], excludingID: String = "") -> XCUIElement {
-        let query = app.buttons.matching(NSPredicate(format: "label IN %@ AND identifier != %@", labels, excludingID))
+        let labelled = app.buttons.matching(NSPredicate(format: "label IN %@", labels))
+        // Native palette menu actions have no identifier. Exclude a known
+        // underlying control only when the caller actually supplied its ID.
+        let query = excludingID.isEmpty ? labelled : labelled.matching(NSPredicate(format: "identifier != %@", excludingID))
         return query.allElementsBoundByIndex.first(where: \.isHittable) ?? query.firstMatch
     }
 
@@ -88,6 +91,11 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         let choice = labelButton(app, labels)
         wait(app, "Menu choice \(labels[0])") { choice.exists && choice.isHittable }
         choice.tap()
+        // A palette selection can leave the native context menu open,
+        // especially when choosing its already-selected sort option.
+        if choice.exists && choice.isHittable {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.65)).tap()
+        }
         wait(app, "Menu dismisses after \(labels[0])") { menu.isHittable }
     }
 
@@ -177,7 +185,10 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
             XCTAssertEqual(photos.map(\.identifier), days.map { "photos-period-photo-\(month.id)-\($0)" })
         }
         XCTAssertEqual(heading.minX, 20, accuracy: 1)
-        XCTAssertEqual(heading.width, app.frame.width - 40, accuracy: 1)
+        // StaticText reports its intrinsic glyph bounds, while the enclosing
+        // title row and the composition span the available width.
+        XCTAssertGreaterThan(heading.width, 80)
+        XCTAssertLessThanOrEqual(heading.maxX, group.maxX + 1)
         XCTAssertEqual(group.minX, 20, accuracy: 1)
         XCTAssertEqual(group.maxX, app.frame.width - 20, accuracy: 1)
         XCTAssertEqual(group.minY - heading.maxY, 10, accuracy: 1)

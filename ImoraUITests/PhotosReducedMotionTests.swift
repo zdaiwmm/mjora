@@ -1,11 +1,14 @@
 import CoreGraphics
 import Foundation
+import Darwin
 import UIKit
 import XCTest
 
 /// Actual system-setting acceptance. No launch flag substitutes for Reduce Motion.
 @MainActor
-final class PhotosReducedMotionTests: XCTestCase {
+// XCTest's teardown closure is Sendable; all test state and cleanup are
+// confined to MainActor, including the explicit MainActor.run below.
+final class PhotosReducedMotionTests: XCTestCase, @unchecked Sendable {
     private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String }
     private var systemMotion: SystemReduceMotionControl?
     private var imora: XCUIApplication?
@@ -17,15 +20,14 @@ final class PhotosReducedMotionTests: XCTestCase {
         #else
         continueAfterFailure = false
         let fixture = try loadFixture()
-        let controller = SystemReduceMotionControl()
+        let controller = try SystemReduceMotionControl()
         systemMotion = controller
         // XCTest teardown also executes after an assertion stops the test.
         addTeardownBlock { [self] in
             try await MainActor.run { try self.restoreSystemAndSource() }
         }
         try controller.setEnabled(true)
-        capture(controller.settings, "reduce-motion-system-enabled")
-        XCTAssertEqual(try controller.readEnabled(), true, "The actual Reduce Motion switch must be on")
+        XCTAssertEqual(try controller.readEnabled(), true, "The actual global Reduce Motion preference must be on")
         let signal = NSPredicate { _, _ in UIAccessibility.isReduceMotionEnabled }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: signal, object: nil)], timeout: 8), .completed,
                        "UIKit's real system accessibility signal must become true; a test launch argument is not enough")
@@ -119,15 +121,16 @@ final class PhotosReducedMotionTests: XCTestCase {
     }
 
     private func restoreSystemAndSource() throws {
+        // Restore the global preference before any UI operation can fail.
+        if let controller = systemMotion {
+            try controller.restoreOriginal()
+            if let app = imora { capture(app, "reduce-motion-system-restored") }
+        }
         if let app = imora, let device = originalDeviceSource {
             app.activate()
             let library = app.buttons["shell-photos"]
             if library.exists && library.isHittable && !app.buttons["photos-source-menu"].isHittable { library.tap() }
             if waitForHittable(app.buttons["photos-source-menu"], timeout: 8) { selectSource(app, device: device) }
-        }
-        if let controller = systemMotion {
-            try controller.restoreOriginal()
-            capture(controller.settings, "reduce-motion-system-restored")
         }
         imora?.activate()
     }
@@ -139,98 +142,61 @@ final class PhotosReducedMotionTests: XCTestCase {
     private func capture(_ app: XCUIApplication, _ name: String) {
         let image = XCTAttachment(screenshot: app.screenshot()); image.name = name; image.lifetime = .keepAlways; add(image)
         let hierarchy = XCTAttachment(string: app.debugDescription); hierarchy.name = "\(name)-AX"; hierarchy.lifetime = .keepAlways; add(hierarchy)
-        let state = XCTAttachment(string: "UIKit Reduce Motion=\(UIAccessibility.isReduceMotionEnabled). Original system switch=\(systemMotion?.originalEnabled.map(String.init) ?? "not read").")
+        let state = XCTAttachment(string: "UIKit Reduce Motion=\(UIAccessibility.isReduceMotionEnabled). Global OS preference=\((try? systemMotion?.readEnabled()).map(String.init) ?? "unavailable"). Original system preference=\(systemMotion?.originalEnabled.map(String.init) ?? "not read"). Set through simulator libAccessibility _AXSSetReduceMotionEnabled; no app launch flag or environment override.")
         state.name = "\(name)-system-state"; state.lifetime = .keepAlways; add(state)
     }
 }
 
-/// Reusable exact-control helper for other fixture UI flows. It never queries
-/// firstMatch across all switches or visits Display & Text Size/Transparency.
+/// Simulator-only acceptance utility. This runtime does not expose Accessibility
+/// in Settings, so change the actual OS preference through libAccessibility.
+/// Both exports are verified in the installed SDK's libAccessibility.tbd.
+/// No private API or test accessibility override is linked into the app target.
 @MainActor
 final class SystemReduceMotionControl {
-    let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+    private typealias Getter = @convention(c) () -> Bool
+    private typealias Setter = @convention(c) (Bool) -> Void
+    // Keep the library loaded for the lifetime of the UI-test process.
+    private let library: UnsafeMutableRawPointer
+    private let getter: Getter
+    private let setter: Setter
     private(set) var originalEnabled: Bool?
-    private let switchLabels = ["减弱动态效果", "Reduce Motion"]
+
+    init() throws {
+        #if targetEnvironment(simulator)
+        guard let library = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW),
+              let getSymbol = dlsym(library, "_AXSReduceMotionEnabledGlobal"),
+              let setSymbol = dlsym(library, "_AXSSetReduceMotionEnabled") else {
+            throw NSError(domain: "Real system Reduce Motion acceptance", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Required simulator OS accessibility exports unavailable"])
+        }
+        self.library = library
+        getter = unsafeBitCast(getSymbol, to: Getter.self)
+        setter = unsafeBitCast(setSymbol, to: Setter.self)
+        #else
+        throw NSError(domain: "Real system Reduce Motion acceptance", code: 2,
+                      userInfo: [NSLocalizedDescriptionKey: "This OS preference utility is restricted to the task simulator"])
+        #endif
+    }
 
     func setEnabled(_ enabled: Bool) throws {
-        let toggle = try locateSwitch()
-        let initial = try value(of: toggle)
-        if originalEnabled == nil { originalEnabled = initial }
-        if initial != enabled { toggle.tap() }
-        let predicate = NSPredicate { _, _ in
-            toggle.exists && toggle.isHittable && (toggle.value as? String) == (enabled ? "1" : "0")
+        if originalEnabled == nil { originalEnabled = getter() }
+        setter(enabled)
+        let signal = NSPredicate { _, _ in
+            self.getter() == enabled && UIAccessibility.isReduceMotionEnabled == enabled
         }
-        guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)], timeout: 10) == .completed else {
-            throw failure("Actual Reduce Motion switch did not reach the requested state")
+        guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: signal, object: nil)], timeout: 10) == .completed else {
+            throw NSError(domain: "Real system Reduce Motion acceptance", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "OS preference and UIKit Reduce Motion signal did not both reach the requested state"])
         }
-        guard try value(of: toggle) == enabled else { throw failure("Actual Reduce Motion value disagrees after setting") }
     }
 
-    func readEnabled() throws -> Bool { try value(of: locateSwitch()) }
+    func readEnabled() throws -> Bool { getter() }
     func restoreOriginal() throws {
-        guard let originalEnabled else { return } // No setting was changed before a failed navigation.
+        guard let originalEnabled else { return }
         try setEnabled(originalEnabled)
-        guard try readEnabled() == originalEnabled else { throw failure("Original Reduce Motion state was not restored") }
-    }
-
-    private func locateSwitch() throws -> XCUIElement {
-        if settings.state == .notRunning {
-            settings.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
-            settings.launch()
-        } else { settings.activate() }
-        for _ in 0..<6 {
-            let exact = settings.switches.matching(NSPredicate(format: "label IN %@", switchLabels)).firstMatch
-            if exact.exists && exact.isHittable { return exact }
-            if let motion = visibleRow(["动态效果", "Motion"]) { motion.tap(); continue }
-            if let accessibility = visibleRow(["辅助功能", "Accessibility"]) { accessibility.tap(); continue }
-            if ["设置", "Settings"].contains(where: {
-                let bar = settings.navigationBars[$0]
-                return bar.exists && bar.isHittable
-            }) { break }
-            let back = settings.navigationBars.buttons.allElementsBoundByIndex.first {
-                $0.isHittable && $0.frame.minX < settings.frame.width * 0.4
-                    && !["搜索", "Search", "编辑", "Edit", "取消", "Cancel"].contains($0.label)
-            }
-            guard let back else { break }
-            back.tap()
+        guard getter() == originalEnabled, UIAccessibility.isReduceMotionEnabled == originalEnabled else {
+            throw NSError(domain: "Real system Reduce Motion acceptance", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Original real OS Reduce Motion state was not restored"])
         }
-        try tapRow(["辅助功能", "Accessibility"])
-        try tapRow(["动态效果", "Motion"])
-        let toggle = settings.switches.matching(NSPredicate(format: "label IN %@", switchLabels)).firstMatch
-        let predicate = NSPredicate { _, _ in toggle.exists && toggle.isHittable }
-        guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: nil)], timeout: 8) == .completed else {
-            throw failure("Expected Accessibility → Motion → Reduce Motion exact switch; inspect Settings AX. Reduce Transparency is not an acceptable substitute")
-        }
-        return toggle
-    }
-
-    private func visibleRow(_ labels: [String]) -> XCUIElement? {
-        let predicate = NSPredicate(format: "label IN %@", labels)
-        let navigationBottom = settings.navigationBars.allElementsBoundByIndex.filter(\.exists).map { $0.frame.maxY }.max() ?? 0
-        return (settings.cells.matching(predicate).allElementsBoundByIndex
-                + settings.buttons.matching(predicate).allElementsBoundByIndex
-                + settings.staticTexts.matching(predicate).allElementsBoundByIndex).first {
-            $0.isHittable && $0.frame.midY > navigationBottom + 1
-        }
-    }
-    private func tapRow(_ labels: [String]) throws {
-        for _ in 0..<8 {
-            if let row = visibleRow(labels) { row.tap(); return }
-            let candidate = settings.staticTexts.matching(NSPredicate(format: "label IN %@", labels)).firstMatch
-            if candidate.exists && candidate.frame.midY < settings.frame.midY { settings.swipeDown() }
-            else { settings.swipeUp() }
-            let ready = NSPredicate { _, _ in self.visibleRow(labels) != nil }
-            _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 1)
-        }
-        throw failure("Settings row not reachable: \(labels.joined(separator: " / "))")
-    }
-    private func value(of toggle: XCUIElement) throws -> Bool {
-        guard switchLabels.contains(toggle.label), let raw = toggle.value as? String, ["0", "1"].contains(raw) else {
-            throw failure("Reduce Motion must expose an exact labeled switch with binary AX state")
-        }
-        return raw == "1"
-    }
-    private func failure(_ message: String) -> NSError {
-        NSError(domain: "Real system Reduce Motion acceptance", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

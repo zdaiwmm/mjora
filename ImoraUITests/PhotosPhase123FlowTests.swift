@@ -73,6 +73,8 @@ final class PhotosPhase123FlowTests: XCTestCase {
     private func snapshot(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "\(name)-AX"; hierarchy.lifetime = .keepAlways; add(hierarchy)
     }
 
     private func button(_ app: XCUIApplication, labels: [String]) -> XCUIElement {
@@ -155,6 +157,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
             let close = app.navigationBars.buttons.matching(identifier: "viewer-close")
             return close.count == 1 && close.firstMatch.isHittable
         }
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "Opening a photo dismisses the search keyboard")
     }
 
     private func closeViewer(_ app: XCUIApplication) {
@@ -173,11 +176,16 @@ final class PhotosPhase123FlowTests: XCTestCase {
         let toggle = app.switches.matching(NSPredicate(format: "label IN %@", ["回忆", "Memories"])).firstMatch
         XCTAssertTrue(waitForHittable(toggle, timeout: 10))
         let initial = toggle.value as? String == "1"
+        func tapSwitchControl() {
+            // SwiftUI exposes the labeled row as one AX switch. Its center
+            // is label space; press the actual trailing UISwitch control.
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.5)).tap()
+        }
         defer {
-            if toggle.exists && toggle.isHittable && (toggle.value as? String == "1") != initial { toggle.tap() }
+            if toggle.exists && toggle.isHittable && (toggle.value as? String == "1") != initial { tapSwitchControl() }
         }
         func set(_ on: Bool) {
-            if (toggle.value as? String == "1") != on { toggle.tap() }
+            if (toggle.value as? String == "1") != on { tapSwitchControl() }
             waitUntil("Settings switch value updates", timeout: 10) { (toggle.value as? String == "1") == on }
         }
         set(false)
@@ -185,6 +193,9 @@ final class PhotosPhase123FlowTests: XCTestCase {
         snapshot(app, "phase123-settings-switch-off")
         let off = try chromaticTrackFraction(app, toggle: toggle)
         set(true)
+        snapshot(app, "phase123-settings-switch-on")
+        let region = XCTAttachment(string: "AX row bounds: \(toggle.frame); screen: \(app.frame). Sampling the trailing 100pt band at the row center, excluding the leading colored icon.")
+        region.name = "phase123-switch-sampling-region"; region.lifetime = .keepAlways; add(region)
         waitUntil("Enabled switch track has a chromatic accent", timeout: 6) {
             guard let fraction = try? self.chromaticTrackFraction(app, toggle: toggle) else { return false }
             return fraction > max(0.18, off + 0.10)
@@ -201,14 +212,16 @@ final class PhotosPhase123FlowTests: XCTestCase {
         app.buttons["settings-close"].tap()
     }
 
-    /// Samples only the trailing switch track, excluding the label/colored icon
-    /// and most of the white thumb. Screenshot pixel scale is derived explicitly.
+    /// SwiftUI exposes the entire labeled row as the AX switch. The current
+    /// system switch is wider than the old 51pt control and sits inside the
+    /// row's trailing inset. Sample the trailing band, excluding the icon and
+    /// neighboring rows, rather than assuming the row edge is the track edge.
     private func chromaticTrackFraction(_ app: XCUIApplication, toggle: XCUIElement) throws -> Double {
         let screenshot = app.screenshot().image
         guard let image = screenshot.cgImage else { throw Failure.invalidScreenshot }
         let frame = toggle.frame
-        let width = min(CGFloat(51), frame.width)
-        let track = CGRect(x: frame.maxX - width + 3, y: frame.midY - 8, width: width * 0.50, height: 16)
+        let width = min(CGFloat(100), frame.width)
+        let track = CGRect(x: frame.maxX - width, y: frame.midY - 8, width: width, height: 16)
         let sx = CGFloat(image.width) / app.frame.width, sy = CGFloat(image.height) / app.frame.height
         let pixels = CGRect(x: (track.minX - app.frame.minX) * sx, y: (track.minY - app.frame.minY) * sy,
                             width: track.width * sx, height: track.height * sy).integral
@@ -352,14 +365,14 @@ final class PhotosPhase123FlowTests: XCTestCase {
     func testUnbackedDeviceAppAlbumRequiresConsentAndCreatesOneServerMember() async throws {
         let api = try FixtureAPI(fixture: fixture())
         try await api.login()
-        let filename = "Phase123_Mountain.jpg"
+        let filename = "Phase123_Mountain_Acceptance.jpg"
         guard try await api.assets(filename: filename).isEmpty else {
-            throw XCTSkip("Reseed Phase123_Mountain.jpg as unbacked before repeating this explicit-backup acceptance case.")
+            throw XCTSkip("Reseed Phase123_Mountain_Acceptance.jpg as unbacked before repeating this explicit-backup acceptance case.")
         }
         let app = try launch()
         defer { finishOnCloud(app) }
         searchDevice(app, filename: filename); try openOnlyResult(app)
-        tapID(app, "viewer-menu"); tapID(app, "viewer-add-to-album")
+        openAppAlbumPicker(app)
         XCTAssertTrue(app.navigationBars["添加到应用相簿"].waitForExistence(timeout: 15))
         let name = "Phase123-UI-\(UUID().uuidString.prefix(8))"
         func chooseCreate() {
@@ -367,17 +380,16 @@ final class PhotosPhase123FlowTests: XCTestCase {
             let field = app.alerts.textFields.firstMatch
             XCTAssertTrue(field.waitForExistence(timeout: 5))
             if field.value as? String != name { field.tap(); field.typeText(name) }
-            app.alerts.buttons["继续"].tap()
         }
         chooseCreate()
-        let consent = button(app, labels: ["备份并创建相簿", "Back Up and Create Album"])
+        let consent = app.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["备份并创建相簿", "Back Up and Create Album"])).firstMatch
         XCTAssertTrue(consent.waitForExistence(timeout: 5))
         snapshot(app, "phase123-local-album-explicit-backup-consent")
         let beforeConsentAssets = try await api.assets(filename: filename)
         XCTAssertTrue(beforeConsentAssets.isEmpty, "Opening/choosing an App album must not silently upload")
         let beforeAlbums = try await api.albums()
         XCTAssertFalse(beforeAlbums.contains { $0["albumName"] as? String == name })
-        button(app, labels: ["取消", "Cancel"]).tap()
+        app.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["取消", "Cancel"])).firstMatch.tap()
         XCTAssertTrue(app.buttons["add-to-album-new"].waitForExistence(timeout: 5), "Cancel retains the picker and local selection")
         chooseCreate(); XCTAssertTrue(consent.waitForExistence(timeout: 5)); consent.tap()
         waitUntil("Explicit backup and album creation finishes", timeout: 150) {
@@ -397,10 +409,10 @@ final class PhotosPhase123FlowTests: XCTestCase {
         XCTAssertEqual(members.first?["originalFileName"] as? String, filename)
         snapshot(app, "phase123-local-album-created-and-dismissed")
         closeViewer(app); try openOnlyResult(app)
-        tapID(app, "viewer-menu"); tapID(app, "viewer-add-to-album")
+        openAppAlbumPicker(app)
         XCTAssertTrue(app.buttons["add-to-album-new"].waitForExistence(timeout: 15))
-        let search = app.searchFields.firstMatch
-        if search.exists { enter(name, in: search, app: app); search.typeText("\n") }
+        // The just-created album is the newest item at the top. Avoid querying
+        // the covered Library search field while the picker is presented.
         XCTAssertTrue(app.staticTexts[name].firstMatch.waitForExistence(timeout: 10), "Reopening must show the committed App album")
         let cancellations = app.navigationBars.buttons.matching(NSPredicate(format: "label IN %@", ["取消", "Cancel"]))
         let cancel = try XCTUnwrap(cancellations.allElementsBoundByIndex.first {
@@ -409,6 +421,14 @@ final class PhotosPhase123FlowTests: XCTestCase {
         cancel.tap()
         XCTAssertTrue(app.navigationBars.buttons.matching(identifier: "viewer-close").firstMatch.waitForExistence(timeout: 8))
         closeViewer(app)
+    }
+
+    private func openAppAlbumPicker(_ app: XCUIApplication) {
+        tapID(app, "viewer-menu")
+        // Native menu rows do not preserve SwiftUI Button identifiers on this
+        // runtime. Use the actual localized menu action shown to the user.
+        let add = button(app, labels: ["添加到相册", "添加到相簿", "Add to Album"])
+        XCTAssertTrue(waitForHittable(add, timeout: 5)); add.tap()
     }
 
     func testCollectionPreviewSizesPersistAcrossColdLaunches() async throws {
@@ -439,11 +459,15 @@ final class PhotosPhase123FlowTests: XCTestCase {
             XCTAssertTrue(waitForHittable(choice, timeout: 5)); choice.tap()
             waitUntil("Preview size selection updates", timeout: 5) { choice.isSelected }
             button(app, labels: ["完成", "Done"]).tap()
+            snapshot(app, "phase123-collections-preview-selection-\(index)")
             if previewLabel == nil {
-                let candidates = app.buttons.matching(NSPredicate(format: "label IN %@", labels))
+                let candidates = app.descendants(matching: .any).matching(NSCompoundPredicate(orPredicateWithSubpredicates:
+                    labels.map { NSPredicate(format: "label CONTAINS %@", $0) }))
                 for _ in 0..<5 {
-                    if let tile = candidates.allElementsBoundByIndex.first(where: { $0.isHittable && $0.frame.height > 90 }) {
-                        previewLabel = tile.label; break
+                    if let tile = candidates.allElementsBoundByIndex.first(where: {
+                        $0.isHittable && $0.frame.height > 90 && $0.frame.height < 250 && $0.frame.width < 300
+                    }) {
+                        previewLabel = labels.first { tile.label.contains($0) }; break
                     }
                     let known = candidates.allElementsBoundByIndex.first
                     if let known, known.frame.midY < app.frame.midY { app.swipeDown() }
@@ -452,7 +476,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
                 }
             }
             let name = try XCTUnwrap(previewLabel, "Fixture must contain at least one pinned or App album preview")
-            let preview = button(app, labels: [name]); reveal(preview, in: app)
+            let preview = try previewElement(app, title: name); reveal(preview, in: app)
             heights.append(preview.frame.height)
             if index == 0 { XCTAssertGreaterThan(preview.frame.height, 100) }
             else { XCTAssertLessThan(preview.frame.height, heights[index - 1] - 15) }
@@ -460,7 +484,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
             snapshot(app, "phase123-collections-preview-\(index)")
             app.terminate(); app.launch()
             XCTAssertTrue(app.buttons["shell-albums"].waitForExistence(timeout: 20)); app.buttons["shell-albums"].tap()
-            let restored = button(app, labels: [name]); reveal(restored, in: app)
+            let restored = try previewElement(app, title: name); reveal(restored, in: app)
             XCTAssertEqual(restored.frame.height, heights[index], accuracy: 2)
             snapshot(app, "phase123-collections-preview-\(index)-relaunch")
             openPreviewEditor(app)
@@ -472,6 +496,13 @@ final class PhotosPhase123FlowTests: XCTestCase {
             let header = app.buttons[id]; reveal(header, in: app)
             if !header.label.hasPrefix("展开") && !header.label.hasPrefix("Expand") { header.tap() }
         }
+    }
+
+    private func previewElement(_ app: XCUIApplication, title: String) throws -> XCUIElement {
+        let matches = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", title))
+            .allElementsBoundByIndex.sorted { $0.frame.height > $1.frame.height }
+        return try XCTUnwrap(matches.first(where: { $0.isHittable && $0.frame.height < 250 }) ?? matches.first,
+                             "Preview with the visible title must remain accessible")
     }
 
     private func openPreviewEditor(_ app: XCUIApplication) {

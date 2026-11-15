@@ -19,6 +19,56 @@ final class NativePhotosMetricsTests: XCTestCase {
         var bounds: CGRect { year.frame.union(month.frame).union(all.frame) }
     }
 
+    func testSystemPhotosMultiDayMonthLayouts() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("Reference capture is limited to the task simulator.")
+        #else
+        continueAfterFailure = false
+        let photos = XCUIApplication(bundleIdentifier: "com.apple.mobileslideshow")
+        photos.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        photos.launch(); defer { photos.terminate() }
+        dismissKnownPrompts(photos, springboard: XCUIApplication(bundleIdentifier: "com.apple.springboard"))
+        let library = libraryButton(photos)
+        if waitForHittable(library, timeout: 5) { library.tap() }
+        for _ in 0..<6 where findDateRow(photos) == nil { dragGrid(photos, towardOlder: true) }
+        let row = try XCTUnwrap(findDateRow(photos))
+        tapDateControl(row.month, photos: photos)
+        for index in 0..<22 {
+            let name = String(format: "native-month-matrix-%02d", index)
+            let shot = XCTAttachment(screenshot: photos.screenshot()); shot.name = name; shot.lifetime = .keepAlways; add(shot)
+            let hierarchy = photos.debugDescription
+            let ax = XCTAttachment(string: hierarchy); ax.name = "\(name)-AX"; ax.lifetime = .keepAlways; add(ax)
+            if index > 2, hierarchy.contains("2024年1月"), hierarchy.contains("2018年3月") { break }
+            dragGrid(photos, towardOlder: true)
+        }
+        if let all = findDateRow(photos) { tapDateControl(all.all, photos: photos) }
+        recordMonthlyState(photos, "native-month-matrix-after-all")
+        let sort = photos.buttons["sortFilterButton"]
+        guard waitForHittable(sort, timeout: 5) else { return }
+        sort.tap()
+        let added = photos.buttons.matching(NSPredicate(format: "label IN %@", ["添加日期", "Date Added"])).firstMatch
+        XCTAssertTrue(waitForHittable(added, timeout: 5)); added.tap()
+        photos.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.06)).tap()
+        for _ in 0..<3 { dragGrid(photos, towardOlder: true) }
+        recordMonthlyState(photos, "native-date-added-scrolled")
+        if let dates = findDateRow(photos) {
+            tapDateControl(dates.month, photos: photos)
+            recordMonthlyState(photos, "native-date-added-to-months")
+            if let all = findDateRow(photos) { tapDateControl(all.all, photos: photos) }
+        }
+        if waitForHittable(sort, timeout: 5) {
+            sort.tap(); recordMonthlyState(photos, "native-sort-after-months")
+            let captured = photos.buttons.matching(NSPredicate(format: "label IN %@", ["拍摄日期", "Date Captured"])).firstMatch
+            if waitForHittable(captured, timeout: 3) { captured.tap() }
+        }
+        #endif
+    }
+
+    private func recordMonthlyState(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        let ax = XCTAttachment(string: app.debugDescription); ax.name = "\(name)-AX"; ax.lifetime = .keepAlways; add(ax)
+    }
+
     func testSystemPhotosLibraryDateRowReferenceMetrics() throws {
         #if !targetEnvironment(simulator)
         throw XCTSkip("Reference capture is limited to the task simulator.")
@@ -68,10 +118,10 @@ final class NativePhotosMetricsTests: XCTestCase {
         }
         let measured = try XCTUnwrap(row,
             "No stable Years/Months/All row appeared. Three same-day photos may not scroll: import synthetic media with older EXIF capture dates, then rerun. No reference dimensions were fabricated.")
-        XCTAssertTrue(measured.year.isHittable && measured.month.isHittable && measured.all.isHittable)
+        XCTAssertTrue(measured.year.frame.intersects(photos.frame) && measured.month.frame.intersects(photos.frame) && measured.all.frame.intersects(photos.frame))
         capture(photos, stage: "native-photos-10-date-row-measured", row: measured)
 
-        measured.year.tap()
+        tapDateControl(measured.year, photos: photos)
         // Mode selection itself is read-only. Record the resulting state and
         // controls without assuming that a virtualized All Years header exists.
         let selected = NSPredicate { _, _ in
@@ -79,12 +129,12 @@ final class NativePhotosMetricsTests: XCTestCase {
         }
         _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: nil)], timeout: 2)
         capture(photos, stage: "native-photos-11-years", row: findDateRow(photos))
-        if let months = findDateRow(photos), months.month.isHittable {
-            months.month.tap()
+        if let months = findDateRow(photos) {
+            tapDateControl(months.month, photos: photos)
             capture(photos, stage: "native-photos-12-months", row: findDateRow(photos))
         }
-        if let restore = findDateRow(photos), restore.all.isHittable {
-            restore.all.tap()
+        if let restore = findDateRow(photos) {
+            tapDateControl(restore.all, photos: photos)
             capture(photos, stage: "native-photos-13-all-restored", row: findDateRow(photos))
         }
         #endif
@@ -141,7 +191,7 @@ final class NativePhotosMetricsTests: XCTestCase {
 
     private func findDateRow(_ photos: XCUIApplication) -> DateRow? {
         func matching(_ buttons: [XCUIElement], _ labels: [String]) -> [XCUIElement] {
-            buttons.filter { labels.contains($0.label) && $0.exists && $0.isHittable && $0.frame.midY > photos.frame.height * 0.5 }
+            buttons.filter { labels.contains($0.label) && $0.exists && $0.frame.intersects(photos.frame) && $0.frame.midY > photos.frame.height * 0.5 }
         }
         for segment in photos.segmentedControls.allElementsBoundByIndex {
             let buttons = segment.buttons.allElementsBoundByIndex
@@ -160,6 +210,15 @@ final class NativePhotosMetricsTests: XCTestCase {
             return DateRow(segmented: nil, year: year, month: month, all: all)
         }
         return nil
+    }
+
+    private func tapDateControl(_ element: XCUIElement, photos: XCUIApplication) {
+        // Photos exposes its visible custom segment descendants with false AX
+        // hittability or a shared hit point on this runtime. Press the center
+        // of the independently measured segment rather than its AX hit point.
+        let center = element.frame
+        photos.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: center.midX, dy: center.midY)).tap()
     }
 
     private func capture(_ photos: XCUIApplication, stage: String, row: DateRow?) {
