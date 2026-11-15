@@ -99,3 +99,88 @@ nonisolated enum ImageAdjustRenderer {
         return clamp.outputImage ?? image
     }
 }
+
+extension ImageAdjustRenderer {
+    /// Runtime Core Image kernels execute in the same nonlinear sRGB space as
+    /// the legacy matrices. Failure propagates; a missing kernel never silently
+    /// drops an accepted parameter from the saved image.
+    nonisolated private static let photoColorKernel = CIColorKernel(source: """
+        kernel vec4 photoColor(__sample px, float sat, float inv, float exp,
+            float hi, float sh, float bri, float black, float warm, float tint, float con) {
+            vec3 c = px.a > 0.0 ? px.rgb/px.a : vec3(0.0);
+            vec3 w = vec3(0.213, 0.715, 0.072);
+            float l = dot(c,w);
+            c = clamp(vec3(l) + sat*(c-vec3(l)), 0.0, 1.0);
+            c = clamp(mix(c, 1.0-c, inv), 0.0, 1.0);
+            c = clamp(c*exp, 0.0, 1.0);
+            l = dot(c,w);
+            c = clamp(c + hi*l*l, 0.0, 1.0);
+            l = dot(c,w);
+            c = clamp(c + sh*(1.0-l)*(1.0-l), 0.0, 1.0);
+            c = clamp(c + bri, 0.0, 1.0);
+            c = clamp((c-black)/(1.0-black), 0.0, 1.0);
+            c = clamp(c + vec3(warm, 0.0, -warm), 0.0, 1.0);
+            c = clamp(c + vec3(tint*0.5, -tint, tint*0.5), 0.0, 1.0);
+            c = clamp((c-0.5)*con+0.5, 0.0, 1.0);
+            return vec4(c*px.a, px.a);
+        }
+        """)
+
+    nonisolated private static let photoWarpKernel = CIWarpKernel(source: """
+        kernel vec2 photoWarp(float angle, float hp, float vp, float m, vec2 size) {
+            vec2 p = destCoord()-vec2(0.5);
+            float u = size.x > 1.0 ? p.x/(size.x-1.0)*2.0-1.0 : 0.0;
+            float v = size.y > 1.0 ? 1.0-p.y/(size.y-1.0)*2.0 : 0.0;
+            float d = 1.0+0.25*(hp*u+vp*v);
+            vec2 q = vec2(cos(angle)*u+sin(angle)*v, -sin(angle)*u+cos(angle)*v)/d/m;
+            return vec2((q.x+1.0)*0.5*(size.x-1.0), (1.0-q.y)*0.5*(size.y-1.0))+vec2(0.5);
+        }
+        """)
+
+    nonisolated static func apply(_ photo: PhotoAdjust, to input: CIImage) -> CIImage? {
+        guard (try? photo.validate()) != nil else { return nil }
+        guard photo.hasWarp || photo.hasExtendedColor else { return apply(photo.legacy, to: input) }
+        // Warp premultiplied RGBA so hidden colors under transparent pixels
+        // cannot bleed into visible edges. Color stages use straight RGB.
+        var image = input
+        if photo.hasWarp {
+            guard let kernel = photoWarpKernel,
+                  let warped = kernel.apply(extent: input.extent, roiCallback: { _, _ in input.extent },
+                    image: image.clampedToExtent(), arguments: [photo.straighten * .pi / 180,
+                        photo.horizontalPerspective, photo.verticalPerspective, PhotoAdjustMath.cornerScale(photo),
+                        CIVector(x: input.extent.width, y: input.extent.height)])
+            else { return nil }
+            image = warped
+        }
+        // Preserve the precise established legacy pipeline at zero extension.
+        guard photo.hasExtendedColor else { return apply(photo.legacy, to: image.unpremultiplyingAlpha()).premultiplyingAlpha() }
+        return photoColorKernel?.apply(extent: input.extent, arguments: [image,
+            1 + photo.saturation / 100, photo.invert ? 1.0 : 0.0, 1 + photo.exposure / 100,
+            0.5 * photo.highlights / 100, 0.5 * photo.shadows / 100, 0.5 * photo.brightness / 100,
+            0.5 * photo.blackPoint / 100, 0.15 * photo.warmth / 100, 0.15 * photo.tint / 100,
+            1 + photo.contrast / 100])
+    }
+
+    nonisolated static func render(_ image: UIImage, photo: PhotoAdjust) -> UIImage? {
+        guard !photo.isNeutral else { return image }
+        guard var source = upright(image) else { return nil }
+        if (photo.hasWarp || photo.hasExtendedColor), source.alphaInfo == .first || source.alphaInfo == .last {
+            // ImageIO may expose straight-alpha CGImages. Normalize those at
+            // the boundary before a GPU sampler can interpolate hidden RGB.
+            guard let normalized = premultiplied(source) else { return nil }
+            source = normalized
+        }
+        guard let result = apply(photo, to: CIImage(cgImage: source)),
+              let output = context.createCGImage(result, from: result.extent) else { return nil }
+        return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+    }
+
+    nonisolated private static func premultiplied(_ source: CGImage) -> CGImage? {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let bitmap = CGContext(data: nil, width: source.width, height: source.height, bitsPerComponent: 8,
+                bytesPerRow: source.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        bitmap.draw(source, in: CGRect(x: 0, y: 0, width: source.width, height: source.height))
+        return bitmap.makeImage()
+    }
+}

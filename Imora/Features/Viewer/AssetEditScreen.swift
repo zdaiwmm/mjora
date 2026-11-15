@@ -181,7 +181,20 @@ nonisolated enum AssetEditPreviewRenderer {
         guard let adjusted = ImageAdjustRenderer.render(image, adjust: adjust) else { return nil }
         return render(adjusted, state: state)
     }
+    @concurrent
+    static func preview(_ image: UIImage, state: EditTransform.State, photo: PhotoAdjust) async -> UIImage? {
+        guard let geometry = renderImage(image, state: state) else { return nil }
+        return ImageAdjustRenderer.render(geometry, photo: photo)
+    }
+    @concurrent
+    static func projection(_ image: UIImage, state: EditTransform.State, photo: PhotoAdjust) async -> Data? {
+        await preview(image, state: state, photo: photo)?.pngData()
+    }
     static func render(_ image: UIImage, state: EditTransform.State) -> Data? {
+        renderImage(image, state: state)?.pngData()
+    }
+    static func renderImage(_ image: UIImage, state: EditTransform.State) -> UIImage? {
+        if state.isIdentity && image.imageOrientation == .up { return image }
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
@@ -195,12 +208,11 @@ nonisolated enum AssetEditPreviewRenderer {
         guard let source = upright.cgImage else { return nil }
 
         let crop = state.crop.standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        let pixelCrop = CGRect(
-            x: crop.minX * CGFloat(source.width),
-            y: crop.minY * CGFloat(source.height),
-            width: crop.width * CGFloat(source.width),
-            height: crop.height * CGFloat(source.height)
-        ).integral
+        let x0 = floor(crop.minX * CGFloat(source.width) + 0.000_000_1)
+        let y0 = floor(crop.minY * CGFloat(source.height) + 0.000_000_1)
+        let x1 = floor(crop.maxX * CGFloat(source.width) + 0.000_000_1)
+        let y1 = floor(crop.maxY * CGFloat(source.height) + 0.000_000_1)
+        let pixelCrop = CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
         guard pixelCrop.width > 0, pixelCrop.height > 0,
               let cropped = source.cropping(to: pixelCrop)
         else { return nil }
@@ -227,7 +239,7 @@ nonisolated enum AssetEditPreviewRenderer {
                 height: input.size.height
             ))
         }
-        return rendered.pngData()
+        return rendered
     }
 }
 
@@ -246,6 +258,7 @@ private enum AdjustTool: CaseIterable, Hashable {
     case contrast
     case saturation
     case invert
+    case highlights, shadows, brightness, blackPoint, warmth, tint
 
     var title: String {
         switch self {
@@ -253,6 +266,12 @@ private enum AdjustTool: CaseIterable, Hashable {
         case .contrast: String(localized: "Contrast")
         case .saturation: String(localized: "Saturation")
         case .invert: String(localized: "Invert")
+        case .highlights: String(localized: "Highlights")
+        case .shadows: String(localized: "Shadows")
+        case .brightness: String(localized: "Brightness")
+        case .blackPoint: String(localized: "Black Point")
+        case .warmth: String(localized: "Warmth")
+        case .tint: String(localized: "Tint")
         }
     }
 
@@ -262,28 +281,46 @@ private enum AdjustTool: CaseIterable, Hashable {
         case .contrast: "circle.lefthalf.filled"
         case .saturation: "drop.halffull"
         case .invert: "circle.righthalf.filled.inverse"
+        case .highlights: "sun.max"
+        case .shadows: "moon"
+        case .brightness: "sun.min"
+        case .blackPoint: "circle.fill"
+        case .warmth: "thermometer.medium"
+        case .tint: "drop"
         }
     }
 
     var hasSlider: Bool { self != .invert }
 
     /// the slider's -1...1 over the stored -100...100.
-    func value(in adjust: ImageAdjust) -> Double {
+    func value(in adjust: PhotoAdjust) -> Double {
         switch self {
         case .exposure: adjust.exposure / 100
         case .contrast: adjust.contrast / 100
         case .saturation: adjust.saturation / 100
         case .invert: adjust.invert ? 1 : 0
+        case .highlights: adjust.highlights / 100
+        case .shadows: adjust.shadows / 100
+        case .brightness: adjust.brightness / 100
+        case .blackPoint: adjust.blackPoint / 100
+        case .warmth: adjust.warmth / 100
+        case .tint: adjust.tint / 100
         }
     }
 
-    func set(_ value: Double, in adjust: inout ImageAdjust) {
+    func set(_ value: Double, in adjust: inout PhotoAdjust) {
         let amount = (value * 100).rounded()
         switch self {
         case .exposure: adjust.exposure = amount
         case .contrast: adjust.contrast = amount
         case .saturation: adjust.saturation = amount
         case .invert: adjust.invert = value != 0
+        case .highlights: adjust.highlights = amount
+        case .shadows: adjust.shadows = amount
+        case .brightness: adjust.brightness = amount
+        case .blackPoint: adjust.blackPoint = amount
+        case .warmth: adjust.warmth = amount
+        case .tint: adjust.tint = amount
         }
     }
 }
@@ -291,22 +328,24 @@ private enum AdjustTool: CaseIterable, Hashable {
 /// everything undo and redo step through.
 private struct EditSnapshot: Equatable {
     var state: EditTransform.State
-    var adjust: ImageAdjust
+    var adjust: PhotoAdjust
     var disabledTools: Set<AdjustTool>
     var aspect: EditAspect
     var isPortrait: Bool
     var removesPreservedEdits: Bool
 }
 
-/// photos' editor over the server-side edit list: crop, rotate and mirror on
-/// every server, adjust where it is served, and a trim editor for videos. the
-/// picture itself is never re-encoded on device: the server re-renders.
+/// One editing surface for PhotoKit still images and remote full-list edits.
+/// Local originals stay in PhotoKit; remote originals stay on the server.
 struct AssetEditScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(SessionStore.self) private var session
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let asset: Asset
+    let localAssetIdentifier: String?
+    let onLocalSaved: (String) -> Void
+    let onRemoteSaveUnconfirmed: (String) -> Void
     let onProjected: (AssetEditProjection) -> Void
     let onReverted: (UUID) -> Void
     let onCommitted: (UUID, AssetDetail?) -> Void
@@ -314,12 +353,18 @@ struct AssetEditScreen: View {
 
     init(
         asset: Asset,
+        localAssetIdentifier: String? = nil,
+        onLocalSaved: @escaping (String) -> Void = { _ in },
+        onRemoteSaveUnconfirmed: @escaping (String) -> Void = { _ in },
         onProjected: @escaping (AssetEditProjection) -> Void = { _ in },
         onReverted: @escaping (UUID) -> Void = { _ in },
         onCommitted: @escaping (UUID, AssetDetail?) -> Void = { _, _ in },
         onFinished: @escaping (AssetEditOutcome) -> Void
     ) {
         self.asset = asset
+        self.localAssetIdentifier = localAssetIdentifier
+        self.onLocalSaved = onLocalSaved
+        self.onRemoteSaveUnconfirmed = onRemoteSaveUnconfirmed
         self.onProjected = onProjected
         self.onReverted = onReverted
         self.onCommitted = onCommitted
@@ -358,10 +403,16 @@ struct AssetEditScreen: View {
     @GestureState private var holdsOriginal = false
     /// whether this photo can take an adjustment on this server.
     @State private var canAdjust = false
-    @State private var adjust = ImageAdjust.neutral
-    @State private var initialAdjust = ImageAdjust.neutral
+    @State private var adjust = PhotoAdjust.neutral
+    @State private var initialAdjust = PhotoAdjust.neutral
     /// the loaded picture with `effectiveAdjust` applied, nil while neutral.
     @State private var adjustedImage: UIImage?
+    @State private var cropPreview: UIImage?
+    @State private var renderedCropAdjust: PhotoAdjust?
+    @State private var localEditor: LocalPhotoEditor?
+    @State private var canUseUnifiedEditor = false
+    @State private var geometryTool = PhotoGeometryTool.crop
+    @State private var saveError: String?
     @State private var adjustSource: CGImage?
     @State private var isRenderingAdjust = false
     @State private var undoStack: [EditSnapshot] = []
@@ -371,7 +422,7 @@ struct AssetEditScreen: View {
     @State private var toolFeedback = UISelectionFeedbackGenerator()
 
     /// what saving applies: the adjustment with switched off tools at zero.
-    private var effectiveAdjust: ImageAdjust {
+    private var effectiveAdjust: PhotoAdjust {
         var result = adjust
         for tool in disabledTools { tool.set(0, in: &result) }
         return result
@@ -387,7 +438,7 @@ struct AssetEditScreen: View {
     }
 
     var body: some View {
-        if asset.isVideo {
+        if asset.isVideo && localAssetIdentifier == nil {
             VideoTrimEditor(asset: asset, onFinished: onFinished)
         } else {
             photoEditor
@@ -422,7 +473,12 @@ struct AssetEditScreen: View {
         .interactiveDismissDisabled(hasChanges || isSaving)
         .task { await load() }
         .onChange(of: snapshot) { scheduleRecord() }
+        .alert("Couldn't Save Edits", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+            Button("Keep Editing", role: .cancel) {}
+            Button("Try Again") { beginSave() }
+        } message: { Text(saveError ?? "") }
         .onDisappear { recordTask?.cancel() }
+        .onChange(of: geometryTool) { showsOriginal = false }
         .onChange(of: tool) { _, _ in
             showsOriginal = false
             showsAspectRatios = false
@@ -495,6 +551,7 @@ struct AssetEditScreen: View {
                 recordCurrentEdit()
                 withAnimation(editAnimation) {
                     state = EditTransform.State()
+                    adjust.straighten = 0; adjust.horizontalPerspective = 0; adjust.verticalPerspective = 0
                     aspect = .freeform
                 }
                 recordCurrentEdit()
@@ -502,8 +559,8 @@ struct AssetEditScreen: View {
                 EditorToolLabel(text: String(localized: "Reset"))
             }
             .buttonStyle(.plain)
-            .opacity(state.isIdentity && aspect == .freeform ? 0 : 1)
-            .disabled(state.isIdentity && aspect == .freeform)
+            .opacity(state.isIdentity && !adjust.hasWarp && aspect == .freeform ? 0 : 1)
+            .disabled(state.isIdentity && !adjust.hasWarp && aspect == .freeform)
             .accessibilityIdentifier("edit-reset")
         }
     }
@@ -514,6 +571,10 @@ struct AssetEditScreen: View {
                 .disabled(!canUndo)
             Button("Redo", systemImage: "arrow.uturn.forward", action: redo)
                 .disabled(redoStack.isEmpty)
+            Button(showsOriginal ? String(localized: "Show Edits") : String(localized: "Show Original"), systemImage: "photo") {
+                showsOriginal.toggle()
+            }
+            .accessibilityIdentifier("edit-compare-original")
             Button("Revert to Original", systemImage: "arrow.uturn.backward.circle") {
                 showsRevertConfirmation = true
             }
@@ -566,10 +627,8 @@ struct AssetEditScreen: View {
         }
         .allowsHitTesting(!isSaving)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: tool)
-        .onChange(of: effectiveAdjust) {
-            showsOriginal = false
-            renderAdjust()
-        }
+        .onChange(of: effectiveAdjust) { showsOriginal = false; renderAdjust() }
+        .onChange(of: state) { if canUseUnifiedEditor { showsOriginal = false; renderAdjust() } }
     }
 
     private var tabItems: [EditorTabBar<EditTool>.Item] {
@@ -581,7 +640,8 @@ struct AssetEditScreen: View {
 
     private func canvas(_ image: UIImage) -> some View {
         GeometryReader { proxy in
-            let comparingOriginal = tool == .adjust && (showsOriginal || holdsOriginal)
+            let comparingOriginal = showsOriginal || holdsOriginal
+            let rendersCompletePreview = comparingOriginal || (canUseUnifiedEditor && (tool == .adjust || geometryTool != .crop))
             let displayedState = comparingOriginal ? EditTransform.State() : state
             let rotated = displayedState.normalizedRotation.truncatingRemainder(dividingBy: 180) != 0
             let available = CGSize(
@@ -594,10 +654,16 @@ struct AssetEditScreen: View {
             let shown = comparingOriginal ? image : (adjustedImage ?? image)
 
             Group {
-                if tool == .crop {
+                if rendersCompletePreview {
+                    Image(uiImage: comparingOriginal ? image : (adjustedImage ?? image))
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: available.width, height: available.height)
+                        .matchedGeometryEffect(id: "photo", in: canvasTransition)
+                } else if tool == .crop {
                     let canvasSize = Self.aspectFit(image.size, into: fitBox)
                     CropCanvas(
-                        image: shown,
+                        image: canUseUnifiedEditor ? (cropPreview ?? image) : shown,
                         crop: $state.crop,
                         lockedAspect: canvasAspectRatio,
                         isEnabled: canCrop && !isSaving
@@ -628,10 +694,11 @@ struct AssetEditScreen: View {
                         .transition(.opacity)
                 }
             }
-            .scaleEffect(x: displayedState.flipH ? -1 : 1, y: displayedState.flipV ? -1 : 1)
-            .rotationEffect(.degrees(displayedState.rotation))
+            .scaleEffect(x: rendersCompletePreview ? 1 : (displayedState.flipH ? -1 : 1),
+                         y: rendersCompletePreview ? 1 : (displayedState.flipV ? -1 : 1))
+            .rotationEffect(.degrees(rendersCompletePreview ? 0 : displayedState.rotation))
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            .simultaneousGesture(originalComparisonGesture, isEnabled: tool == .adjust)
+            .simultaneousGesture(originalComparisonGesture, isEnabled: tool == .adjust || (canUseUnifiedEditor && geometryTool != .crop))
             .overlay(alignment: .top) {
                 if comparingOriginal {
                     EditorToolLabel(text: String(localized: "ORIGINAL"))
@@ -673,7 +740,7 @@ struct AssetEditScreen: View {
             GeometryReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 20) {
-                        ForEach(AdjustTool.allCases, id: \.self) { item in
+                        ForEach(canUseUnifiedEditor ? AdjustTool.allCases : [.exposure, .contrast, .saturation, .invert], id: \.self) { item in
                             Button {
                                 tapTool(item)
                             } label: {
@@ -768,6 +835,12 @@ struct AssetEditScreen: View {
             if showsAspectRatios {
                 aspectRatioPane
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            } else if canUseUnifiedEditor {
+                PhotoGeometryControls(selection: $geometryTool, photo: $adjust, onEditingChanged: {
+                    isScrubbing = $0
+                    if !$0 { recordCurrentEdit() }
+                })
+                .padding(.top, 12)
             } else {
                 // Only tools the server can persist are offered. The aspect
                 // tray is revealed by its top-bar control, as in Photos.
@@ -981,6 +1054,7 @@ struct AssetEditScreen: View {
     // MARK: - loading and saving
 
     private func load() async {
+        if let id = localAssetIdentifier { await loadLocal(id); return }
         guard let client = session.client else { return }
         loadState = .loading
         do {
@@ -990,6 +1064,7 @@ struct AssetEditScreen: View {
             async let imageTask = ImageLoader.shared.image(for: url, targetPixelSize: 2048)
             async let detailTask = client.assetDetail(id: asset.id)
             async let editsTask = client.assetEdits(id: asset.id)
+            let unified = session.capabilities.supportsPhotoEditsV1 && asset.livePhotoVideoId == nil
             let offersAdjust = session.capabilities.supportsAdjust && asset.livePhotoVideoId == nil
             async let adjustTask = offersAdjust ? (try? await client.imageAdjust(id: asset.id)) : nil
 
@@ -1024,15 +1099,18 @@ struct AssetEditScreen: View {
             state = seeded
             initialState = seeded
             hadServerEdits = !edits.isEmpty
-            preservedEdits = edits.filter(\.isOther)
+            preservedEdits = edits.filter { $0.isOther && (!unified || !$0.isPhotoAdjustment) }
+            let storedPhoto = unified ? try edits.compactMap { try $0.photoAdjust() }.last : nil
+            canUseUnifiedEditor = unified && Self.isAdjustable(detail)
             // an adjustment that could not be read stays out of reach rather
             // than being shown, and then saved, as neutral.
             let loadedAdjust = await adjustTask
-            canAdjust = offersAdjust && loadedAdjust != nil && Self.isAdjustable(detail)
-            if canAdjust, let loadedAdjust {
+            canAdjust = canUseUnifiedEditor || (offersAdjust && loadedAdjust != nil && Self.isAdjustable(detail))
+            if canAdjust {
                 adjustSource = ImageAdjustRenderer.upright(image)
-                adjust = loadedAdjust
-                initialAdjust = loadedAdjust
+                let seededPhoto = storedPhoto ?? PhotoAdjust(legacy: loadedAdjust ?? .neutral)
+                adjust = seededPhoto
+                initialAdjust = seededPhoto
                 tool = .adjust
                 renderAdjust()
             }
@@ -1082,122 +1160,123 @@ struct AssetEditScreen: View {
 
     /// one render at a time. sliders move faster than frames land, so the
     /// loop keeps going until the last value it drew is the current one.
+    private func loadLocal(_ id: String) async {
+        loadState = .loading
+        do {
+            let editor = try await LocalPhotoEditor.open(localIdentifier: id)
+            localEditor = editor; image = editor.preview
+            originalWidth = editor.originalWidth; originalHeight = editor.originalHeight
+            state = EditTransform.state(from: editor.recipe.edits, originalWidth: originalWidth, originalHeight: originalHeight)
+            initialState = state; hadServerEdits = !editor.recipe.edits.isEmpty
+            adjust = try editor.recipe.edits.compactMap { try $0.photoAdjust() }.last ?? .neutral
+            initialAdjust = adjust
+            canUseUnifiedEditor = true; canAdjust = true; tool = .adjust
+            adjustSource = ImageAdjustRenderer.upright(editor.preview)
+            isPortrait = editor.preview.size.height > editor.preview.size.width
+            committed = snapshot; loadState = .ready
+            renderAdjust()
+        } catch { loadState = .failed(error.localizedDescription) }
+    }
+
     private func renderAdjust() {
         guard !isRenderingAdjust, let source = adjustSource, let image else { return }
         isRenderingAdjust = true
         Task {
-            var drawn: ImageAdjust?
-            while drawn != effectiveAdjust {
-                let target = effectiveAdjust
-                adjustedImage = target.isNeutral
-                    ? nil
-                    : await ImageAdjustRenderer.preview(source, scale: image.scale, adjust: target)
-                drawn = target
+            var drawnPhoto: PhotoAdjust?
+            var drawnState: EditTransform.State?
+            while drawnPhoto != effectiveAdjust || (canUseUnifiedEditor && drawnState != state) {
+                let target = effectiveAdjust, targetState = state
+                if canUseUnifiedEditor {
+                    adjustedImage = await AssetEditPreviewRenderer.preview(image, state: targetState, photo: target)
+                    var color = target
+                    color.straighten = 0; color.horizontalPerspective = 0; color.verticalPerspective = 0
+                    if renderedCropAdjust != color {
+                        cropPreview = await AssetEditPreviewRenderer.preview(image, state: EditTransform.State(), photo: color)
+                        renderedCropAdjust = color
+                    }
+                } else {
+                    adjustedImage = target.isNeutral ? nil : await ImageAdjustRenderer.preview(source, scale: image.scale, adjust: target.legacy)
+                }
+                drawnPhoto = target; drawnState = targetState
             }
             isRenderingAdjust = false
         }
     }
 
-    /// cropping needs the true pixel size to express the rect in.
     private var canCrop: Bool { originalWidth > 0 && originalHeight > 0 }
 
     private func beginSave() {
-        guard !isSaving, hasChanges,
-              let client = session.client,
-              let image
-        else { return }
+        guard !isSaving, hasChanges, let image else { return }
+        guard localEditor != nil || session.client != nil else { return }
         isSaving = true
-        let savedState = state
-        let edits = EditTransform.edits(
-            from: savedState,
-            originalWidth: originalWidth,
-            originalHeight: originalHeight
-        ) + (removesPreservedEdits ? [] : preservedEdits)
-        let savedAdjust = effectiveAdjust
-        let adjustChanged = savedAdjust != initialAdjust
-        // like gallery, crop, rotate and mirror save whenever the adjustment
-        // did not change.
-        let savesGeometry = (state != initialState || removesPreservedEdits || !adjustChanged) && (!edits.isEmpty || hadServerEdits)
-        if !adjustChanged, !savesGeometry {
-            isSaving = false
-            finish(.cancelled)
-            return
-        }
-        let realtime = session.realtime
-        Task {
-            // Pixel rendering and PNG encoding must not block the main actor
-            // that drives the spinner and editor-to-viewer transition.
-            guard let preview = await AssetEditPreviewRenderer.projection(image, state: savedState, adjust: savedAdjust) else {
-                isSaving = false
-                ErrorToastCenter.shared.show(String(localized: "Couldn't prepare the edited preview."))
-                return
-            }
-            let operationID = UUID()
-            onProjected(AssetEditProjection(operationID: operationID, assetID: asset.id, imageData: preview))
-            dismiss()
-            await persist(
-                adjust: adjustChanged ? savedAdjust : nil,
-                edits: savesGeometry ? edits : nil,
-                operationID: operationID,
-                client: client,
-                realtime: realtime
-            )
-        }
-    }
-
-    /// nil skips that part. the adjustment goes first and its files are
-    /// waited for, because the server renders one edit job at a time.
-    private func persist(
-        adjust: ImageAdjust?,
-        edits: [AssetEdit]?,
-        operationID: UUID,
-        client: ImoraClient,
-        realtime: RealtimeHub?
-    ) async {
+        let savedState = state, savedAdjust = effectiveAdjust
+        var edits = EditTransform.edits(from: savedState, originalWidth: originalWidth, originalHeight: originalHeight)
+            + (removesPreservedEdits ? [] : preservedEdits)
         do {
-            if let adjust {
-                let assetID = asset.id
-                let ready = Task {
-                    _ = await realtime?.waitForAssetEvent(
-                        named: ["AssetEditReadyV2", "AssetEditReadyV1"],
-                        assetID: assetID,
-                        timeout: .seconds(10)
-                    )
+            if canUseUnifiedEditor && !savedAdjust.isNeutral { edits.append(try .photo(savedAdjust)) }
+        } catch { isSaving = false; saveError = error.localizedDescription; return }
+        let intent = edits
+        let renderedState = EditTransform.state(from: intent, originalWidth: originalWidth, originalHeight: originalHeight)
+        let unified = canUseUnifiedEditor
+        let adjustChanged = savedAdjust != initialAdjust
+        let savesGeometry = (state != initialState || removesPreservedEdits || !adjustChanged) && (!intent.isEmpty || hadServerEdits)
+        let operationID = UUID()
+        Task {
+            var derivativeReady: Task<Void, Never>?
+            defer { derivativeReady?.cancel() }
+            do {
+                if let localEditor {
+                    try await localEditor.save(edits: intent)
+                    onLocalSaved(localEditor.localIdentifier)
+                    isSaving = false
+                    finish(.saved(nil))
+                    return
                 }
-                if adjust.isNeutral {
-                    try await client.removeImageAdjust(id: assetID)
+                guard let client = session.client else { throw ImoraError.unreachable }
+                let rendered: Data?
+                if unified { rendered = await AssetEditPreviewRenderer.projection(image, state: renderedState, photo: savedAdjust) }
+                else { rendered = await AssetEditPreviewRenderer.projection(image, state: renderedState, adjust: savedAdjust.legacy) }
+                guard let preview = rendered else { throw LocalPhotoEditorError.rendering }
+                let realtime = session.realtime, assetID = asset.id
+                func observeDerivative() -> Task<Void, Never> {
+                    Task {
+                        _ = await realtime?.waitForAssetEvent(named: ["AssetEditReadyV2", "AssetEditReadyV1"],
+                                                              assetID: assetID, timeout: .seconds(10))
+                    }
+                }
+                if unified {
+                    derivativeReady = observeDerivative()
+                    try await client.savePhotoEdits(id: asset.id, edits: intent)
                 } else {
-                    try await client.setImageAdjust(id: assetID, adjust)
+                    try await PhotoEditPersistence.saveLegacy(
+                        adjust: adjustChanged ? savedAdjust.legacy : nil,
+                        edits: savesGeometry ? intent : nil,
+                        writeAdjust: { value in
+                            derivativeReady = observeDerivative()
+                            if value.isNeutral { try await client.removeImageAdjust(id: assetID) }
+                            else { try await client.setImageAdjust(id: assetID, value) }
+                            await derivativeReady?.value
+                        }, writeEdits: { value in
+                            derivativeReady = observeDerivative()
+                            if value.isEmpty { try await client.clearEdits(id: assetID) }
+                            else { try await client.applyEdits(id: assetID, edits: value) }
+                        }, readAdjust: { try await client.imageAdjust(id: assetID) },
+                        readEdits: { try await client.assetEdits(id: assetID) })
                 }
-                await ready.value
+                // A projection is published only after durable acceptance.
+                onProjected(AssetEditProjection(operationID: operationID, assetID: asset.id, imageData: preview))
+                await derivativeReady?.value
+                let detail = try? await client.assetDetail(id: asset.id)
+                onCommitted(operationID, detail)
+                isSaving = false
+                finish(.saved(detail))
+            } catch {
+                // No rollback claim: a legacy first write, or a response-lost
+                // write, may already be accepted. Preserve every draft field.
+                isSaving = false
+                if localEditor == nil { onRemoteSaveUnconfirmed(asset.id) }
+                saveError = error.localizedDescription
             }
-
-            if let edits {
-                if edits.isEmpty {
-                    try await client.clearEdits(id: asset.id)
-                } else {
-                    try await client.applyEdits(id: asset.id, edits: edits)
-                }
-
-                // hold until the server re-rendered derivatives, like the
-                // official client; falls through after ten seconds regardless.
-                if let realtime {
-                    _ = await realtime.waitForAssetEvent(
-                        named: ["AssetEditReadyV2", "AssetEditReadyV1"],
-                        assetID: asset.id,
-                        timeout: .seconds(10)
-                    )
-                }
-            }
-
-            // the write already succeeded, so a failed refresh only costs the
-            // new thumbhash - it must not read as a cancelled edit.
-            let detail = try? await client.assetDetail(id: asset.id)
-            onCommitted(operationID, detail)
-            onFinished(.saved(detail))
-        } catch {
-            onReverted(operationID)
-            ErrorToastCenter.shared.show(String(localized: "Couldn't save the edits. The change was undone"), error: error)
         }
     }
 

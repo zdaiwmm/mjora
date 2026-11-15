@@ -650,3 +650,73 @@ private struct EditorPrimaryBarRoom: ViewModifier {
             } action: { layout = $0 }
     }
 }
+
+nonisolated enum PhotoGeometryTool: String, CaseIterable, Identifiable {
+    case crop, straighten, horizontalPerspective, verticalPerspective
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .crop: String(localized: "Crop")
+        case .straighten: String(localized: "Straighten")
+        case .horizontalPerspective: String(localized: "Horizontal Perspective")
+        case .verticalPerspective: String(localized: "Vertical Perspective")
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .crop: "crop"
+        case .straighten: "dial.low"
+        case .horizontalPerspective: "perspective"
+        case .verticalPerspective: "trapezoid.and.line.vertical"
+        }
+    }
+    func value(_ photo: PhotoAdjust) -> Double {
+        switch self {
+        case .crop: 0
+        case .straighten: photo.straighten / 45
+        case .horizontalPerspective: photo.horizontalPerspective
+        case .verticalPerspective: photo.verticalPerspective
+        }
+    }
+    func set(_ amount: Double, photo: inout PhotoAdjust) {
+        let value = min(1, max(-1, amount))
+        switch self {
+        case .crop: break
+        case .straighten: photo.straighten = (value * 450).rounded() / 10
+        case .horizontalPerspective: photo.horizontalPerspective = (value * 100).rounded() / 100
+        case .verticalPerspective: photo.verticalPerspective = (value * 100).rounded() / 100
+        }
+    }
+}
+
+struct PhotoGeometryControls: View {
+    @Binding var selection: PhotoGeometryTool
+    @Binding var photo: PhotoAdjust
+    let onEditingChanged: (Bool) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 24) {
+                ForEach(PhotoGeometryTool.allCases) { item in
+                    Button { selection = item } label: {
+                        EditorToolButton(systemImage: item.symbol, value: item.value(photo), isSelected: item == selection)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(item.title)
+                    .accessibilityIdentifier("edit-geometry-\(item.rawValue)")
+                    .accessibilityAddTraits(item == selection ? .isSelected : [])
+                }
+            }
+            if selection != .crop {
+                EditorRuler(value: Binding(get: { selection.value(photo) }, set: { selection.set($0, photo: &photo) }), onEditingChanged: onEditingChanged)
+                    .accessibilityLabel(selection.title)
+                    .accessibilityIdentifier("edit-geometry-ruler")
+            } else {
+                Text("Drag the frame to crop").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .overlay(alignment: .top) {
+            EditorToolLabel(text: selection.title).offset(y: -24.33).allowsHitTesting(false)
+        }
+    }
+}
