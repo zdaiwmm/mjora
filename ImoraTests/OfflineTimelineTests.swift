@@ -8,11 +8,17 @@ final class OfflineTimelineTests: XCTestCase {
     func testPendingFavoriteProjectsOverFreshAndRefreshedServerBuckets() async throws {
         let month = "2026-02-01T00:00:00.000Z"
         let payload = Data(#"{"id":["pending-photo"],"ownerId":["fixture"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"thumbhash":[null],"fileCreatedAt":["2026-02-02T12:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let isCatchUp = Mutex(false)
         let server = try LocalHTTPServer { request in
             if request.path.hasPrefix("/api/timeline/buckets?") {
                 return .init(body: Data("[{\"timeBucket\":\"\(month)\",\"count\":1}]".utf8))
             }
-            return .init(body: payload)
+            // The changed ratio proves the stale catch-up response has reached
+            // the model before asserting the independently pending favorite.
+            let body = isCatchUp.withLock { $0 }
+                ? Data(String(decoding: payload, as: UTF8.self).replacingOccurrences(of: "\"ratio\":[1]", with: "\"ratio\":[2]").utf8)
+                : payload
+            return .init(body: body)
         }
         try await server.start(); defer { server.stop() }
         let client = ImoraClient(apiURL: server.apiURL, accessToken: "pending-\(UUID())")
@@ -28,6 +34,13 @@ final class OfflineTimelineTests: XCTestCase {
         XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true])
         await model.loadBucket(month, refresh: true)
         XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true], "A server response older than a durable intent must not undo it")
+        isCatchUp.withLock { $0 = true }
+        model.realtimeCatchUp()
+        for _ in 0..<150 where model.flatAssets.first?.ratio != 2 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.flatAssets.first?.ratio, 2, "Wait for the real catch-up payload, rather than asserting the previously loaded row")
+        XCTAssertEqual(model.flatAssets.map(\.isFavorite), [true], "Realtime catch-up must retain a durable favorite intent too")
     }
 
     func testPartialFavoriteRollbackPreservesTheItemsWhoseWritesWereAccepted() {

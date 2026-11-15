@@ -88,11 +88,16 @@ struct AddToAlbumSheet: View {
                         .accessibilityIdentifier("add-to-album-new")
                         .alert("New Album", isPresented: $showNewAlbum) {
                             TextField("Album name", text: $newAlbumName)
-                            Button(localIdentifiers.isEmpty ? String(localized: "Create") : String(localized: "Continue")) {
-                                choose(.create(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)))
+                            Button(localIdentifiers.isEmpty ? String(localized: "Create") : String(localized: "Back Up and Create Album")) {
+                                choose(.create(newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)),
+                                       confirmsBackup: !localIdentifiers.isEmpty)
                             }
                             .disabled(isWorking || newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             Button("Cancel", role: .cancel) {}
+                        } message: {
+                            if !localIdentifiers.isEmpty {
+                                Text("This will back up the selected device items to your server, then add them to the App album.")
+                            }
                         }
                 }
                 Section {
@@ -166,8 +171,11 @@ struct AddToAlbumSheet: View {
         .disabled(alreadyIn || isWorking || !isCurrentAccount)
     }
 
-    private func choose(_ action: Action) {
+    private func choose(_ action: Action, confirmsBackup: Bool = false) {
         guard !isWorking, isCurrentAccount else { return }
+        // A local new album confirms backup in its naming alert. Presenting a
+        // second dialog while that alert dismisses can drop the confirmation.
+        if confirmsBackup { consentGeneration = preparation?.accountGeneration }
         pendingAction = action
         creationNeedsReview = false
         if !localIdentifiers.isEmpty && consentGeneration != preparation?.accountGeneration {

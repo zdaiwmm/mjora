@@ -1562,7 +1562,7 @@ final class TimelineModel {
                     staleBucketIDs.remove(id)
                     markEphemeralIfLocked(resolution.assets)
                     let days = Self.groupByDay(
-                        resolution.assets,
+                        resolution.assets.map(assetProjection),
                         byUploadDate: filter.groupsByUploadDate
                     )
                     if sections[index].days != days {

@@ -178,8 +178,10 @@ final class PhotoCalendarSource {
     static func gridBucketID(for asset: Asset, in gridModel: TimelineModel) -> String? {
         if let exact = exactBucket(for: asset.id, in: gridModel) { return exact }
         if gridModel.filter.groupsByUploadDate {
-            guard asset.createdAt != nil else { return nil }
-            return gridModel.bucketID(containing: asset.uploadLocalDate)
+            guard let createdAt = asset.createdAt else { return nil }
+            // Remote Date Added indexes truncate createdAt in UTC. Device
+            // wall-clock presentation must not shift an unloaded photo's bucket.
+            return gridModel.bucketID(containing: createdAt)
         }
         return gridModel.bucketID(containing: asset.localDate)
     }

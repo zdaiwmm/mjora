@@ -719,9 +719,38 @@ final class AssetViewerOpeningChromeCache {
 
 }
 
+/// UIKit navigation/toolbar children can escape a hosting view's AX flag.
+/// A plain, noninteractive ancestor keeps the rendering tree out of AX while
+/// preserving its window, safe areas and snapshot rendering lifecycle.
+@MainActor
+private final class AssetViewerOpeningChromeContainerController: UIViewController {
+    private let renderer = AssetViewerOpeningChromeRendererController()
+
+    override func loadView() {
+        let container = UIView()
+        container.backgroundColor = .clear
+        container.isUserInteractionEnabled = false
+        container.isAccessibilityElement = false
+        container.accessibilityElementsHidden = true
+        container.accessibilityElements = []
+        view = container
+        addChild(renderer)
+        let renderingView = renderer.view!
+        renderingView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(renderingView)
+        NSLayoutConstraint.activate([
+            renderingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            renderingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            renderingView.topAnchor.constraint(equalTo: container.topAnchor),
+            renderingView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        renderer.didMove(toParent: self)
+    }
+}
+
 struct AssetViewerOpeningChromePrewarmer: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
-        AssetViewerOpeningChromeRendererController()
+        AssetViewerOpeningChromeContainerController()
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}

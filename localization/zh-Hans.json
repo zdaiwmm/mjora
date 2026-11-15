@@ -154,7 +154,7 @@
   "· %@": "· %@",
   "%lld uploads on %@": "%2$@上传了 %1$lld 个项目",
   "Less": "较少",
-  "More": "较多",
+  "More": "更多",
   "%@ upload%@": "%@ 次上传%@",
   "Edit Album": "编辑相册",
   "Description": "描述",
@@ -1882,5 +1882,10 @@
   "Tint": "色调",
   "Vertical Perspective": "垂直透视",
   "Warmth": "色温",
-  "Your account changed. Reopen Add to Album to continue.": "账号已更改，请重新打开“添加到相簿”以继续。"
+  "Your account changed. Reopen Add to Album to continue.": "账号已更改，请重新打开“添加到相簿”以继续。",
+  "Connect to your library to load capture dates.": "请连接图库以载入拍摄日期。",
+  "Couldn't Load Capture Dates": "无法载入拍摄日期",
+  "Couldn't locate this photo in the current sort. Try again.": "无法在当前排序中定位此照片，请重试。",
+  "Loading capture dates": "正在载入拍摄日期",
+  "The library session changed. Reopen the calendar overview.": "图库会话已更改，请重新打开日期概览。"
 }

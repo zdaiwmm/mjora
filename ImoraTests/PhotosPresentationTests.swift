@@ -5,6 +5,27 @@ import XCTest
 
 @MainActor
 final class PhotosPresentationTests: XCTestCase {
+    func testReleasingPeriodOwnerCannotLeaveItsPhotoOverTheNextScreen() async throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let cover = UIImageView(image: UIImage(systemName: "photo"))
+        cover.frame = CGRect(x: 16, y: 150, width: 358, height: 224)
+        controller.view.addSubview(cover)
+        var motion: PhotoPeriodMotion? = PhotoPeriodMotion()
+        motion?.register(cover, assetID: "period-owner-fixture", mode: .years)
+        motion?.begin(assetID: "period-owner-fixture", from: .years, to: .months,
+                      gridSource: nil, reduceMotion: false)
+        XCTAssertEqual(window.subviews.filter { $0.tag == PhotoPeriodMotion.replicaTag }.count, 1)
+        motion = nil
+        try await Task.sleep(for: .seconds(1.8))
+        XCTAssertTrue(window.subviews.allSatisfy { $0.tag != PhotoPeriodMotion.replicaTag },
+                      "The window must not retain a photo after its period owner is released")
+        XCTAssertEqual(cover.alpha, 1)
+    }
+
     func testLegacyCollectionLayoutMigratesPreviewWithoutLosingCustomization() throws {
         let legacy = Data(#"{"sectionIDs":["albums","pinned"],"collapsedIDs":["people"],"pinnedIDs":["album:family"]}"#.utf8)
         let layout = CollectionsLayout.decode(legacy)

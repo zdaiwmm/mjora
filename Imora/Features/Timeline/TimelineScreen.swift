@@ -37,6 +37,7 @@ private final class ScrollContext {
     var isIdle = true
     var viewportWidth: CGFloat = 0
     var viewportHeight: CGFloat = 0
+    var viewportShowsPhotoOverview = false
     /// the previous offset sample and when it was taken, for the velocity.
     var lastSampledOffsetY: CGFloat = 0
     var lastSampleTime: CFTimeInterval = 0
@@ -1040,7 +1041,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 gridController.scrollToTop()
             }
             .onChange(of: geometry.size.height, initial: true) { _, height in
-                periodMotion.cancel()
+                let overview = photosConfiguration != nil && photosConfiguration?.controls.mode != .all
+                // The overview hides Library's navigation bar. That expected
+                // height change belongs to the current photo transition.
+                if overview == scrollContext.viewportShowsPhotoOverview { periodMotion.cancel() }
+                scrollContext.viewportShowsPhotoOverview = overview
                 scrollContext.viewportHeight = height
                 updateVisibleRows()
             }
@@ -1142,6 +1147,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // where they are instead of sliding away with it. only the tab bar
         // leaves, for the bottom controls, like the photos app.
         .toolbar { timelineToolbar }
+        .toolbarVisibility(photosConfiguration != nil && photosConfiguration?.controls.mode != .all ? .hidden : .automatic,
+                           for: .navigationBar)
         .toolbarVisibility(isSelecting || usesCompactPhotosNavigation ? .hidden : .automatic, for: .tabBar)
         .toolbarBackground(photosConfiguration == nil ? .automatic : .hidden, for: .navigationBar)
         .toolbarColorScheme(extendsPhotosBehindBars ? .dark : nil, for: .navigationBar)
@@ -1161,7 +1168,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
         .overlay {
             if let configuration = photosConfiguration, configuration.controls.mode != .all {
-                PhotoPeriodsView(model: model, controls: configuration.controls, motion: periodMotion)
+                PhotoCalendarOverview(gridModel: model, controls: configuration.controls, motion: periodMotion)
                     .transition(.identity)
             }
         }
@@ -1372,10 +1379,19 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 controls.isRestoring = false
             }
         }
-        guard let bucketID = request.bucketID else {
+        guard let requestedBucketID = request.bucketID else {
             gridController.scrollToEnd()
             return
         }
+        let bucketID: String
+        if model.filter.groupsByUploadDate, let anchor = controls.periodAnchor,
+           anchor.asset.id == request.assetID {
+            guard let mapped = PhotoCalendarSource.gridBucketID(for: anchor.asset, in: model) else {
+                ErrorToastCenter.shared.show(String(localized: "Couldn't locate this photo in the current sort. Try again."))
+                return
+            }
+            bucketID = mapped
+        } else { bucketID = requestedBucketID }
         await model.loadBucket(bucketID)
         guard controls.scrollRequest == request,
               let assetID = request.assetID ?? model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,

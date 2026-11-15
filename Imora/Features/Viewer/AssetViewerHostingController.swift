@@ -1285,6 +1285,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         if queueBehindClosingViewer(on: presenter) { return }
         guard presenter.presentedViewController == nil else { return }
         guard beginPresentation() else { return }
+        presenter.viewIfLoaded?.window?.endEditing(true)
         displayState.mode = .viewer
         phase = .presenting
         presenter.present(self, animated: true) { [weak self] in
@@ -1295,6 +1296,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
 
     func presentAfterContextCommit(from presenter: UIViewController) {
         guard displayState.mode == .viewer, beginPresentation() else { return }
+        presenter.viewIfLoaded?.window?.endEditing(true)
         phase = .presenting
         if canPresent(from: presenter) {
             attachAfterContextCommit(to: presenter)

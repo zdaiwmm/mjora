@@ -64,6 +64,25 @@ final class PhotoCalendarSourceTests: XCTestCase {
         XCTAssertNil(PhotoCalendarSource.gridBucketID(for: Self.asset(id: "unknown", createdAt: Self.date("2030-02-02T12:00:00Z")), in: grid))
     }
 
+    func testUnloadedAddedPhotoUsesServerUTCMonthAcrossDeviceTimezoneBoundaries() async throws {
+        let originalZone = NSTimeZone.default
+        defer { NSTimeZone.default = originalZone }
+        let server = try LocalHTTPServer { request in Self.reply(request) }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "calendar-boundary-\(UUID())")
+        defer { client.invalidate() }
+        let grid = TimelineModel(filter: TimelineFilter(albumId: UUID().uuidString, orderBy: "createdAt"))
+        grid.attach(client); await grid.load()
+        defer { grid.suspendForViewer() }
+        for (zone, timestamp) in [("Asia/Shanghai", "2026-11-30T20:00:00Z"),
+                                  ("America/Los_Angeles", "2026-11-01T02:00:00Z")] {
+            NSTimeZone.default = try XCTUnwrap(TimeZone(identifier: zone))
+            let unloaded = Self.asset(id: "unloaded-boundary", createdAt: Self.date(timestamp))
+            XCTAssertEqual(PhotoCalendarSource.gridBucketID(for: unloaded, in: grid), Self.addedMonth,
+                           "Server Date Added buckets use UTC months, including unloaded photos at a device-local month boundary in \(zone)")
+        }
+    }
+
     func testMonthLoadingRequiresEveryRequestedBucketRatherThanOnlyTheCover() async throws {
         let second = "2024-04-01T00:00:00.000Z"
         let server = try LocalHTTPServer { request in
