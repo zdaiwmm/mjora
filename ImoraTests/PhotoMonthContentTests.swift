@@ -60,6 +60,17 @@ final class PhotoMonthContentTests: XCTestCase {
         XCTAssertEqual(content.days.count, 1, "Known days remain available without pretending the unknown bucket is empty")
     }
 
+    func testEveryMissingFragmentIsKnownBeforeChoosingADayCount() throws {
+        let loaded = section("loaded", [photo("one", "2026-04-15T08:00:00Z")])
+        let unknown = ["z", "a", "m"].map {
+            TimelineSection(id: "2026-04-01-\($0)", monthTitle: "April", count: 2, days: nil)
+        }
+        let content = try content([loaded] + unknown)
+        XCTAssertEqual(content.missingBucketIDs, unknown.map(\.id).sorted())
+        XCTAssertNil(content.completeDayCount)
+        XCTAssertEqual(content.days.count, 1)
+    }
+
     func testRemovedBucketDoesNotBecomeCompleteEmptyContent() throws {
         let sections = [section("a", [photo("one", "2026-04-15T08:00:00Z")])]
         let period = try XCTUnwrap(PhotoPeriod.months(in: sections).first)
