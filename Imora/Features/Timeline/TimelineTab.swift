@@ -23,7 +23,10 @@ struct TimelineTab: View {
             supportsDateAdded: source != "local" && [.all, .favorites].contains(controls.mediaFilter),
             onAccount: { showSettings = true }, onBackup: { showBackupSettings = true },
             onNotifications: { NotificationRouter.shared.openInbox() },
-            onSearch: { router.searchRequested = true })
+            onSearch: { router.searchRequested = true },
+            pendingFavoriteCount: session.favorites?.pendingCount ?? 0,
+            favoriteSyncFailed: session.favorites?.syncFailed ?? false,
+            onRetryFavoriteSync: { Task { await session.favorites?.flush() } })
     }
 
     var body: some View {
@@ -42,6 +45,8 @@ struct TimelineTab: View {
                 }
             }
             .onChange(of: controls.mediaFilter) { _, _ in
+                controls.periodAnchor = nil
+                controls.scrollRequest = nil
                 controls.mode = .all
                 controls.browsingPast = false
                 controls.scrollOffset = nil

@@ -784,7 +784,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         if isSelecting, !isPicking {
             if let configuration = photosConfiguration {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded)
+                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded, source: configuration.source.wrappedValue)
                 }
             }
             if filter.isTrashed != true {
@@ -804,7 +804,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         } else {
             if let configuration = photosConfiguration {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded)
+                    PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded, source: configuration.source.wrappedValue)
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
             }

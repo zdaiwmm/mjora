@@ -28,6 +28,9 @@ struct PhotosToolbarConfiguration {
     var onBackup: () -> Void
     var onNotifications: () -> Void
     var onSearch: () -> Void
+    var pendingFavoriteCount = 0
+    var favoriteSyncFailed = false
+    var onRetryFavoriteSync: () -> Void = {}
 }
 
 struct PhotosSourceMenu: View {
@@ -53,6 +56,15 @@ struct PhotosSourceMenu: View {
                     Text(status.completionText(backup.summary))
                 }
             }
+            if configuration.pendingFavoriteCount > 0 {
+                Section("Favorite Sync") {
+                    Text("\(configuration.pendingFavoriteCount) favorites waiting to sync")
+                    if configuration.favoriteSyncFailed {
+                        Button("Retry Favorite Sync", action: configuration.onRetryFavoriteSync)
+                            .accessibilityIdentifier("photos-retry-favorite-sync")
+                    }
+                }
+            }
             Section {
                 Button(action: configuration.onAccount) {
                     Label("Account & Settings", systemImage: "person.crop.circle")
@@ -71,6 +83,11 @@ struct PhotosSourceMenu: View {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(title).font(.largeTitle.bold()).minimumScaleFactor(0.7).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                    if configuration.pendingFavoriteCount > 0 {
+                        Image(systemName: configuration.favoriteSyncFailed ? "exclamationmark.icloud" : "arrow.triangle.2.circlepath.icloud")
+                            .font(.caption)
+                            .accessibilityLabel("Favorites waiting to sync")
+                    }
                     if unreadCount > 0 {
                         Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.red)
                     }
@@ -99,6 +116,7 @@ struct PhotosSourceMenu: View {
 struct PhotosBrowseMenu: View {
     @Bindable var controls: PhotosGridControls
     var supportsDateAdded = true
+    var source = "cloud"
 
     var body: some View {
         Menu {
@@ -114,6 +132,20 @@ struct PhotosBrowseMenu: View {
                     Label("Favorites", systemImage: "heart").tag(PhotoMediaFilter.favorites)
                 }
                 .pickerStyle(.inline)
+                Picker("Library Filters", selection: $controls.mediaFilter) {
+                    ForEach([PhotoMediaFilter.edited, .notInAlbum, .screenshots]) { type in
+                        Label(type.title, systemImage: type.symbol).tag(type)
+                            .disabled(!type.isAvailable(onDevice: source == "local"))
+                    }
+                }
+                .pickerStyle(.inline)
+                if source != "local" {
+                    Text("Screenshots are available On Device. This server does not provide screenshot classification.")
+                }
+                if controls.mediaFilter != .all {
+                    Button("Reset Filters") { controls.mediaFilter = .all }
+                        .accessibilityIdentifier("photos-reset-filters")
+                }
                 Menu("Media Types", systemImage: "photo.on.rectangle") {
                     Picker("Media Types", selection: $controls.mediaFilter) {
                         ForEach([PhotoMediaFilter.photos, .videos, .livePhotos]) { type in

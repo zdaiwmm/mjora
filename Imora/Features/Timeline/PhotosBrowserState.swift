@@ -15,7 +15,7 @@ nonisolated enum PhotoBrowseMode: String, CaseIterable, Identifiable {
 }
 
 nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
-    case all, favorites, photos, videos, livePhotos
+    case all, favorites, photos, videos, livePhotos, edited, notInAlbum, screenshots
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -24,6 +24,9 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .photos: String(localized: "Photos")
         case .videos: String(localized: "Videos")
         case .livePhotos: String(localized: "Live Photos")
+        case .edited: String(localized: "Edited")
+        case .notInAlbum: String(localized: "Not in an Album")
+        case .screenshots: String(localized: "Screenshots")
         }
     }
     var symbol: String {
@@ -33,8 +36,27 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .photos: "photo"
         case .videos: "video"
         case .livePhotos: "livephoto"
+        case .edited: "slider.horizontal.3"
+        case .notInAlbum: "rectangle.stack.badge.minus"
+        case .screenshots: "camera.viewfinder"
         }
     }
+    func isAvailable(onDevice: Bool) -> Bool { self != .screenshots || onDevice }
+
+    var cloudSearchFilter: SearchFilter {
+        var filter = SearchFilter()
+        filter.sortOrder = .newest
+        switch self {
+        case .photos: filter.mediaType = .image
+        case .videos: filter.mediaType = .video
+        case .livePhotos: filter.mediaType = .image; filter.isMotion = true
+        case .favorites: filter.isFavorite = true
+        case .notInAlbum: filter.notInAlbum = true
+        case .all, .edited, .screenshots: break
+        }
+        return filter
+    }
+
     func includes(_ asset: Asset) -> Bool {
         switch self {
         case .all: true
@@ -42,6 +64,9 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .photos: asset.isImage
         case .videos: asset.isVideo
         case .livePhotos: asset.isLivePhoto
+        case .edited: asset.isEdited == true
+        case .notInAlbum: asset.isInAppAlbum == false
+        case .screenshots: asset.isScreenshot == true
         }
     }
 }

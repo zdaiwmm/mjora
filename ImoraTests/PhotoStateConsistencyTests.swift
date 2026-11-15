@@ -35,8 +35,12 @@ final class PhotoStateConsistencyTests: XCTestCase {
             asset.localOffsetHours = offset
             let tokens = PhotoDatePresentation.searchDates(wallClock: asset.localDate)
             XCTAssertTrue(tokens.contains(date), tokens.description)
-            XCTAssertTrue(PhotoDatePresentation.dateTime(wallClock: asset.localDate,
-                locale: Locale(identifier: "zh_CN")).contains(time))
+            let label = PhotoDatePresentation.dateTime(wallClock: asset.localDate, locale: Locale(identifier: "zh_CN"))
+            let hour = try XCTUnwrap(Int(time.prefix(2)))
+            let minute = String(time.suffix(2))
+            let optionalZero = hour < 10 ? "0?" : ""
+            let pattern = "(?<![0-9])\(optionalZero)\(hour):\(minute)(?![0-9])"
+            XCTAssertNotNil(label.range(of: pattern, options: .regularExpression), label)
         }
     }
 
