@@ -269,7 +269,7 @@ private struct PhotoMonthSection: View {
             if !snapshot.isComplete {
                 if loadingID != nil || !hasAttemptedLoad {
                     ProgressView(String(localized: "Loading photos"))
-                        .frame(maxWidth: .infinity, minHeight: snapshot.days.isEmpty ? layout.photoSize.height : 44)
+                        .frame(maxWidth: .infinity, minHeight: layout.photoSize.height)
                         .accessibilityIdentifier("photos-period-loading-\(period.id)")
                 } else {
                     VStack(spacing: 8) {
@@ -277,7 +277,7 @@ private struct PhotoMonthSection: View {
                         Button("Retry") { retry += 1 }
                             .accessibilityIdentifier("photos-period-retry-\(period.id)")
                     }
-                    .frame(maxWidth: .infinity, minHeight: snapshot.days.isEmpty ? layout.photoSize.height : 60)
+                    .frame(maxWidth: .infinity, minHeight: layout.photoSize.height)
                 }
             } else if snapshot.days.isEmpty {
                 Text("No photos yet")
@@ -302,30 +302,33 @@ private struct PhotoMonthSection: View {
 
     @ViewBuilder
     private func monthPhotos(_ snapshot: PhotoMonthContent) -> some View {
-        // Temporary complete-day presentation. Native multi-day composition is
-        // intentionally a separate layout call site pending diverse-photo AX
-        // evidence; this full-width stack is not claimed as native parity.
-        VStack(alignment: .leading, spacing: PhotoPeriodCardLayout.monthHeadingGap) {
+        // A partial bucket cannot determine this month's topology. Keep the
+        // honest loading/retry placeholder until the real day count is known.
+        let composition = PhotoMonthComposition(dayCount: snapshot.completeDayCount,
+                                                contentWidth: layout.photoSize.width)
+        PhotoMonthCompositionLayout(composition: composition) {
             ForEach(Array(snapshot.days.enumerated()), id: \.element.id) { index, day in
-                dayButton(day, isFirst: index == 0)
-                    .id("photos-period-day-\(day.id)")
-                    .onGeometryChange(for: Bool.self) { geometry in
-                        geometry.size.width > 0 && geometry.size.height > 0
-                    } action: { ready in
-                        let target = "photos-period-day-\(day.id)"
-                        if ready {
-                            laidOutDays.insert(target)
-                            reportReachability(of: target)
-                        } else {
-                            laidOutDays.remove(target)
+                if composition.frames.indices.contains(index) {
+                    dayButton(day, isFirst: index == 0, size: composition.frames[index].size)
+                        .id("photos-period-day-\(day.id)")
+                        .onGeometryChange(for: Bool.self) { geometry in
+                            geometry.size.width > 0 && geometry.size.height > 0
+                        } action: { ready in
+                            let target = "photos-period-day-\(day.id)"
+                            if ready {
+                                laidOutDays.insert(target)
+                                reportReachability(of: target)
+                            } else {
+                                laidOutDays.remove(target)
+                            }
                         }
-                    }
-                    .onAppear {
-                        let target = "photos-period-day-\(day.id)"
-                        appearedDays.insert(target)
-                        reportReachability(of: target)
-                    }
-                    .onDisappear { appearedDays.remove("photos-period-day-\(day.id)") }
+                        .onAppear {
+                            let target = "photos-period-day-\(day.id)"
+                            appearedDays.insert(target)
+                            reportReachability(of: target)
+                        }
+                        .onDisappear { appearedDays.remove("photos-period-day-\(day.id)") }
+                }
             }
         }
         .accessibilityElement(children: .contain)
@@ -338,14 +341,14 @@ private struct PhotoMonthSection: View {
         onDayReachable(ticket, target)
     }
 
-    private func dayButton(_ day: PhotoMonthDay, isFirst: Bool) -> some View {
+    private func dayButton(_ day: PhotoMonthDay, isFirst: Bool, size: CGSize) -> some View {
         Button {
             let offset = controls.periodAnchor?.asset.id == day.cover.id ? controls.periodAnchor?.scrollOffset : nil
             controls.periodAnchor = PhotoPeriodAnchor(asset: day.cover, bucketID: day.coverBucketID, scrollOffset: offset)
             controls.reveal(bucketID: day.coverBucketID, assetID: day.cover.id)
         } label: {
             Color(.secondarySystemBackground)
-                .frame(width: layout.photoSize.width, height: layout.photoSize.height)
+                .frame(width: size.width, height: size.height)
                 .overlay {
                     PhotoPeriodCoverSurface(asset: day.cover, mode: .months, session: session, motion: motion)
                 }
@@ -388,6 +391,24 @@ private struct PhotoMonthSection: View {
         for id in content.missingBucketIDs {
             guard !Task.isCancelled else { return }
             await model.loadBucket(id)
+        }
+    }
+}
+
+/// Place actual subviews at the tested frames so photo geometry, hit targets
+/// and ScrollViewReader anchors all use the same positions.
+private struct PhotoMonthCompositionLayout: Layout {
+    let composition: PhotoMonthComposition
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        composition.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (index, subview) in subviews.enumerated() where composition.frames.indices.contains(index) {
+            let frame = composition.frames[index]
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(frame.size))
         }
     }
 }
