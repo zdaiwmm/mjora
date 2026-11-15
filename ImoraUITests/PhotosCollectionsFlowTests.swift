@@ -57,6 +57,99 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         item.tap()
     }
 
+    func testPhotoEditorHistoryAspectPanelAndSaveReturn() throws {
+        let app = try launch()
+        app.buttons["photos-source-menu"].tap()
+        app.buttons["云端照片"].tap()
+        let tiles = app.buttons.matching(identifier: "asset-tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
+        try XCTUnwrap(tiles.allElementsBoundByIndex.first {
+            $0.isHittable && $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140
+        }).tap()
+        let edit = app.buttons["viewer-edit"].firstMatch
+        XCTAssertTrue(edit.waitForExistence(timeout: 10)); edit.tap()
+        let aspect = app.buttons["edit-aspect-ratio"]
+        XCTAssertTrue(aspect.waitForExistence(timeout: 15))
+        snapshot(app, "editor-crop-tools")
+        aspect.tap()
+        let square = app.buttons.matching(NSPredicate(format: "label IN %@", ["SQUARE", "正方形"])).firstMatch
+        XCTAssertTrue(square.waitForExistence(timeout: 4)); square.tap()
+        snapshot(app, "editor-aspect-ratios")
+        aspect.tap()
+        let rotate = app.buttons.matching(NSPredicate(format: "label IN %@", ["Rotate Left", "向左旋转"])).firstMatch
+        XCTAssertTrue(rotate.waitForExistence(timeout: 4)); rotate.tap()
+        let done = app.buttons["edit-done"]
+        XCTAssertTrue(done.isEnabled)
+        app.buttons["edit-more"].tap()
+        let undo = app.buttons.matching(NSPredicate(format: "label IN %@", ["Undo", "撤销"])).firstMatch
+        XCTAssertTrue(undo.waitForExistence(timeout: 4)); undo.tap()
+        app.buttons["edit-more"].tap()
+        let redo = app.buttons.matching(NSPredicate(format: "label IN %@", ["Redo", "重做"])).firstMatch
+        XCTAssertTrue(redo.waitForExistence(timeout: 4)); redo.tap()
+        XCTAssertTrue(done.isEnabled)
+        app.buttons["edit-more"].tap()
+        let revert = app.buttons.matching(NSPredicate(format: "label IN %@", ["Revert to Original", "还原为原始版本"])).firstMatch
+        XCTAssertTrue(revert.waitForExistence(timeout: 4)); revert.tap()
+        snapshot(app, "editor-revert-confirmation")
+        // Dismissing the confirmation preserves the unsaved geometry.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
+        XCTAssertTrue(done.isEnabled)
+        done.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["viewer-close"].firstMatch.waitForExistence(timeout: 8))
+        snapshot(app, "editor-save-return")
+        edit.tap()
+        XCTAssertTrue(app.buttons["edit-more"].waitForExistence(timeout: 15))
+        app.buttons["edit-more"].tap()
+        XCTAssertTrue(revert.waitForExistence(timeout: 4)); revert.tap()
+        // Confirming restoration stays in the editor until Done accepts it.
+        XCTAssertTrue(revert.waitForExistence(timeout: 4)); revert.tap()
+        XCTAssertTrue(done.isEnabled)
+        snapshot(app, "editor-reverted-original")
+        done.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 15))
+        edit.tap()
+        XCTAssertTrue(aspect.waitForExistence(timeout: 15))
+        rotate.tap()
+        app.buttons["edit-cancel"].tap()
+        let discard = app.buttons.matching(NSPredicate(format: "label IN %@", ["Discard Changes", "放弃更改"])).firstMatch
+        XCTAssertTrue(discard.waitForExistence(timeout: 4)); discard.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+        app.buttons["viewer-close"].firstMatch.tap()
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10))
+    }
+
+    func testPinchColumnTransitionKeepsTilesUsableAcrossRepeatedGestures() throws {
+        let app = try launch()
+        app.buttons["photos-source-menu"].tap()
+        app.buttons["云端照片"].tap()
+        let tiles = app.buttons.matching(identifier: "asset-tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
+        let grid = app.scrollViews.firstMatch
+        func tileWidth() -> CGFloat {
+            tiles.allElementsBoundByIndex.first {
+                $0.isHittable && $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140
+            }?.frame.width ?? 0
+        }
+        // First establish the small-tile endpoint, then test a real reflow.
+        grid.pinch(withScale: 0.5, velocity: -1)
+        let small = tileWidth()
+        grid.pinch(withScale: 1.8, velocity: 1)
+        let large = tileWidth()
+        XCTAssertGreaterThan(large, small + 15)
+        snapshot(app, "grid-pinch-enlarged")
+        grid.pinch(withScale: 0.65, velocity: -1)
+        XCTAssertLessThan(tileWidth(), large)
+        grid.pinch(withScale: 1.4, velocity: 1)
+        try XCTUnwrap(tiles.allElementsBoundByIndex.first {
+            $0.isHittable && $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140
+        }).tap()
+        XCTAssertTrue(app.buttons["viewer-close"].firstMatch.waitForExistence(timeout: 8))
+        app.buttons["viewer-close"].firstMatch.tap()
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 8))
+        snapshot(app, "grid-pinch-return")
+    }
+
     func testNativePhotosMenusSelectionAndSourceSwitch() throws {
         let app = try launch()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))

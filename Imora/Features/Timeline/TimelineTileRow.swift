@@ -38,6 +38,7 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
     private var tiles: [TimelineTileView] = []
     /// the column of each tile, in the same order.
     private var columns: [Int] = []
+    var zoomTiles: [TimelineTileView] { tiles }
     private var side: CGFloat = 0
     private let tap = UITapGestureRecognizer()
     private weak var pinch: UIGestureRecognizer?
@@ -289,6 +290,15 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
 /// `updateProperties`, where uikit tracks observable reads, so a change in
 /// either reaches only the tiles that read it.
 final class TimelineTileView: UIView {
+    /// A lightweight render surface sharing the decoded image with the tile.
+    /// Never re-encode a thumbnail merely to animate it between row parents.
+    func makeZoomReplica() -> UIView {
+        let replica = UIImageView(image: imageView.image)
+        replica.backgroundColor = imageView.backgroundColor
+        replica.contentMode = imageView.contentMode
+        replica.clipsToBounds = true
+        return replica
+    }
     /// read by the selection slide's hit test.
     var isSelected = false
     var isSelectable = false

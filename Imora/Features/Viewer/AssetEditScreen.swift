@@ -175,7 +175,12 @@ nonisolated struct AssetEditProjection: Equatable, Sendable {
     let imageData: Data
 }
 
-enum AssetEditPreviewRenderer {
+nonisolated enum AssetEditPreviewRenderer {
+    @concurrent
+    static func projection(_ image: UIImage, state: EditTransform.State, adjust: ImageAdjust) async -> Data? {
+        guard let adjusted = ImageAdjustRenderer.render(image, adjust: adjust) else { return nil }
+        return render(adjusted, state: state)
+    }
     static func render(_ image: UIImage, state: EditTransform.State) -> Data? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -290,6 +295,7 @@ private struct EditSnapshot: Equatable {
     var disabledTools: Set<AdjustTool>
     var aspect: EditAspect
     var isPortrait: Bool
+    var removesPreservedEdits: Bool
 }
 
 /// photos' editor over the server-side edit list: crop, rotate and mirror on
@@ -338,6 +344,10 @@ struct AssetEditScreen: View {
     @State private var aspect = EditAspect.freeform
     @State private var isPortrait = false
     @State private var isSaving = false
+    @State private var showsAspectRatios = false
+    @State private var showsRevertConfirmation = false
+    @State private var removesPreservedEdits = false
+    @Namespace private var canvasTransition
     @State private var tool = EditTool.crop
     @State private var adjustTool = AdjustTool.exposure
     /// tools tapped off, which keep their amount but stop applying it.
@@ -345,6 +355,7 @@ struct AssetEditScreen: View {
     @State private var isScrubbing = false
     /// held down on the picture to see it unadjusted.
     @State private var showsOriginal = false
+    @GestureState private var holdsOriginal = false
     /// whether this photo can take an adjustment on this server.
     @State private var canAdjust = false
     @State private var adjust = ImageAdjust.neutral
@@ -366,10 +377,13 @@ struct AssetEditScreen: View {
         return result
     }
 
-    private var hasChanges: Bool { state != initialState || effectiveAdjust != initialAdjust }
+    private var hasChanges: Bool { state != initialState || effectiveAdjust != initialAdjust || removesPreservedEdits }
+    private var editAnimation: Animation? { reduceMotion ? nil : .smooth(duration: 0.28) }
+    private var canUndo: Bool { !undoStack.isEmpty || committed.map { $0 != snapshot } == true }
 
     private var snapshot: EditSnapshot {
-        EditSnapshot(state: state, adjust: adjust, disabledTools: disabledTools, aspect: aspect, isPortrait: isPortrait)
+        EditSnapshot(state: state, adjust: adjust, disabledTools: disabledTools, aspect: aspect,
+                     isPortrait: isPortrait, removesPreservedEdits: removesPreservedEdits)
     }
 
     var body: some View {
@@ -408,6 +422,13 @@ struct AssetEditScreen: View {
         .interactiveDismissDisabled(hasChanges || isSaving)
         .task { await load() }
         .onChange(of: snapshot) { scheduleRecord() }
+        .onDisappear { recordTask?.cancel() }
+        .onChange(of: tool) { _, _ in
+            showsOriginal = false
+            showsAspectRatios = false
+            isScrubbing = false
+            recordCurrentEdit()
+        }
     }
 
     // MARK: - bars
@@ -434,7 +455,7 @@ struct AssetEditScreen: View {
                         rotateLeft()
                     }
                 } else {
-                    EditorGlassGlyph(systemImage: "arrow.uturn.backward", label: String(localized: "Undo"), isEnabled: !undoStack.isEmpty) {
+                    EditorGlassGlyph(systemImage: "arrow.uturn.backward", label: String(localized: "Undo"), isEnabled: canUndo) {
                         undo()
                     }
                     EditorGlassGlyph(systemImage: "arrow.uturn.forward", label: String(localized: "Redo"), isEnabled: !redoStack.isEmpty) {
@@ -448,8 +469,11 @@ struct AssetEditScreen: View {
             EditorGlassGroup {
                 if tool == .crop {
                     EditorGlassGlyph(systemImage: "aspectratio", label: String(localized: "Aspect Ratio"), isEnabled: canCrop) {
-                        if aspect == .freeform { selectAspect(.original) }
+                        withAnimation(editAnimation) { showsAspectRatios.toggle() }
                     }
+                    .tint(showsAspectRatios ? EditorAppearance.accent : .primary)
+                    .accessibilityIdentifier("edit-aspect-ratio")
+                    .accessibilityAddTraits(showsAspectRatios ? .isSelected : [])
                 }
                 moreMenu
             }
@@ -468,10 +492,12 @@ struct AssetEditScreen: View {
             // photos' auto straighten turns into reset once the crop moves.
             // the servers only rotate by quarter turns, so only reset stays.
             Button {
-                withAnimation(.smooth(duration: 0.3)) {
+                recordCurrentEdit()
+                withAnimation(editAnimation) {
                     state = EditTransform.State()
                     aspect = .freeform
                 }
+                recordCurrentEdit()
             } label: {
                 EditorToolLabel(text: String(localized: "Reset"))
             }
@@ -484,13 +510,12 @@ struct AssetEditScreen: View {
 
     private var moreMenu: some View {
         Menu {
+            Button("Undo", systemImage: "arrow.uturn.backward", action: undo)
+                .disabled(!canUndo)
+            Button("Redo", systemImage: "arrow.uturn.forward", action: redo)
+                .disabled(redoStack.isEmpty)
             Button("Revert to Original", systemImage: "arrow.uturn.backward.circle") {
-                withAnimation(.smooth(duration: 0.3)) {
-                    state = EditTransform.State()
-                    aspect = .freeform
-                }
-                adjust = .neutral
-                disabledTools = []
+                showsRevertConfirmation = true
             }
             .disabled(!hadServerEdits && initialAdjust.isNeutral && !hasChanges)
         } label: {
@@ -498,6 +523,22 @@ struct AssetEditScreen: View {
         }
         .foregroundStyle(.primary)
         .accessibilityLabel("More")
+        .accessibilityIdentifier("edit-more")
+        .confirmationDialog("Revert to Original", isPresented: $showsRevertConfirmation, titleVisibility: .visible) {
+            Button("Revert to Original", role: .destructive) {
+                recordCurrentEdit()
+                withAnimation(editAnimation) {
+                    state = EditTransform.State()
+                    aspect = .freeform
+                    adjust = .neutral
+                    disabledTools = []
+                    removesPreservedEdits = !preservedEdits.isEmpty
+                    showsOriginal = false
+                }
+                recordCurrentEdit()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     // MARK: - layout
@@ -518,30 +559,31 @@ struct AssetEditScreen: View {
                     .padding(.top, 10)
                 toolPane
                     .frame(height: 141, alignment: .top)
-                if canAdjust {
-                    EditorTabBar(items: tabItems, selection: $tool)
-                } else {
-                    Color.clear.frame(height: EditorTabBar<EditTool>.height)
-                }
+                EditorTabBar(items: tabItems, selection: $tool)
             }
             .padding(.bottom, -4)
             .editorPrimaryBarRoom()
         }
         .allowsHitTesting(!isSaving)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: tool)
-        .onChange(of: effectiveAdjust) { renderAdjust() }
+        .onChange(of: effectiveAdjust) {
+            showsOriginal = false
+            renderAdjust()
+        }
     }
 
     private var tabItems: [EditorTabBar<EditTool>.Item] {
         [
-            .init(tab: .adjust, title: String(localized: "Adjust"), systemImage: "dial.medium"),
+            .init(tab: .adjust, title: String(localized: "Adjust"), systemImage: "dial.low", isEnabled: canAdjust),
             .init(tab: .crop, title: String(localized: "Crop"), systemImage: "crop.rotate"),
         ]
     }
 
     private func canvas(_ image: UIImage) -> some View {
         GeometryReader { proxy in
-            let rotated = state.normalizedRotation.truncatingRemainder(dividingBy: 180) != 0
+            let comparingOriginal = tool == .adjust && (showsOriginal || holdsOriginal)
+            let displayedState = comparingOriginal ? EditTransform.State() : state
+            let rotated = displayedState.normalizedRotation.truncatingRemainder(dividingBy: 180) != 0
             let available = CGSize(
                 width: max(proxy.size.width - 20, 1),
                 height: max(proxy.size.height, 1)
@@ -549,7 +591,7 @@ struct AssetEditScreen: View {
             let fitBox = rotated
                 ? CGSize(width: available.height, height: available.width)
                 : available
-            let shown = showsOriginal ? image : (adjustedImage ?? image)
+            let shown = comparingOriginal ? image : (adjustedImage ?? image)
 
             Group {
                 if tool == .crop {
@@ -561,10 +603,12 @@ struct AssetEditScreen: View {
                         isEnabled: canCrop && !isSaving
                     )
                     .frame(width: canvasSize.width, height: canvasSize.height)
+                    .matchedGeometryEffect(id: "photo", in: canvasTransition)
+                    .transition(.opacity)
                 } else {
                     // outside the crop tool photos shows the crop as the
                     // picture itself.
-                    let crop = state.crop
+                    let crop = displayedState.crop
                     let cropSize = CGSize(
                         width: image.size.width * crop.width,
                         height: image.size.height * crop.height
@@ -580,18 +624,34 @@ struct AssetEditScreen: View {
                         .offset(x: -crop.minX * full.width, y: -crop.minY * full.height)
                         .frame(width: size.width, height: size.height, alignment: .topLeading)
                         .clipped()
+                        .matchedGeometryEffect(id: "photo", in: canvasTransition)
+                        .transition(.opacity)
                 }
             }
-            .scaleEffect(x: state.flipH ? -1 : 1, y: state.flipV ? -1 : 1)
-            .rotationEffect(.degrees(state.rotation))
+            .scaleEffect(x: displayedState.flipH ? -1 : 1, y: displayedState.flipV ? -1 : 1)
+            .rotationEffect(.degrees(displayedState.rotation))
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            // holding the picture shows it before the adjustment.
-            .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 20) {
-            } onPressingChanged: { pressing in
-                guard tool == .adjust else { return }
-                showsOriginal = pressing
+            .simultaneousGesture(originalComparisonGesture, isEnabled: tool == .adjust)
+            .overlay(alignment: .top) {
+                if comparingOriginal {
+                    EditorToolLabel(text: String(localized: "ORIGINAL"))
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
             }
         }
+    }
+
+    private var originalComparisonGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.15, maximumDistance: 20)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .exclusively(before: TapGesture())
+            .updating($holdsOriginal) { value, held, _ in
+                if case .first(.second(true, _)) = value { held = true }
+            }
+            .onEnded { value in
+                if case .second = value { showsOriginal.toggle() }
+            }
     }
 
     @ViewBuilder private var toolPane: some View {
@@ -622,6 +682,7 @@ struct AssetEditScreen: View {
                                     value: item.hasSlider ? item.value(in: adjust) : nil,
                                     isActive: item == .invert && adjust.invert && !disabledTools.contains(item),
                                     isEnabled: !disabledTools.contains(item),
+                                    isSelected: item == adjustTool,
                                     showsValue: isScrubbing && item == adjustTool
                                 )
                             }
@@ -652,14 +713,23 @@ struct AssetEditScreen: View {
                     }
                 ),
                 isDimmed: disabledTools.contains(adjustTool)
-            ) { isScrubbing = $0 }
+            ) {
+                isScrubbing = $0
+                if !$0 { recordCurrentEdit() }
+            }
             .padding(.horizontal, 15.5)
             .padding(.top, 10)
             .opacity(adjustTool.hasSlider ? 1 : 0)
             .allowsHitTesting(adjustTool.hasSlider)
+            .accessibilityLabel(adjustTool.title)
+            .accessibilityIdentifier("edit-adjust-ruler")
+            .id(adjustTool)
+            .transition(.opacity)
         }
         .overlay(alignment: .top) {
             EditorToolLabel(text: adjustTool.title)
+                .id(adjustTool)
+                .transition(.opacity)
                 .offset(y: -24.33)
                 .allowsHitTesting(false)
         }
@@ -669,10 +739,12 @@ struct AssetEditScreen: View {
     /// again, keeping its amount, as `-[PUAdjustmentsViewController didToggleCell:]`
     /// does. invert has no slider, so a tap flips it.
     private func tapTool(_ item: AdjustTool) {
+        showsOriginal = false
         guard item == adjustTool else {
-            withAnimation(.smooth(duration: 0.25)) { adjustTool = item }
+            withAnimation(editAnimation) { adjustTool = item }
             return
         }
+        recordCurrentEdit()
         if item == .invert {
             disabledTools.remove(item)
             adjust.invert.toggle()
@@ -684,6 +756,7 @@ struct AssetEditScreen: View {
             }
         }
         toolFeedback.selectionChanged()
+        recordCurrentEdit()
     }
 
     // MARK: - crop
@@ -691,6 +764,36 @@ struct AssetEditScreen: View {
     /// photos shows its aspect ratios where the straighten dials sit. the
     /// servers only rotate by quarter turns, so the ratios stay.
     private var cropPane: some View {
+        Group {
+            if showsAspectRatios {
+                aspectRatioPane
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            } else {
+                // Only tools the server can persist are offered. The aspect
+                // tray is revealed by its top-bar control, as in Photos.
+                HStack(spacing: 28) {
+                    cropAction("rotate.left", title: String(localized: "Rotate Left"), action: rotateLeft)
+                    cropAction("arrow.left.and.right.righttriangle.left.righttriangle.right", title: String(localized: "Flip"), action: flip)
+                }
+                .padding(.top, 28)
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private func cropAction(_ symbol: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                EditorToolButton(systemImage: symbol, value: 0)
+                Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!canCrop)
+        .accessibilityLabel(title)
+    }
+
+    private var aspectRatioPane: some View {
         VStack(spacing: 14) {
             HStack(spacing: 10) {
                 orientationButton(portrait: true)
@@ -714,6 +817,7 @@ struct AssetEditScreen: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(!canCrop)
+                        .accessibilityIdentifier("edit-aspect-\(choice.id)")
                     }
                 }
                 .padding(.horizontal, 20)
@@ -726,8 +830,12 @@ struct AssetEditScreen: View {
         let selected = isPortrait == portrait
         return Button {
             guard isPortrait != portrait else { return }
-            isPortrait = portrait
-            applyAspect(aspect)
+            recordCurrentEdit()
+            withAnimation(editAnimation) {
+                isPortrait = portrait
+                applyAspect(aspect)
+            }
+            recordCurrentEdit()
         } label: {
             RoundedRectangle(cornerRadius: 3)
                 .strokeBorder(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary), lineWidth: 1.5)
@@ -741,6 +849,7 @@ struct AssetEditScreen: View {
     }
 
     private func selectAspect(_ choice: EditAspect) {
+        recordCurrentEdit()
         if aspect != choice {
             // photos starts a ratio in the photo's own orientation.
             if choice == .wallpaper {
@@ -751,24 +860,29 @@ struct AssetEditScreen: View {
         }
         aspect = choice
         applyAspect(choice)
+        recordCurrentEdit()
     }
 
     private func flip() {
-        withAnimation(.smooth(duration: 0.25)) {
+        recordCurrentEdit()
+        withAnimation(editAnimation) {
             if state.normalizedRotation.truncatingRemainder(dividingBy: 180) == 0 {
                 state.flipH.toggle()
             } else {
                 state.flipV.toggle()
             }
         }
+        recordCurrentEdit()
     }
 
     private func rotateLeft() {
-        withAnimation(.smooth(duration: 0.3)) {
+        recordCurrentEdit()
+        withAnimation(editAnimation) {
             state.rotation -= 90
             isPortrait.toggle()
             reapplyAspect()
         }
+        recordCurrentEdit()
     }
 
     /// aspect the crop must keep in canvas space: the visual pick, inverted
@@ -803,7 +917,7 @@ struct AssetEditScreen: View {
         } else {
             width = normalizedRatio
         }
-        withAnimation(.smooth(duration: 0.25)) {
+        withAnimation(editAnimation) {
             state.crop = CGRect(x: (1 - width) / 2, y: (1 - height) / 2, width: width, height: height)
         }
     }
@@ -819,22 +933,26 @@ struct AssetEditScreen: View {
     /// step rather than one per frame.
     private func scheduleRecord() {
         recordTask?.cancel()
+        if committed.map({ $0 != snapshot }) == true { redoStack.removeAll() }
         recordTask = Task {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
-            let current = snapshot
-            guard let previous = committed else {
-                committed = current
-                return
-            }
-            guard current != previous else { return }
-            undoStack.append(previous)
-            redoStack.removeAll()
-            committed = current
+            recordCurrentEdit()
         }
     }
 
+    private func recordCurrentEdit() {
+        recordTask?.cancel()
+        let current = snapshot
+        guard let previous = committed else { committed = current; return }
+        guard current != previous else { return }
+        undoStack.append(previous)
+        redoStack.removeAll()
+        committed = current
+    }
+
     private func undo() {
+        recordCurrentEdit()
         guard let previous = undoStack.popLast() else { return }
         recordTask?.cancel()
         redoStack.append(snapshot)
@@ -850,13 +968,14 @@ struct AssetEditScreen: View {
 
     private func apply(_ snapshot: EditSnapshot) {
         committed = snapshot
-        withAnimation(.smooth(duration: 0.25)) {
+        withAnimation(editAnimation) {
             state = snapshot.state
             aspect = snapshot.aspect
             isPortrait = snapshot.isPortrait
+            adjust = snapshot.adjust
+            disabledTools = snapshot.disabledTools
+            removesPreservedEdits = snapshot.removesPreservedEdits
         }
-        adjust = snapshot.adjust
-        disabledTools = snapshot.disabledTools
     }
 
     // MARK: - loading and saving
@@ -993,34 +1112,29 @@ struct AssetEditScreen: View {
             from: savedState,
             originalWidth: originalWidth,
             originalHeight: originalHeight
-        ) + preservedEdits
+        ) + (removesPreservedEdits ? [] : preservedEdits)
         let savedAdjust = effectiveAdjust
         let adjustChanged = savedAdjust != initialAdjust
         // like gallery, crop, rotate and mirror save whenever the adjustment
         // did not change.
-        let savesGeometry = (state != initialState || !adjustChanged) && (!edits.isEmpty || hadServerEdits)
+        let savesGeometry = (state != initialState || removesPreservedEdits || !adjustChanged) && (!edits.isEmpty || hadServerEdits)
         if !adjustChanged, !savesGeometry {
             isSaving = false
             finish(.cancelled)
             return
         }
-        let adjusted = ImageAdjustRenderer.render(image, adjust: savedAdjust) ?? image
-        guard let preview = AssetEditPreviewRenderer.render(adjusted, state: savedState) else {
-            isSaving = false
-            ErrorToastCenter.shared.show(String(localized: "Couldn't prepare the edited preview."))
-            return
-        }
-
-        let operationID = UUID()
-        let projection = AssetEditProjection(
-            operationID: operationID,
-            assetID: asset.id,
-            imageData: preview
-        )
         let realtime = session.realtime
-        onProjected(projection)
-        dismiss()
         Task {
+            // Pixel rendering and PNG encoding must not block the main actor
+            // that drives the spinner and editor-to-viewer transition.
+            guard let preview = await AssetEditPreviewRenderer.projection(image, state: savedState, adjust: savedAdjust) else {
+                isSaving = false
+                ErrorToastCenter.shared.show(String(localized: "Couldn't prepare the edited preview."))
+                return
+            }
+            let operationID = UUID()
+            onProjected(AssetEditProjection(operationID: operationID, assetID: asset.id, imageData: preview))
+            dismiss()
             await persist(
                 adjust: adjustChanged ? savedAdjust : nil,
                 edits: savesGeometry ? edits : nil,
@@ -1160,50 +1274,7 @@ struct CropCanvas: View {
     }
 
     private func cropFrame(_ frame: CGRect) -> some View {
-        ZStack(alignment: .topLeading) {
-            // photos shows the thirds grid only while the crop moves.
-            Path { path in
-                for step in 1..<3 {
-                    let x = frame.minX + frame.width * CGFloat(step) / 3
-                    path.move(to: CGPoint(x: x, y: frame.minY))
-                    path.addLine(to: CGPoint(x: x, y: frame.maxY))
-                    let y = frame.minY + frame.height * CGFloat(step) / 3
-                    path.move(to: CGPoint(x: frame.minX, y: y))
-                    path.addLine(to: CGPoint(x: frame.maxX, y: y))
-                }
-            }
-            .stroke(.white.opacity(0.35), lineWidth: 0.5)
-            .opacity(dragMode == nil ? 0 : 1)
-            .animation(.easeOut(duration: 0.2), value: dragMode == nil)
-
-            // `PUCropHandleView`s in the label colour, all outside the
-            // crop: a 1pt edge, 20x3 corners from 3pt past it and 25x3
-            // bars across the middle of each side.
-            Path { path in
-                path.addRect(frame.insetBy(dx: -0.5, dy: -0.5))
-            }
-            .stroke(Color.primary, lineWidth: 1)
-
-            Path { path in
-                let out: CGFloat = 3
-                for isRight in [false, true] {
-                    for isBottom in [false, true] {
-                        let x = isRight ? frame.maxX + out - 20 : frame.minX - out
-                        let y = isBottom ? frame.maxY : frame.minY - out
-                        path.addRect(CGRect(x: x, y: y, width: 20, height: out))
-                        let vx = isRight ? frame.maxX : frame.minX - out
-                        let vy = isBottom ? frame.maxY + out - 20 : frame.minY - out
-                        path.addRect(CGRect(x: vx, y: vy, width: out, height: 20))
-                    }
-                }
-                path.addRect(CGRect(x: frame.midX - 12.5, y: frame.minY - out, width: 25, height: out))
-                path.addRect(CGRect(x: frame.midX - 12.5, y: frame.maxY, width: 25, height: out))
-                path.addRect(CGRect(x: frame.minX - out, y: frame.midY - 12.5, width: out, height: 25))
-                path.addRect(CGRect(x: frame.maxX, y: frame.midY - 12.5, width: out, height: 25))
-            }
-            .fill(Color.primary)
-        }
-        .allowsHitTesting(false)
+        AnimatedCropFrame(frame: frame, isDragging: dragMode != nil)
     }
 
     // MARK: - gesture
@@ -1396,6 +1467,68 @@ struct CropCanvas: View {
             height: height
         )
     }
+}
+
+/// Paths do not interpolate when an inline Path closure is replaced.
+/// Animate the crop rectangle itself so border, grips and grid travel together.
+private struct AnimatedCropFrame: View, Animatable {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var frame: CGRect
+    var isDragging: Bool
+
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(frame.minX, frame.minY), AnimatablePair(frame.width, frame.height)) }
+        set { frame = CGRect(x: newValue.first.first, y: newValue.first.second,
+                             width: newValue.second.first, height: newValue.second.second) }
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // photos shows the thirds grid only while the crop moves.
+            Path { path in
+                for step in 1..<3 {
+                    let x = frame.minX + frame.width * CGFloat(step) / 3
+                    path.move(to: CGPoint(x: x, y: frame.minY))
+                    path.addLine(to: CGPoint(x: x, y: frame.maxY))
+                    let y = frame.minY + frame.height * CGFloat(step) / 3
+                    path.move(to: CGPoint(x: frame.minX, y: y))
+                    path.addLine(to: CGPoint(x: frame.maxX, y: y))
+                }
+            }
+            .stroke(.white.opacity(0.35), lineWidth: 0.5)
+            .opacity(isDragging ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isDragging)
+
+            // `PUCropHandleView`s in the label colour, all outside the
+            // crop: a 1pt edge, 20x3 corners from 3pt past it and 25x3
+            // bars across the middle of each side.
+            Path { path in
+                path.addRect(frame.insetBy(dx: -0.5, dy: -0.5))
+            }
+            .stroke(Color.primary, lineWidth: 1)
+
+            Path { path in
+                let out: CGFloat = 3
+                for isRight in [false, true] {
+                    for isBottom in [false, true] {
+                        let x = isRight ? frame.maxX + out - 20 : frame.minX - out
+                        let y = isBottom ? frame.maxY : frame.minY - out
+                        path.addRect(CGRect(x: x, y: y, width: 20, height: out))
+                        let vx = isRight ? frame.maxX : frame.minX - out
+                        let vy = isBottom ? frame.maxY + out - 20 : frame.minY - out
+                        path.addRect(CGRect(x: vx, y: vy, width: out, height: 20))
+                    }
+                }
+                path.addRect(CGRect(x: frame.midX - 12.5, y: frame.minY - out, width: 25, height: out))
+                path.addRect(CGRect(x: frame.midX - 12.5, y: frame.maxY, width: 25, height: out))
+                path.addRect(CGRect(x: frame.minX - out, y: frame.midY - 12.5, width: out, height: 25))
+                path.addRect(CGRect(x: frame.maxX, y: frame.midY - 12.5, width: out, height: 25))
+            }
+            .fill(Color.primary)
+        }
+        .allowsHitTesting(false)
+    }
+
 }
 
 // MARK: - profile picture crop
