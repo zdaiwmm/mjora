@@ -203,6 +203,7 @@ struct SettingsView: View {
                 about = try? await session.client?.serverAbout()
             }
         }
+        .tint(.accentColor)
     }
 
     private func updateStrategy(_ strategy: PersonUpdateStrategy) {
