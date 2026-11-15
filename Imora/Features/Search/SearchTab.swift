@@ -51,7 +51,9 @@ struct SearchTab: View {
         searchLayout
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarVisibility(model.assets.isEmpty ? .hidden : .visible, for: .navigationBar)
+            // Keep the native search host available on the empty discovery
+            // page too; hiding it prevents programmatic search activation.
+            .toolbarVisibility(.visible, for: .navigationBar)
             .toolbarBackground(.background, for: .navigationBar)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .task(id: query) {

@@ -13,17 +13,11 @@ struct BackupScreen: View {
         List {
             if let backup = session.backup {
                 autoSection(backup)
-                statusSection(backup, showsManualActions: false)
                 Section("Current Connection") {
                     LabeledContent("Connected Through", value: connectionText)
                     if let message = backup.syncHoldMessage { Text(message).foregroundStyle(.secondary) }
                 }
                 repeatedFailuresSection(backup)
-                if !backup.activeTransfers.items.isEmpty {
-                    Section {
-                        ActiveBackupTransfersView(transfers: backup.activeTransfers)
-                    }
-                }
                 Section {
                     NavigationLink { CleanupSettingsScreen() } label: {
                         Label("Clean Up Device", systemImage: "trash.slash")
@@ -38,7 +32,6 @@ struct BackupScreen: View {
                             }
                             selectionSection(backup)
                             batterySection(backup)
-                            statusSection(backup)
                             Section("Background Backup") {
                                 BackgroundBackupControls(backup: backup) {
                                     if backup.manualBackupNeedsApproval { confirmBackgroundConditions = true }
@@ -50,10 +43,17 @@ struct BackupScreen: View {
                                 Button("Recheck Entire Library") { backup.requestFullReconciliation() }
                                     .disabled(backup.isRunning)
                             }
+                            statusSection(backup)
                         }
                         .navigationTitle("Advanced Options")
                     }
                     .accessibilityIdentifier("backup-advanced")
+                }
+                statusSection(backup, showsManualActions: false)
+                if !backup.activeTransfers.items.isEmpty {
+                    Section {
+                        ActiveBackupTransfersView(transfers: backup.activeTransfers)
+                    }
                 }
             }
         }

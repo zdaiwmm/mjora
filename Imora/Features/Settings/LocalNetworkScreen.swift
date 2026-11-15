@@ -174,6 +174,9 @@ struct LocalNetworkScreen: View {
         }
         addressInvalid = false
         edit { $0.apiURL = url }
+        // Trusted setup may replace a legacy address with its enrolled HTTPS
+        // endpoint. Keep a later blur/disappearance from saving the old draft.
+        address = config?.apiURL.map(Self.displayAddress) ?? ""
     }
 
     private func add(_ name: String) {

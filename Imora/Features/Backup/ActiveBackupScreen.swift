@@ -19,9 +19,17 @@ struct ActiveBackupScreen: View {
 
             GeometryReader { geometry in
                 ScrollView {
-                    content
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: geometry.size.height)
+                    VStack(spacing: 0) {
+                        content
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: geometry.size.height)
+                        if !backup.activeTransfers.items.isEmpty {
+                            ActiveBackupTransfersView(transfers: backup.activeTransfers)
+                                .frame(maxWidth: 420)
+                                .padding(.horizontal, 32)
+                                .padding(.bottom, 32)
+                        }
+                    }
                 }
             }
         }
@@ -107,11 +115,6 @@ struct ActiveBackupScreen: View {
                     .accessibilityIdentifier("active-backup-recent-status")
             }
 
-            if !backup.activeTransfers.items.isEmpty {
-                ActiveBackupTransfersView(transfers: backup.activeTransfers)
-                    .frame(maxWidth: 420)
-            }
-
             VStack(spacing: 10) {
                 Text("Especially helpful for your first backup")
                     .font(.callout.weight(.semibold))
@@ -145,6 +148,7 @@ struct ActiveBackupScreen: View {
             .buttonStyle(.bordered)
             .tint(.white.opacity(0.75))
             .accessibilityIdentifier("active-backup-exit")
+
         }
         .padding(32)
     }

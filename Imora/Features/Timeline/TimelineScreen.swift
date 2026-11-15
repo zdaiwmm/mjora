@@ -355,6 +355,8 @@ private final class TimelineModelHolder {
 
 /// reusable bucketed photo grid, the workhorse behind most screens.
 struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.usesCompactPhotosNavigation) private var usesCompactPhotosNavigation
     @Environment(SessionStore.self) private var session
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
@@ -913,11 +915,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     private func handleScroll(_ scroll: TimelineGridScroll) {
         if let controls = photosConfiguration?.controls, completedPhotosRestoration, !controls.isRestoring {
-            let previous = controls.scrollOffset
-            controls.scrollOffset = scroll.offsetY
-            if photosConfiguration?.completePeriodIndex == true, !scrollContext.isIdle,
-               let previous, scroll.offsetY < previous - 5 {
-                controls.browsingPast = true
+            if photosConfiguration?.completePeriodIndex == true {
+                controls.observeScroll(offset: scroll.offsetY, endOffset: gridController.endOffset,
+                                       isUserScrolling: !scrollContext.isIdle)
+            } else {
+                controls.scrollOffset = scroll.offsetY
             }
         }
         // the indicator is rounded to suppress sub point drawing noise,
@@ -1110,13 +1112,14 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
         }
         .navigationTitle(title)
+        .preference(key: PhotosSelectionPreferenceKey.self, value: isSelecting)
         .navigationBarTitleDisplayMode(showsLargeTitle ? .large : .inline)
         // one toolbar owns the whole trailing group, so selection swaps the
         // items in place - the bar itself stays put and the controls fade
         // where they are instead of sliding away with it. only the tab bar
         // leaves, for the bottom controls, like the photos app.
         .toolbar { timelineToolbar }
-        .toolbarVisibility(isSelecting || showsPeriodControls ? .hidden : .automatic, for: .tabBar)
+        .toolbarVisibility(isSelecting || usesCompactPhotosNavigation ? .hidden : .automatic, for: .tabBar)
         .toolbarBackground(photosConfiguration == nil ? .automatic : .hidden, for: .navigationBar)
         .toolbarColorScheme(extendsPhotosBehindBars ? .dark : nil, for: .navigationBar)
         .overlay(alignment: .top) {
@@ -1132,6 +1135,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         .overlay {
             if let configuration = photosConfiguration, configuration.controls.mode != .all {
                 PhotoPeriodsView(model: model, controls: configuration.controls)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
             }
         }
         .overlay(alignment: .bottom) {
@@ -1149,7 +1153,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                         trashDisabled: selectionHasForeignAssets
                     )
                     .transition(.opacity)
-                } else if let configuration = photosConfiguration, showsPeriodControls {
+                } else if let configuration = photosConfiguration, showsPeriodControls, horizontalSizeClass == .regular {
                     PhotoPeriodControls(controls: configuration.controls, onSearch: configuration.onSearch)
                 }
             }
@@ -1300,7 +1304,10 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     private func revealPhotoPeriod(_ request: PhotoScrollRequest) async {
         guard let controls = photosConfiguration?.controls else { return }
         controls.isRestoring = true
-        defer { controls.isRestoring = false }
+        defer {
+            controls.scrollOffset = gridController.scrollOffset
+            controls.isRestoring = false
+        }
         guard let bucketID = request.bucketID else {
             gridController.scrollToEnd()
             return

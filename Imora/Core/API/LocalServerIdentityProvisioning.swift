@@ -20,12 +20,16 @@ nonisolated struct LocalServerIdentityProvisioning: Codable, Equatable, Sendable
         return try? JSONDecoder().decode(Self.self, from: data)
     }
 
-    /// Apply once, without replacing an unrelated address or enabling a local
-    /// preference the person turned off. Canonical encoding makes whitespace
-    /// and JSON key order irrelevant to this enrollment's identity.
-    func applying(to config: LocalServerConfig?, activeExternal: URL, defaults: UserDefaults) -> LocalServerConfig? {
+    /// Activation migrates the legacy address once. Explicit setup also installs
+    /// trust for the exact enrolled HTTPS address, including after sign-out,
+    /// without changing the person's automatic-selection preference.
+    /// Canonical encoding makes JSON formatting irrelevant to migration history.
+    func applying(to config: LocalServerConfig?, activeExternal: URL, defaults: UserDefaults,
+                  explicitSetup: Bool = false) -> LocalServerConfig? {
         guard let config, config.server == activeExternal, externalAPIURL == activeExternal,
-              config.isEnabled, config.apiURL == previousLocalAPIURL,
+              config.isEnabled,
+              config.apiURL == previousLocalAPIURL || (explicitSetup && config.apiURL == identity.apiURL),
+              !explicitSetup || config.identity == nil,
               ServerTrustPolicy.validServerURL(externalAPIURL),
               ServerTrustPolicy.validServerURL(previousLocalAPIURL), identity.isValid
         else { return config }
@@ -34,15 +38,20 @@ nonisolated struct LocalServerIdentityProvisioning: Codable, Equatable, Sendable
         guard let encoded = try? encoder.encode(self) else { return config }
         let digest = SHA256.hash(data: encoded).map { String(format: "%02x", $0) }.joined()
         var applied = defaults.stringArray(forKey: Self.appliedKey) ?? []
-        guard !applied.contains(digest) else { return config }
+        let wasApplied = applied.contains(digest)
+        // A deliberate HTTP revert is never migrated again. Saving the exact
+        // enrolled HTTPS address can restore its pin after local state is reset.
+        guard !wasApplied || (explicitSetup && config.apiURL == identity.apiURL) else { return config }
         var updated = config
         updated.apiURL = identity.apiURL
         updated.identity = identity
-        updated.automaticallyUseVerifiedLocal = true
+        if !explicitSetup { updated.automaticallyUseVerifiedLocal = true }
         guard let stored = try? JSONEncoder().encode(updated) else { return config }
         defaults.set(stored, forKey: "imora.localServer")
-        applied.append(digest)
-        defaults.set(applied, forKey: Self.appliedKey)
+        if !wasApplied {
+            applied.append(digest)
+            defaults.set(applied, forKey: Self.appliedKey)
+        }
         return updated
     }
 }

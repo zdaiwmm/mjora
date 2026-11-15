@@ -318,12 +318,16 @@ final class LocalServerRouter {
     }
 
     func update(_ proposed: LocalServerConfig) {
+        guard let external, proposed.server == external else { return }
         var config = proposed
         if let identity = config.identity, identity.apiURL != config.apiURL {
             config.identity = nil
             config.automaticallyUseVerifiedLocal = false
         }
-        guard config.server == external, config != self.config else { return }
+        if let provisioning {
+            config = provisioning.applying(to: config, activeExternal: external, defaults: defaults, explicitSetup: true) ?? config
+        }
+        guard config != self.config else { return }
         self.config = config
         if let data = try? JSONEncoder().encode(config) {
             defaults.set(data, forKey: Self.defaultsKey)

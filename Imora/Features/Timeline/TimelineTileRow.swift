@@ -837,7 +837,6 @@ final class TimelineTileView: UIView {
             setNeedsLayout()
             return view
         }()
-        indicator.isHidden = false
         let name = isSelected ? "checkmark.circle.fill" : "circle"
         // Match the system Photos selection control used by the native shell.
         let secondary = isSelected
@@ -846,6 +845,13 @@ final class TimelineTileView: UIView {
         let configuration = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
             .applying(UIImage.SymbolConfiguration(paletteColors: [.white, secondary]))
         indicator.image = UIImage(systemName: name, withConfiguration: configuration)
+        // The first indicator has no frame yet. Lay it out outside the shell's
+        // selection animation before revealing it, including on recycled tiles.
+        UIView.performWithoutAnimation {
+            self.layoutIfNeeded()
+            indicator.layer.removeAllAnimations()
+            indicator.isHidden = false
+        }
     }
 
     /// projected removals hide in place until the server confirms them. the

@@ -95,6 +95,18 @@ struct LivePhotoPage: View {
             ) {
                 await makeItem()
             }
+            // Let rapid paging pass without exports. Once this page settles,
+            // prepare an on-device clip and its decoding layer behind the still.
+            // iCloud and remote clips continue to load only on engagement.
+            if let localIdentifier {
+                try? await Task.sleep(for: .milliseconds(180))
+                guard !Task.isCancelled else { return }
+                if let item = await LocalImageLoader.shared.motionPlayerItem(
+                    localIdentifier: localIdentifier, allowsNetwork: false
+                ), !Task.isCancelled {
+                    playback.prepareLocalItem(item, assetID: asset.id)
+                }
+            }
         }
         .onDisappear { playback.release(assetID: asset.id) }
     }

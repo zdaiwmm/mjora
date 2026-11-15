@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct MainTabView: View {
     @Environment(SessionStore.self) private var session
@@ -7,6 +8,12 @@ struct MainTabView: View {
     @Bindable private var router = NotificationRouter.shared
     @Bindable private var timelineRouter = TimelineNavigationRouter.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("imora.photos.source") private var source = "cloud"
+    @State private var cloudControls = PhotosGridControls()
+    @State private var deviceControls = PhotosGridControls()
+    @State private var hidesCompactNavigation = false
+    @State private var keyboardVisible = false
     @State private var selection: TabKey = .photos
     @State private var searchText = ""
     @State private var searchScope: SearchFilter.TextType = .context
@@ -47,7 +54,19 @@ struct MainTabView: View {
         horizontalSizeClass == .regular
     }
 
+    private var photoControls: PhotosGridControls { source == "local" ? deviceControls : cloudControls }
+    private var showsDateNavigation: Bool {
+        selection == .photos && (source == "local" || [.all, .favorites].contains(photoControls.mediaFilter))
+            && (photoControls.browsingPast || photoControls.mode != .all)
+    }
+
     var body: some View {
+        GeometryReader { geometry in
+            content(bottomSafeArea: geometry.safeAreaInsets.bottom)
+        }
+    }
+
+    private func content(bottomSafeArea: CGFloat) -> some View {
         ZStack {
             AssetViewerOpeningChromePrewarmer()
                 .ignoresSafeArea()
@@ -64,22 +83,25 @@ struct MainTabView: View {
 
             TabView(selection: tabSelection) {
                 Tab("Photos", systemImage: "photo.on.rectangle", value: TabKey.photos) {
-                    TimelineTab()
+                    TimelineTab(cloudControls: cloudControls, deviceControls: deviceControls)
                         .id(session.client?.offlineAccountKey)
                 }
                 Tab("Albums", systemImage: "rectangle.stack", value: TabKey.albums) {
-                    AlbumsTab()
+                    AlbumsTab(account: session.client?.offlineAccountKey)
                         .id(session.client?.offlineAccountKey)
+                        .toolbarVisibility(showsLibrarySection ? .automatic : .hidden, for: .tabBar)
                 }
                 Tab("Search", systemImage: "magnifyingglass", value: TabKey.search, role: .search) {
                     SearchTab(query: $searchText, searchScope: $searchScope,
                               submitRequest: searchSubmitRequest, setSearchFocus: setSearchFocus)
-                        .searchable(text: $searchText, isPresented: $isSearchPresented, prompt: searchScope.prompt)
+                        .searchable(text: $searchText, isPresented: $isSearchPresented,
+                                    placement: .toolbar, prompt: searchScope.prompt)
                         .searchFocused($isSearchFocused)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .writingToolsBehavior(.disabled)
                         .onSubmit(of: .search) {
+                            guard selection == .search else { return }
                             searchSubmitRequest += 1
                             isSearchFocused = false
                         }
@@ -117,12 +139,45 @@ struct MainTabView: View {
                     .defaultVisibility(.hidden, for: .tabBar)
                 }
             }
-            // a plain tab bar on iphone, a tab bar with a sidebar on ipad.
+            // Preserve native tab/search behavior and the iPad sidebar while
+            // the compact browsing controls share one morphing glass surface.
             .tabViewStyle(.sidebarAdaptable)
+            .task(id: selection) {
+                guard selection == .search else { return }
+                // Programmatic selection needs an explicit focus request once
+                // the native search field has attached to its search-role tab.
+                await Task.yield()
+                guard selection == .search, !Task.isCancelled else { return }
+                setSearchFocus(true)
+            }
             .tabViewSearchActivation(.searchTabSelection)
-            .tint(.blue)
+            .tint(.primary)
+            .environment(\.usesCompactPhotosNavigation, !showsLibrarySection && selection != .search)
         }
-        .tabBarMinimizeBehavior(selection == .search ? .never : .onScrollDown)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !showsLibrarySection, selection != .search, !keyboardVisible,
+               !hidesCompactNavigation, !(selection == .photos && photoControls.isSelecting) {
+                PhotosNavigationBar(controls: photoControls, showsPeriods: showsDateNavigation,
+                    selection: tabSelection, onSearch: {
+                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                            selection = .search
+                        }
+                    })
+                    // Match the native floating bar's clearance independently
+                    // of the device's home-indicator safe area.
+                    .padding(.bottom, 21 - bottomSafeArea)
+                    .transition(.opacity)
+            }
+        }
+        .onPreferenceChange(PhotosSelectionPreferenceKey.self) { hidesCompactNavigation = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: showsDateNavigation)
+        .tabBarMinimizeBehavior(.never)
         .onChange(of: showsLibrarySection) { _, shows in
             // a section tab selected at regular width has nowhere to go once
             // the sidebar folds away, so the library list takes over.

@@ -34,6 +34,99 @@ final class LocalServerIdentityProvisioningTests: XCTestCase {
         XCTAssertEqual(persisted.identity, identity)
     }
 
+    func testFreshDeviceExplicitHTTPSSetupVerifiesRealTLSBeforeSelectingManualLocal() async throws {
+        let server = try LocalTLSServer { request in
+            .init(status: request.path == "/api/server/ping" ? 200 : 404)
+        }
+        try await server.start()
+        defer { server.stop() }
+        let identity = LocalServerIdentity(apiURL: server.apiURL, rootCertificateDER: LocalTLSFixtures.root)
+        let enrollment = LocalServerIdentityProvisioning(externalAPIURL: external, previousLocalAPIURL: previous, identity: identity)
+        let fixture = try fixture(config: nil, data: JSONEncoder().encode(enrollment))
+        defer {
+            fixture.router.deactivate()
+            fixture.cleanUp()
+        }
+        fixture.router.activate(external: external)
+        fixture.router.networkChanged(network: "synthetic-wifi")
+        XCTAssertNil(fixture.router.config, "account activation alone must not enable a local route")
+
+        fixture.router.update(LocalServerConfig(server: external, apiURL: server.apiURL))
+        let result = await fixture.router.requestManualLocal(confirmedURL: server.apiURL)
+
+        XCTAssertEqual(result, .selected)
+        XCTAssertEqual(fixture.router.config?.verifiedIdentity, identity)
+        XCTAssertEqual(ServerRoute.configuredIdentity(for: external, defaults: fixture.defaults), identity)
+        XCTAssertEqual(fixture.router.config?.automaticallyUseVerifiedLocal, false, "explicit address setup must preserve the automatic-selection preference")
+        XCTAssertEqual(server.received.map(\.path), ["/api/server/ping"])
+        XCTAssertTrue(server.received.allSatisfy { $0.headers["authorization"] == nil && $0.headers["x-api-key"] == nil })
+    }
+
+    func testFreshDeviceExplicitLegacyAddressSetupInstallsProvisionedHTTPSIdentity() throws {
+        let fixture = try fixture(config: nil)
+        defer { fixture.cleanUp() }
+        fixture.router.activate(external: external)
+        // Opening Local Network and enabling it first saves an empty config.
+        fixture.router.update(LocalServerConfig(server: external))
+
+        fixture.router.update(LocalServerConfig(server: external, apiURL: previous))
+
+        XCTAssertEqual(fixture.router.config?.apiURL, local)
+        XCTAssertEqual(fixture.router.config?.verifiedIdentity, identity)
+        XCTAssertEqual(fixture.router.config?.automaticallyUseVerifiedLocal, false)
+        let persisted = try JSONDecoder().decode(LocalServerConfig.self, from: XCTUnwrap(fixture.defaults.data(forKey: "imora.localServer")))
+        XCTAssertEqual(persisted.apiURL, local)
+        XCTAssertEqual(persisted.verifiedIdentity, identity)
+    }
+
+    func testExplicitApprovedHTTPSSetupRestoresIdentityAfterSignOut() throws {
+        let fixture = try fixture()
+        defer { fixture.cleanUp() }
+        fixture.router.activate(external: external)
+        XCTAssertEqual(fixture.router.config?.verifiedIdentity, identity)
+        fixture.router.deactivate()
+        fixture.router.activate(external: external)
+        XCTAssertNil(fixture.router.config)
+
+        fixture.router.update(LocalServerConfig(server: external, apiURL: local))
+
+        XCTAssertEqual(fixture.router.config?.verifiedIdentity, identity)
+        XCTAssertEqual(fixture.router.config?.automaticallyUseVerifiedLocal, false)
+    }
+
+    func testExplicitSetupDoesNotEnrollDisabledUnrelatedOrAlreadyPinnedAddresses() throws {
+        let unrelated = URL(string: "https://192.168.50.11:8443/api")!
+        for proposed in [
+            LocalServerConfig(server: external, apiURL: local, isEnabled: false),
+            LocalServerConfig(server: external, apiURL: unrelated),
+            LocalServerConfig(server: external, apiURL: local.appending(path: "other")),
+            LocalServerConfig(server: external, apiURL: local,
+                              identity: LocalServerIdentity(apiURL: local, rootCertificateDER: LocalTLSFixtures.other))
+        ] {
+            let fixture = try fixture(config: nil)
+            defer { fixture.cleanUp() }
+            fixture.router.activate(external: external)
+
+            fixture.router.update(proposed)
+
+            XCTAssertEqual(fixture.router.config, proposed)
+            XCTAssertEqual(fixture.router.config?.identity, proposed.identity)
+            XCTAssertNil(ServerRoute.configuredIdentity(for: external, defaults: fixture.defaults))
+        }
+    }
+
+    func testExplicitSetupDoesNotEnrollForAnotherAccount() throws {
+        let fixture = try fixture(config: nil)
+        defer { fixture.cleanUp() }
+        let other = URL(string: "https://other.example.com/api")!
+        fixture.router.activate(external: other)
+
+        fixture.router.update(LocalServerConfig(server: other, apiURL: local))
+
+        XCTAssertEqual(fixture.router.config?.server, other)
+        XCTAssertNil(fixture.router.config?.identity)
+    }
+
     func testEnrollmentDoesNotEnableDisabledLocalPreference() throws {
         let fixture = try fixture(config: LocalServerConfig(server: external, apiURL: previous, isEnabled: false))
         defer { fixture.cleanUp() }
