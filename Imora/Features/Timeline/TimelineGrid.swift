@@ -158,6 +158,15 @@ final class TimelineGridController {
     func reloadRows(animated: Bool) {
         grid?.reloadRows(animated: animated)
     }
+
+    func prepareColumnChange() {
+        grid?.prepareColumnChange()
+    }
+
+    @discardableResult
+    func finishColumnChange(side: CGFloat) -> Bool {
+        grid?.finishColumnChange(side: side) ?? false
+    }
 }
 
 extension EnvironmentValues {
@@ -262,6 +271,7 @@ struct TimelineGrid<Header: View, Footer: View>: UIViewControllerRepresentable {
     }
 
     static func dismantleUIViewController(_ grid: TimelineGridViewController, coordinator: Coordinator) {
+        grid.grid.zoomTransition.cancel()
         coordinator.onDismantle()
     }
 
@@ -344,6 +354,11 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
         }
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        grid.zoomTransition.cancel()
+    }
+
     func install(header: UIViewController, footer: UIViewController) {
         for host in [header, footer] {
             addChild(host)
@@ -416,9 +431,19 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
 
     @objc private func pinched(_ recognizer: UIPinchGestureRecognizer) {
         switch recognizer.state {
-        case .began, .changed:
+        case .began:
+            grid.beginColumnPinch(at: recognizer.location(in: grid))
+            // Mark the gesture active without regrouping the model.
+            events.onPinch(1)
+        case .changed:
+            grid.updateColumnPinch(scale: recognizer.scale, at: recognizer.location(in: grid))
+        case .ended:
             events.onPinch(recognizer.scale)
-        case .ended, .cancelled, .failed:
+            // A gesture below the column threshold still settles its scale.
+            if grid.zoomTransition.isTracking { grid.finishColumnChange(side: grid.currentTileSide) }
+            events.onPinchEnded()
+        case .cancelled, .failed:
+            grid.finishColumnChange(side: grid.currentTileSide)
             events.onPinchEnded()
         default:
             break
@@ -474,6 +499,55 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
 /// exact layout, diffed by index while the rows hold and by id when they
 /// are swapped, and handed back to per-kind pools when they leave.
 final class TimelineGridView: UIScrollView {
+    let zoomTransition = TimelineGridZoomTransition()
+    var currentTileSide: CGFloat { side }
+
+    private var zoomTiles: [TimelineTileView] {
+        mounted.flatMap { ($0.view as? TimelineTileRowView)?.zoomTiles ?? [] }
+    }
+
+    func beginColumnPinch(at midpoint: CGPoint) {
+        layoutIfNeeded()
+        zoomTransition.begin(in: self, tiles: zoomTiles, midpoint: midpoint,
+                             reduceMotion: context?.reduceMotion ?? UIAccessibility.isReduceMotionEnabled)
+    }
+
+    func updateColumnPinch(scale: CGFloat, at midpoint: CGPoint) {
+        guard context != nil, scale.isFinite, scale > 0 else { return }
+        let range = AssetGridLayout.columnRange(viewportWidth: contentWidth)
+        let minimum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.upperBound) / max(side, 1)
+        let maximum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.lowerBound) / max(side, 1)
+        zoomTransition.update(scale: min(maximum * 1.05, max(minimum * 0.95, scale)), midpoint: midpoint, in: self)
+    }
+
+    func prepareColumnChange() {
+        guard !zoomTransition.isTracking else { return }
+        beginColumnPinch(at: CGPoint(x: bounds.midX, y: bounds.midY))
+    }
+
+    @discardableResult
+    func finishColumnChange(side: CGFloat) -> Bool {
+        guard zoomTransition.isPrepared, let model else { return false }
+        self.side = side
+        reloadRows(animated: false)
+        let layout = layoutBox.layout(for: model, side: side)
+        var frames: [String: CGRect] = [:]
+        for (index, row) in model.rows.enumerated() {
+            guard index < layout.starts.count, case .tiles(_, let runs) = row else { continue }
+            for run in runs {
+                for (offset, asset) in run.assets.enumerated() {
+                    var x = CGFloat(run.colStart + offset) * (side + AssetGridLayout.gutter)
+                    if effectiveUserInterfaceLayoutDirection == .rightToLeft { x = contentWidth - x - side }
+                    frames[asset.id] = CGRect(x: x, y: headerHeight + layout.starts[index], width: side, height: side)
+                }
+            }
+        }
+        zoomTransition.finish(in: self, frames: frames, scroll: { [weak self] offset in
+            self?.scroll(toOffsetY: offset)
+            self?.reloadRows(animated: false)
+        }, destinations: { [weak self] in self?.zoomTiles ?? [] }, completion: {})
+        return true
+    }
     private enum Kind {
         case tiles
         case band
@@ -621,6 +695,7 @@ final class TimelineGridView: UIScrollView {
         let insets = adjustedContentInset
         let width = contentWidth
         if width != measuredWidth {
+            zoomTransition.cancel()
             measuredWidth = width
             onWidthChange?()
         }

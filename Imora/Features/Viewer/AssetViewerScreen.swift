@@ -1308,6 +1308,7 @@ struct AssetViewerScreen: View {
                             commitTrim(assetID: editedID, detail: detail)
                         }
                     )
+                    .editorPresentationTransition()
                     .onAppear {
                         if playback.ownerID == editedID, playback.isPlaying { playback.togglePlayPause() }
                     }

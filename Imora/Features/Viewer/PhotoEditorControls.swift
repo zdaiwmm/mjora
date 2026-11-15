@@ -2,6 +2,10 @@ import Foundation
 import SwiftUI
 import UIKit
 
+enum EditorAppearance {
+    static let accent = Color.yellow
+}
+
 /// photos' edit slider, `CEKSlider` as `+[PUPhotoEditSupport createEditSlider]`
 /// sets it up: 41 ticks 9pt apart span the whole range, a main tick every
 /// tenth, scrolling under a fixed centre indicator. the value runs -1...1.
@@ -53,7 +57,7 @@ struct EditorRuler: View {
                 )
             }
             let indicator = CGRect(x: center - 1, y: 0, width: 2, height: Self.height)
-            context.fill(Path(roundedRect: indicator, cornerRadius: 1), with: .color(tickColor))
+            context.fill(Path(roundedRect: indicator, cornerRadius: 1), with: .color(EditorAppearance.accent))
         }
         .frame(height: Self.height)
         .mask {
@@ -134,6 +138,7 @@ struct EditorToolButton: View {
     var value: Double?
     var isActive = false
     var isEnabled = true
+    var isSelected = false
     var showsValue = false
 
     var body: some View {
@@ -151,7 +156,7 @@ struct EditorToolButton: View {
                     Circle()
                         .inset(by: 1.25)
                         .trim(from: 0, to: min(1, abs(value)))
-                        .stroke(value > 0 ? Color.accentColor : Color.primary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        .stroke(value > 0 ? EditorAppearance.accent : Color.primary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .scaleEffect(x: value > 0 ? 1 : -1)
                 }
@@ -159,11 +164,11 @@ struct EditorToolButton: View {
             if showsValue, let value {
                 Text("\(Int((value * 100).rounded()))")
                     .font(.system(size: 15, weight: .medium).monospacedDigit())
-                    .foregroundStyle(value > 0 ? Color.accentColor : Color.primary)
+                    .foregroundStyle(value > 0 ? EditorAppearance.accent : Color.primary)
             } else {
                 Image(systemName: systemImage)
                     .font(.system(size: 21, weight: .regular))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isSelected ? EditorAppearance.accent : Color.primary)
             }
         }
         .frame(width: Self.size, height: Self.size)
@@ -195,12 +200,15 @@ struct EditorToolLabel: View {
 /// the label colour, the others in the secondary one, and a 5pt triangle
 /// marks it 4pt below the capsule's top.
 struct EditorTabBar<Tab: Hashable>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionAnimation
     static var height: CGFloat { 62 }
 
     struct Item: Identifiable {
         let tab: Tab
         let title: String
         let systemImage: String
+        var isEnabled = true
         var id: Tab { tab }
     }
 
@@ -212,14 +220,20 @@ struct EditorTabBar<Tab: Hashable>: View {
             ForEach(items) { item in
                 let isSelected = item.tab == selection
                 Button {
-                    selection = item.tab
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.25)) {
+                        selection = item.tab
+                    }
                 } label: {
                     VStack(spacing: 0) {
-                        EditorTabMarker()
-                            .fill(Color.accentColor)
-                            .frame(width: 5, height: 4.33)
-                            .opacity(isSelected ? 1 : 0)
-                            .padding(.top, 4)
+                        ZStack {
+                            if isSelected {
+                                EditorTabMarker()
+                                    .fill(EditorAppearance.accent)
+                                    .matchedGeometryEffect(id: "selection", in: selectionAnimation)
+                            }
+                        }
+                        .frame(width: 5, height: 4.33)
+                        .padding(.top, 4)
                         Image(systemName: item.systemImage)
                             .font(.system(size: 19, weight: .regular))
                             .frame(height: 22)
@@ -233,9 +247,11 @@ struct EditorTabBar<Tab: Hashable>: View {
                     }
                     .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                     .frame(width: 47, height: Self.height)
+                    .opacity(item.isEnabled ? 1 : 0.3)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                .disabled(!item.isEnabled)
                 .accessibilityLabel(item.title)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
@@ -509,6 +525,7 @@ nonisolated struct EditorPrimaryBarLayout: Equatable, Sendable {
 /// highlight colour with black text. a cancel with changes asks before
 /// discarding them.
 struct EditorPrimaryBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let hasChanges: Bool
     let isSaving: Bool
     var cancelIdentifier = "edit-cancel"
@@ -577,13 +594,15 @@ struct EditorPrimaryBar: View {
                 }
                 .buttonStyle(.plain)
                 .glassEffect(
-                    hasChanges ? .regular.tint(.accentColor).interactive() : .regular,
+                    hasChanges ? .regular.tint(EditorAppearance.accent).interactive() : .regular,
                     in: .capsule
                 )
                 .disabled(!hasChanges)
                 .accessibilityIdentifier(doneIdentifier)
             }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasChanges)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSaving)
     }
 
     private func title(_ text: String, size: CGSize) -> some View {
@@ -597,6 +616,22 @@ struct EditorPrimaryBar: View {
 }
 
 extension View {
+    /// The system fade keeps editing in the same visual context rather than
+    /// presenting it as a sheet sliding up over the photo. Earlier systems
+    /// retain their native presentation transition.
+    @ViewBuilder
+    func editorPresentationTransition() -> some View {
+        #if os(iOS) || os(visionOS)
+        if #available(iOS 27.0, visionOS 27.0, *) {
+            navigationTransition(.crossFade)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
     /// lowers the glass row under cancel and done, by photos' offset beside
     /// the camera housing or by their own row elsewhere.
     func editorPrimaryBarRoom() -> some View {

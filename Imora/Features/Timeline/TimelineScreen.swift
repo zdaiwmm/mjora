@@ -567,6 +567,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         preservedFraction: CGFloat,
         recordsUserPreference: Bool
     ) {
+        if recordsUserPreference { gridController.prepareColumnChange() }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -580,6 +581,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             viewportWidth: viewportWidth,
             columns: target
         )
+        if recordsUserPreference, gridController.finishColumnChange(side: newSide) { return }
         let contentHeight = scrub.headerHeight + model.contentHeight(tileSide: newSide) + scrub.footerHeight + bottomPadding()
         // distance past the rest position, the space scrollTo(y:) takes.
         let offset = preservedFraction * max(0, contentHeight - viewportHeight)
@@ -1704,11 +1706,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         let base = pinchBaseColumns ?? columnCount
         pinchBaseColumns = base
         // zooming in shows fewer, larger tiles.
-        let range = AssetGridLayout.columnRange(viewportWidth: viewportWidth)
-        let target = min(
-            range.upperBound,
-            max(range.lowerBound, Int((Double(base) / magnification).rounded()))
-        )
+        let target = TimelineGridZoomGeometry.columns(base: base, magnification: magnification, width: viewportWidth)
         guard target != columnCount else { return }
 
         let preservedFraction = scrub.fraction
