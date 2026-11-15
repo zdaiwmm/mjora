@@ -142,6 +142,57 @@ final class UnifiedPhotoEditorTests: XCTestCase {
         XCTAssertEqual(storedEdits, [.rotate(angle: 90)])
     }
 
+    func testLegacyRetryRestoresColorResetAfterFirstWriteWasPartiallyAccepted() async throws {
+        var recovery = LegacyPhotoEditRecovery()
+        var initial = ImageAdjust.neutral
+        initial.exposure = 0
+        var requested = initial; requested.exposure = 50
+        var serverAdjust = initial, serverEdits: [AssetEdit] = []
+        do {
+            try await PhotoEditPersistence.saveLegacy(adjust: requested, edits: [.rotate(angle: 90)],
+                writeAdjust: { serverAdjust = $0 }, writeEdits: { _ in throw URLError(.timedOut) },
+                readAdjust: { serverAdjust }, readEdits: { serverEdits })
+            XCTFail()
+        } catch { recovery.recordUnconfirmed() }
+        // The user resets color to the opening value but keeps geometry.
+        let retry = recovery.intent(adjust: initial, initialAdjust: initial, edits: [.rotate(angle: 90)], geometryChanged: true, hadServerEdits: false)
+        try await PhotoEditPersistence.saveLegacy(adjust: retry.adjust, edits: retry.edits,
+            writeAdjust: { serverAdjust = $0 }, writeEdits: { serverEdits = $0 },
+            readAdjust: { serverAdjust }, readEdits: { serverEdits })
+        XCTAssertEqual(serverAdjust, .neutral)
+        XCTAssertEqual(serverEdits, [.rotate(angle: 90)])
+    }
+
+    func testLegacyRetryRestoresGeometryResetAfterUnknownSecondWrite() async throws {
+        var recovery = LegacyPhotoEditRecovery()
+        var requested = ImageAdjust.neutral; requested.exposure = 50
+        var serverAdjust = ImageAdjust.neutral, serverEdits: [AssetEdit] = []
+        do {
+            try await PhotoEditPersistence.saveLegacy(adjust: requested, edits: [.rotate(angle: 90)],
+                writeAdjust: { serverAdjust = $0 }, writeEdits: { serverEdits = $0; throw URLError(.timedOut) },
+                readAdjust: { serverAdjust }, readEdits: { throw URLError(.notConnectedToInternet) })
+            XCTFail()
+        } catch { recovery.recordUnconfirmed() }
+        // The user resets geometry to the original while retaining color.
+        let retry = recovery.intent(adjust: requested, initialAdjust: .neutral, edits: [], geometryChanged: false, hadServerEdits: false)
+        try await PhotoEditPersistence.saveLegacy(adjust: retry.adjust, edits: retry.edits,
+            writeAdjust: { serverAdjust = $0 }, writeEdits: { serverEdits = $0 },
+            readAdjust: { serverAdjust }, readEdits: { serverEdits })
+        XCTAssertEqual(serverAdjust, requested)
+        XCTAssertEqual(serverEdits, [])
+    }
+
+    func testLegacyUnconfirmedSaveStaysDirtyEvenAfterUndoOrRevertMatchesOpeningDraft() {
+        var recovery = LegacyPhotoEditRecovery()
+        recovery.recordUnconfirmed()
+        XCTAssertTrue(recovery.needsSave(draftChanged: false))
+        let restore = recovery.intent(adjust: .neutral, initialAdjust: .neutral, edits: [], geometryChanged: false, hadServerEdits: false)
+        XCTAssertEqual(restore.adjust, .neutral)
+        XCTAssertEqual(restore.edits, [])
+        recovery.recordConfirmed()
+        XCTAssertFalse(recovery.needsSave(draftChanged: false))
+    }
+
     func testEnhancedHTTPUsesOneCompletePutAndReadbackAfterUnknownServerOutcome() async throws {
         let stored = Mutex<[AssetEdit]>([])
         let server = try LocalHTTPServer { request in

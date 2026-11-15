@@ -201,3 +201,19 @@ nonisolated enum PhotoEditPersistence {
         }
     }
 }
+
+/// Legacy writes can partially commit. Recovery intent is independent of undo
+/// history so returning the draft to its opening value still permits repair.
+nonisolated struct LegacyPhotoEditRecovery: Equatable, Sendable {
+    private(set) var isUnconfirmed = false
+    nonisolated struct Intent: Sendable { let adjust: ImageAdjust?; let edits: [AssetEdit]? }
+    mutating func recordUnconfirmed() { isUnconfirmed = true }
+    mutating func recordConfirmed() { isUnconfirmed = false }
+    func needsSave(draftChanged: Bool) -> Bool { draftChanged || isUnconfirmed }
+    func intent(adjust: ImageAdjust, initialAdjust: ImageAdjust, edits: [AssetEdit], geometryChanged: Bool,
+                hadServerEdits: Bool, supportsAdjust: Bool = true) -> Intent {
+        let adjustChanged = adjust != initialAdjust
+        let geometry = isUnconfirmed || ((geometryChanged || !adjustChanged) && (!edits.isEmpty || hadServerEdits))
+        return Intent(adjust: supportsAdjust && (adjustChanged || isUnconfirmed) ? adjust : nil, edits: geometry ? edits : nil)
+    }
+}

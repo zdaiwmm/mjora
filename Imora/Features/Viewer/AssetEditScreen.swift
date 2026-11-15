@@ -413,6 +413,7 @@ struct AssetEditScreen: View {
     @State private var canUseUnifiedEditor = false
     @State private var geometryTool = PhotoGeometryTool.crop
     @State private var saveError: String?
+    @State private var legacyRecovery = LegacyPhotoEditRecovery()
     @State private var adjustSource: CGImage?
     @State private var isRenderingAdjust = false
     @State private var undoStack: [EditSnapshot] = []
@@ -428,7 +429,9 @@ struct AssetEditScreen: View {
         return result
     }
 
-    private var hasChanges: Bool { state != initialState || effectiveAdjust != initialAdjust || removesPreservedEdits }
+    private var hasChanges: Bool {
+        legacyRecovery.needsSave(draftChanged: state != initialState || effectiveAdjust != initialAdjust || removesPreservedEdits)
+    }
     private var editAnimation: Animation? { reduceMotion ? nil : .smooth(duration: 0.28) }
     private var canUndo: Bool { !undoStack.isEmpty || committed.map { $0 != snapshot } == true }
 
@@ -1218,8 +1221,8 @@ struct AssetEditScreen: View {
         let intent = edits
         let renderedState = EditTransform.state(from: intent, originalWidth: originalWidth, originalHeight: originalHeight)
         let unified = canUseUnifiedEditor
-        let adjustChanged = savedAdjust != initialAdjust
-        let savesGeometry = (state != initialState || removesPreservedEdits || !adjustChanged) && (!intent.isEmpty || hadServerEdits)
+        let legacyIntent = legacyRecovery.intent(adjust: savedAdjust.legacy, initialAdjust: initialAdjust.legacy, edits: intent,
+            geometryChanged: state != initialState || removesPreservedEdits, hadServerEdits: hadServerEdits, supportsAdjust: canAdjust)
         let operationID = UUID()
         Task {
             var derivativeReady: Task<Void, Never>?
@@ -1249,8 +1252,8 @@ struct AssetEditScreen: View {
                     try await client.savePhotoEdits(id: asset.id, edits: intent)
                 } else {
                     try await PhotoEditPersistence.saveLegacy(
-                        adjust: adjustChanged ? savedAdjust.legacy : nil,
-                        edits: savesGeometry ? intent : nil,
+                        adjust: legacyIntent.adjust,
+                        edits: legacyIntent.edits,
                         writeAdjust: { value in
                             derivativeReady = observeDerivative()
                             if value.isNeutral { try await client.removeImageAdjust(id: assetID) }
@@ -1268,13 +1271,17 @@ struct AssetEditScreen: View {
                 await derivativeReady?.value
                 let detail = try? await client.assetDetail(id: asset.id)
                 onCommitted(operationID, detail)
+                legacyRecovery.recordConfirmed()
                 isSaving = false
                 finish(.saved(detail))
             } catch {
                 // No rollback claim: a legacy first write, or a response-lost
                 // write, may already be accepted. Preserve every draft field.
                 isSaving = false
-                if localEditor == nil { onRemoteSaveUnconfirmed(asset.id) }
+                if localEditor == nil {
+                    if !unified { legacyRecovery.recordUnconfirmed() }
+                    onRemoteSaveUnconfirmed(asset.id)
+                }
                 saveError = error.localizedDescription
             }
         }
