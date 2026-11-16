@@ -1,9 +1,10 @@
 import SwiftUI
 import UIKit
 import Photos
+import MapKit
 
 nonisolated enum CollectionsRoute: Hashable {
-    case albums, recent, memories
+    case albums, recent, memories, map
     case media(PhotoMediaFilter)
     case deviceMedia(PhotoMediaFilter)
 }
@@ -11,6 +12,7 @@ nonisolated enum CollectionsRoute: Hashable {
 struct CollectionsHome: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.usesCompactPhotosNavigation) private var usesCompactPhotosNavigation
     let albums: [Album]
     let isLoading: Bool
     let loadFailed: Bool
@@ -18,6 +20,7 @@ struct CollectionsHome: View {
     let onRetry: () -> Void
     let onEditPins: () -> Void
     @State private var people: [Person] = []
+    @State private var memories: [Memory] = []
     @State private var changingPeople = Set<String>()
     @AppStorage("imora.photos.source") private var source = "cloud"
     @State private var mediaFacts = DeviceMediaFactsStore.shared
@@ -27,7 +30,8 @@ struct CollectionsHome: View {
     private var availableSections: [CollectionSection] {
         layout.sections.filter {
             switch $0 {
-            case .memories: session.preferences?.memoriesEnabled != false
+            case .memories: session.preferences?.memoriesEnabled != false && !memories.isEmpty
+            case .albums: !albums.isEmpty || loadFailed
             case .people: session.preferences?.peopleEnabled != false
             case .spaces: session.capabilities.supportsSharedSpaces
             default: true
@@ -46,12 +50,16 @@ struct CollectionsHome: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 24)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
         }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .contentMargins(.bottom, usesCompactPhotosNavigation ? 70 : 0, for: .scrollContent)
+        .ignoresSafeArea(edges: .bottom)
         .background(Color(.systemBackground))
         .accessibilityIdentifier("collections-home")
         .task(id: session.client?.offlineAccountKey) { await loadPeople() }
+        .task(id: session.client?.offlineAccountKey) { await loadMemories() }
         .task(id: "\(source)|\(mediaFacts.generation)|\(PhotoAccess.shared.status.rawValue)|\(layout.pinnedIDs)") {
             guard source == "local" || layout.pinnedIDs.contains(where: { $0.hasPrefix("deviceMedia:") }) else { return }
             do { mediaFactsError = nil; _ = try await mediaFacts.refresh() }
@@ -62,6 +70,7 @@ struct CollectionsHome: View {
             if phase == .active {
                 if source == "local" || layout.pinnedIDs.contains(where: { $0.hasPrefix("deviceMedia:") }) { mediaFacts.invalidate() }
                 Task { await loadPeople() }
+                Task { await loadMemories() }
             }
         }
     }
@@ -123,7 +132,8 @@ struct CollectionsHome: View {
             } else {
                 MemoryLane(showsHeading: false, cardWidth: layout.previewSize == .large ? 221 : 160,
                            cardHeight: layout.previewSize == .large ? 202 : 140,
-                           cornerRadius: 22, contentInset: 0, showsEmptyPlaceholder: true)
+                           cornerRadius: 22, contentInset: 0, suppliedMemories: memories,
+                           onEmpty: { memories = [] })
                     .padding(.trailing, -16)
             }
         case .pinned:
@@ -202,14 +212,14 @@ struct CollectionsHome: View {
             if layout.previewSize == .none {
                 destination(.places, title: String(localized: "Explore Your Places"), symbol: "map.fill")
             } else {
-            NavigationLink(value: LibraryDestination.places) {
-                Label("Explore Your Places", systemImage: "map.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 22))
-            }
-            .accessibilityIdentifier("collections-places-map")
+                NavigationLink(value: CollectionsRoute.map) {
+                    MapPreviewGate { CollectionsMapPreview() }
+                        .frame(height: layout.previewSize == .large ? 220 : 160)
+                        .clipShape(.rect(cornerRadius: 22))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Explore Your Places")
+                .accessibilityIdentifier("collections-places-map")
             }
         case .media:
           if source == "local" {
@@ -381,6 +391,13 @@ struct CollectionsHome: View {
         } catch { ErrorToastCenter.shared.show(String(localized: "Couldn't update this person."), error: error) }
     }
 
+    private func loadMemories() async {
+        guard session.preferences?.memoriesEnabled != false, let client = session.client else { return }
+        guard let fetched = try? await client.memories(), !Task.isCancelled, session.client === client else { return }
+        let shown = fetched.filter { !$0.assets.isEmpty }
+        memories = shown.filter(\.isBirthday) + shown.filter { !$0.isBirthday }
+    }
+
     private func loadPeople() async {
         guard session.preferences?.peopleEnabled != false, let client = session.client else { return }
         let account = client.offlineAccountKey
@@ -466,8 +483,6 @@ private struct CollectionsPreview: View {
     }
 
     private func loadCover() async {
-        cover = nil
-        portraitURL = nil
         guard previewSize != .none, albumCoverID == nil, deviceCover == nil, let client = session.client else { return }
         if id == "places" {
             guard let asset = try? await client.cities().first, !Task.isCancelled, session.client === client else { return }
@@ -489,6 +504,42 @@ private struct CollectionsPreview: View {
         guard let bucket = try? await client.timeBuckets(filter).first,
               let result = try? await client.timeBucket(bucket.timeBucket, filter: filter), !Task.isCancelled, session.client === client else { return }
         cover = result.assets.first
+    }
+}
+
+private struct CollectionsMapPreview: View {
+    @Environment(SessionStore.self) private var session
+    @State private var camera: MapCameraPosition = .automatic
+    @State private var clusters: [MapCluster] = []
+
+    var body: some View {
+        Map(position: $camera, interactionModes: []) {
+            ForEach(clusters) { cluster in
+                Annotation("", coordinate: cluster.coordinate) {
+                    MapAssetMarker(cluster: cluster, isOpening: false,
+                                   thumbnailURL: session.client?.thumbnailURL(assetID: cluster.representative.id),
+                                   action: {})
+                }
+            }
+            .annotationTitles(.hidden)
+        }
+        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        .mapControlVisibility(.hidden)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .task(id: session.client?.context.id) {
+            guard let client = session.client,
+                  let markers = try? await MapMarkerCache.shared.markers(client: client, options: MapMarkerOptions()),
+                  !Task.isCancelled, session.client === client else { return }
+            let prepared = await Task.detached(priority: .userInitiated) {
+                let grouped = MapClustering.clusters(markers: markers, zoom: 3)
+                let bounds = MapClustering.focusBounds(of: grouped) ?? MapClustering.bounds(of: markers)
+                return (Array(grouped.sorted { $0.count > $1.count }.prefix(12)), bounds)
+            }.value
+            guard !Task.isCancelled, session.client === client else { return }
+            clusters = prepared.0
+            if let bounds = prepared.1 { camera = .rect(bounds.scaled(by: 1.3).mapRect) }
+        }
     }
 }
 

@@ -49,8 +49,22 @@ final class PhotoLibraryFilterTests: XCTestCase {
         known.isInAppAlbum = true
         for filter in [PhotoMediaFilter.edited, .screenshots, .notInAlbum] { XCTAssertFalse(filter.includes(known)) }
         XCTAssertTrue(PhotoMediaFilter.all.includes(known))
-        XCTAssertFalse(PhotoMediaFilter.screenshots.isAvailable(onDevice: false))
+        XCTAssertTrue(PhotoMediaFilter.screenshots.isAvailable(onDevice: false))
         XCTAssertTrue(PhotoMediaFilter.screenshots.isAvailable(onDevice: true))
+    }
+
+    func testCloudScreenshotsUseSubtypeAndExactPairing() {
+        var photo = asset("cloud-screen")
+        XCTAssertFalse(PhotosScreenshotLibraryModel.matches(photo, knownScreenshots: []))
+        XCTAssertTrue(PhotosScreenshotLibraryModel.matches(photo, knownScreenshots: [photo.id]))
+        photo.isScreenshot = false
+        XCTAssertFalse(PhotosScreenshotLibraryModel.matches(photo, knownScreenshots: [photo.id]))
+        photo.isScreenshot = true
+        XCTAssertTrue(PhotosScreenshotLibraryModel.matches(photo, knownScreenshots: []))
+        photo.originalFileName = "Screenshot_001.png"
+        photo.isScreenshot = nil
+        XCTAssertFalse(PhotosScreenshotLibraryModel.matches(photo, knownScreenshots: []),
+                       "A filename must not classify unrelated cloud photos")
     }
 
     func testScreenshotSubtypeAndUnbackedAlbumStateSurviveDeviceProjection() {

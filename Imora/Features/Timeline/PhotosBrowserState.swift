@@ -79,7 +79,7 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
     var requiresDeviceFacts: Bool {
         [.panoramas, .selfPortraits, .highFrameRate, .timeLapses, .screenRecordings, .raw, .bursts].contains(self)
     }
-    func isAvailable(onDevice: Bool) -> Bool { onDevice || (self != .screenshots && !requiresDeviceFacts) }
+    func isAvailable(onDevice: Bool) -> Bool { onDevice || !requiresDeviceFacts }
 
     var cloudSearchFilter: SearchFilter {
         var filter = SearchFilter()

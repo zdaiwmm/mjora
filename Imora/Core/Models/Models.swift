@@ -475,6 +475,7 @@ nonisolated struct AssetDetail: Codable, Identifiable, Hashable {
     var canEdit: Bool? = nil
     /// whether the viewer offers spatial scene on it, gallery and imora.
     var spatialScene: Bool? = nil
+    var isScreenshot: Bool? = nil
 
     func asAsset() -> Asset {
         let local = APIDate.parse(localDateTime) ?? .distantPast
@@ -507,7 +508,8 @@ nonisolated struct AssetDetail: Codable, Identifiable, Hashable {
             originalMimeType: originalMimeType,
             isEdited: isEdited,
             stackId: stack?.id,
-            stackCount: stack?.assetCount
+            stackCount: stack?.assetCount,
+            isScreenshot: isScreenshot
         )
     }
 }
@@ -816,7 +818,7 @@ nonisolated struct MapMarker: Codable, Identifiable, Hashable, Sendable {
     var placeName: String? {
         [city, state, country].compactMap { value in
             guard let value, !value.isEmpty else { return nil }
-            return value
+            return PhotoPlaceName.localized(value, country: country)
         }.first
     }
 }
@@ -925,7 +927,7 @@ nonisolated struct Memory: Codable, Identifiable {
             guard let theme = context.theme.flatMap({ themes[$0] }), let year = context.year else { return nil }
             return String(localized: "\(theme) from \(String(year))")
         case "on_this_day_place":
-            return context.city.map { String(localized: "On this day in \($0)") }
+            return context.city.map { String(localized: "On this day in \(PhotoPlaceName.localized($0))") }
         case "people_together":
             guard let nameA = context.personAName, let nameB = context.personBName else { return nil }
             return String(localized: "\(nameA) & \(nameB)")

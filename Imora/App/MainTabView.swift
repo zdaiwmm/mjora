@@ -27,7 +27,7 @@ struct MainTabView: View {
             get: { selection },
             set: { tab in
                 if tab == .search, selection != .search {
-                    searchSource = selection == .photos ? PhotoSearchSource(librarySource: source) : .cloud
+                    searchSource = .cloud
                 }
                 if tab == .search, selection == .search { focusSearch() }
                 if tab != .search {
@@ -149,13 +149,8 @@ struct MainTabView: View {
             // Preserve native tab/search behavior and the iPad sidebar while
             // the compact browsing controls share one morphing glass surface.
             .tabViewStyle(.sidebarAdaptable)
-            .task(id: selection) {
-                guard selection == .search else { return }
-                // Programmatic selection needs an explicit focus request once
-                // the native search field has attached to its search-role tab.
-                await Task.yield()
-                guard selection == .search, !Task.isCancelled else { return }
-                setSearchFocus(true)
+            .onChange(of: selection) { _, tab in
+                if tab == .search { setSearchFocus(true) }
             }
             .tabViewSearchActivation(.searchTabSelection)
             .tint(.primary)
@@ -165,11 +160,7 @@ struct MainTabView: View {
             if !showsLibrarySection, selection != .search, !keyboardVisible,
                !hidesCompactNavigation, !(selection == .photos && photoControls.isSelecting) {
                 PhotosNavigationBar(controls: photoControls, showsPeriods: showsDateNavigation,
-                    selection: tabSelection, onSearch: {
-                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
-                            activateSearch()
-                        }
-                    })
+                    selection: tabSelection, onSearch: activateSearch)
                     // Match the native floating bar's clearance independently
                     // of the device's home-indicator safe area.
                     .padding(.bottom, 21 - bottomSafeArea)
@@ -177,6 +168,7 @@ struct MainTabView: View {
             }
         }
         .onPreferenceChange(PhotosSelectionPreferenceKey.self) { hidesCompactNavigation = $0 }
+        .task { await Task.detached(priority: .utility) { PhotoPlaceName.prepare() }.value }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true
         }
@@ -226,9 +218,10 @@ struct MainTabView: View {
 
     private func activateSearch() {
         if selection != .search {
-            searchSource = selection == .photos ? PhotoSearchSource(librarySource: source) : .cloud
+            searchSource = .cloud
         }
         selection = .search
+        setSearchFocus(true)
     }
 
     /// dropping focus keeps the field presented, so the typed query and the

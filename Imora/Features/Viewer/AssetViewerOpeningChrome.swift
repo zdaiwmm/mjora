@@ -107,7 +107,7 @@ struct AssetViewerOpeningChromePresentation: Hashable {
         let date = asset.localDate
         let day = relativeDayLabel(for: date) ?? date.formatted(dateTitleFormat(for: date))
         let time = date.formatted(.dateTime.hour().minute().utc())
-        guard let place = asset.city ?? asset.country else {
+        guard let place = PhotoPlaceName.title(city: asset.city, country: asset.country) else {
             return (day, time)
         }
         return (place, "\(day), \(time)")

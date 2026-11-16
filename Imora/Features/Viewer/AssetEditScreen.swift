@@ -344,6 +344,7 @@ struct AssetEditScreen: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let asset: Asset
+    let openingSurface: CommittedGridSurface?
     let localAssetIdentifier: String?
     let onLocalSaved: (String) -> Void
     let onRemoteSaveUnconfirmed: (String) -> Void
@@ -354,6 +355,7 @@ struct AssetEditScreen: View {
 
     init(
         asset: Asset,
+        openingSurface: CommittedGridSurface? = nil,
         localAssetIdentifier: String? = nil,
         onLocalSaved: @escaping (String) -> Void = { _ in },
         onRemoteSaveUnconfirmed: @escaping (String) -> Void = { _ in },
@@ -363,6 +365,7 @@ struct AssetEditScreen: View {
         onFinished: @escaping (AssetEditOutcome) -> Void
     ) {
         self.asset = asset
+        self.openingSurface = openingSurface
         self.localAssetIdentifier = localAssetIdentifier
         self.onLocalSaved = onLocalSaved
         self.onRemoteSaveUnconfirmed = onRemoteSaveUnconfirmed
@@ -469,6 +472,11 @@ struct AssetEditScreen: View {
 
             switch loadState {
             case .loading:
+                AssetContextPreview(asset: asset, openingSurface: openingSurface)
+                    .aspectRatio(asset.ratio > 0 ? asset.ratio : 1, contentMode: .fit)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 100)
+                    .allowsHitTesting(false)
                 ProgressView()
             case .failed(let message):
                 ContentUnavailableView {

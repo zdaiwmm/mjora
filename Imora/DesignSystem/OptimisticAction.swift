@@ -51,6 +51,14 @@ final class ErrorToastCenter {
 
     private(set) var current: ErrorToast?
     private var pending: [ErrorToast] = []
+    @ObservationIgnored private var dismissalTask: Task<Void, Never>?
+    private let duration: Duration
+
+    init(duration: Duration = .seconds(3.8)) {
+        self.duration = duration
+    }
+
+    isolated deinit { dismissalTask?.cancel() }
 
     func show(_ message: String, style: ErrorToast.Style = .error) {
         let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,6 +70,7 @@ final class ErrorToastCenter {
         let toast = ErrorToast(message: normalized, style: style)
         if current == nil {
             current = toast
+            scheduleDismissal()
         } else {
             pending.append(toast)
         }
@@ -75,6 +84,16 @@ final class ErrorToastCenter {
     func dismiss(_ id: UUID) {
         guard current?.id == id else { return }
         current = pending.isEmpty ? nil : pending.removeFirst()
+        scheduleDismissal()
+    }
+
+    private func scheduleDismissal() {
+        dismissalTask?.cancel()
+        guard let toast = current else { return }
+        dismissalTask = Task { [weak self, duration] in
+            do { try await Task.sleep(for: duration) } catch { return }
+            self?.dismiss(toast.id)
+        }
     }
 
     private static func message(action: String, error: Error) -> String {
@@ -118,9 +137,6 @@ private struct ErrorToastHost: View {
                     )
                     .task {
                         AccessibilityNotification.Announcement(toast.message).post()
-                        try? await Task.sleep(for: .seconds(3.8))
-                        guard !Task.isCancelled else { return }
-                        center.dismiss(toast.id)
                     }
             }
         }
