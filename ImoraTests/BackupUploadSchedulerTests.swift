@@ -3,6 +3,40 @@ import XCTest
 
 @MainActor
 final class BackupUploadSchedulerTests: XCTestCase {
+    func testRuntimeLimitChangesDrainExistingWorkBeforeStartingMore() async {
+        var limit = 1
+        var active = 0
+        var maximum = 0
+        var finished = 0
+        await BackupUploadScheduler.run(Array(0..<12), workers: 3, workerLimit: { limit }, operation: { item in
+            active += 1
+            maximum = max(maximum, active)
+            XCTAssertLessThanOrEqual(active, limit, "A reduced runtime budget must drain existing workers first")
+            return {
+                try? await Task.sleep(for: .milliseconds(5))
+                return item
+            }
+        }, didFinish: { item, _ in
+            active -= 1
+            finished += 1
+            if item == 0 { limit = 3 }
+            if item == 1 { limit = 1 }
+            return .proceed
+        })
+        XCTAssertEqual(finished, 12)
+        XCTAssertEqual(maximum, 3)
+        XCTAssertEqual(active, 0)
+    }
+
+    func testCriticalThermalBudgetRetainsEveryUnstartedItem() async {
+        var started = 0
+        await BackupUploadScheduler.run([1, 2, 3], workers: 3, workerLimit: { 0 }, operation: { item in
+            started += 1
+            return { item }
+        }, didFinish: { _, _ in .proceed })
+        XCTAssertEqual(started, 0)
+    }
+
     func testAuthorityPauseKeepsUnstartedQueueAndDoesNotCancelHealthyWorker() async {
         enum Outcome: Sendable { case uploaded, authorityPaused }
         let healthyStarted = expectation(description: "healthy transfer started")

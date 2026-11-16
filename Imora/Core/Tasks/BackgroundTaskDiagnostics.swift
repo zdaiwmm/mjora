@@ -15,11 +15,11 @@ final class BackgroundTaskDiagnostics {
     }
 
     nonisolated enum Lifecycle: String, Codable, Sendable {
-        case submitted, accepted, denied, launched, progress, expired, invalidated, completed, backgrounded, foregrounded
+        case submitted, accepted, denied, launched, progress, expired, invalidated, completed, handedOff, backgrounded, foregrounded
 
         var isTerminal: Bool {
             switch self {
-            case .denied, .expired, .invalidated, .completed: true
+            case .denied, .expired, .invalidated, .completed, .handedOff: true
             default: false
             }
         }

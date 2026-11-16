@@ -4,6 +4,48 @@ import XCTest
 
 @MainActor
 final class ContinuedProcessingLifecycleTests: XCTestCase {
+    func testDaemonHandoffCompletesOnlyPreparationAndCannotExpireTheContinuingUpload() async {
+        let diagnostics = BackgroundTaskDiagnostics()
+        let owner = LifecycleWorkload(running: true, progress: .init(fraction: 0.35))
+        let coordinator = makeCoordinator(owner, diagnostics: diagnostics)
+        _ = await coordinator.submit(title: "Fixture", subtitle: "Fixture")
+        let task = LifecycleTask()
+        coordinator.begin(task)
+        await owner.waitUntilRunning()
+        let oldExpiration = task.expirationHandler
+        owner.continuedSystemHandoffReady = true
+        owner.onContinuedProgress?()
+        XCTAssertEqual(task.completions, [true])
+        XCTAssertTrue(owner.isRunning, "The library upload must continue after preparation finishes")
+        XCTAssertTrue(coordinator.hasSystemHandoff)
+        XCTAssertFalse(coordinator.canRequestContinuation)
+        XCTAssertEqual(diagnostics.events.last?.lifecycle, .handedOff)
+        oldExpiration?()
+        await Task.yield()
+        XCTAssertEqual(owner.explicitPauses, 0)
+        owner.complete()
+        await Task.yield()
+        XCTAssertEqual(task.completions, [true])
+    }
+
+    func testLateHandoffCannotReviveAStoppedPreparationTask() async {
+        let owner = LifecycleWorkload(running: true, progress: .init(fraction: 0.2))
+        let coordinator = makeCoordinator(owner)
+        _ = await coordinator.submit(title: "Fixture", subtitle: "Fixture")
+        let task = LifecycleTask()
+        coordinator.begin(task)
+        await owner.waitUntilRunning()
+        let lateProgress = owner.onContinuedProgress
+        task.expirationHandler?()
+        await owner.waitUntilPaused()
+        owner.continuedSystemHandoffReady = true
+        lateProgress?()
+        XCTAssertEqual(task.completions, [false])
+        XCTAssertFalse(coordinator.hasSystemHandoff)
+        XCTAssertEqual(owner.explicitPauses, 1)
+        owner.complete()
+    }
+
     func testPromotingARunningJobImmediatelyShowsItsExistingProgress() async {
         let owner = LifecycleWorkload(running: true, progress: .init(fraction: 0.27))
         let coordinator = makeCoordinator(owner)
@@ -131,6 +173,7 @@ private final class LifecycleWorkload: ContinuedWorkload {
     let continuedSubtitle = "Fixture"
     var continuedProgress: ContinuedProgress?
     var continuedFailed = false
+    var continuedSystemHandoffReady = false
     var continuedDiagnosticPhase: BackgroundTaskDiagnostics.Phase { .checking }
     var onContinuedProgress: (() -> Void)?
     private var completion: CheckedContinuation<Void, Never>?

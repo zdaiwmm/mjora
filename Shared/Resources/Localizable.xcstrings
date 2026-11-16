@@ -34362,6 +34362,86 @@
           }
         }
       }
+    },
+    "Prepared files are uploading. Check Backup for remaining items.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的文件正在上传。剩余项目可在备份页查看。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepared files are uploading. Check Backup for remaining items."
+          }
+        }
+      }
+    },
+    "Background upload started": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台上传已开始"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background upload started"
+          }
+        }
+      }
+    },
+    "Prepared uploads are handled by iOS. Remaining files continue when background time is available.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的上传由 iOS 接管；获得后台运行机会后，将继续处理剩余文件。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepared uploads are handled by iOS. Remaining files continue when background time is available."
+          }
+        }
+      }
+    },
+    "Device is too warm. Backup will resume when it cools.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备温度过高。降温后将继续备份。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device is too warm. Backup will resume when it cools."
+          }
+        }
+      }
+    },
+    "This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此控制适用于整个图库。已准备的上传由 iOS 接管；后台运行不可用时，请保持 Imora 打开以准备剩余文件。从后台划掉 Imora 会停止后台传输。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

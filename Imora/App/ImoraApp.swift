@@ -80,8 +80,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 completion: ShareUploadCoordinator.LaunchCompletion(run: completionHandler)
             )
         } else {
+            Self.launchSession?.restoreSessionIfAvailable()
+            Self.launchSession?.backup?.startIfIdle()
+            Self.launchSession?.backup?.scheduleRecovery()
             BackgroundUploader.shared.setBackgroundCompletionHandler(
-                BackgroundUploader.LaunchCompletion(run: completionHandler)
+                BackgroundUploader.LaunchCompletion(run: completionHandler), identifier: identifier
             )
         }
     }

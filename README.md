@@ -68,7 +68,7 @@ A native iOS client for your self-hosted photos. Supports [Imora](https://imora.
 
 ### Backup
 
-- Guarded uploads while iOS grants the app execution time, with protected recovery records for resuming after interruptions. Sensitive uploads reject redirects; daemon-owned background continuation is not currently enabled.
+- Encrypted, resumable system background uploads on servers advertising `backgroundUploadsV1`, with protected recovery records and authenticated completion checks. Account credentials and plaintext stay on guarded connections; other servers retain guarded foreground uploads.
 - Resumable uploads in chunks on Imora.
 - A saved local server address, selectable from Backup or Local Network without reading the Wi-Fi name. Builds with Wi-Fi-name access can also select it automatically on saved networks. Manual LAN failures do not silently fall back to the external address.
 - Automatic LAN selection can authenticate a saved HTTPS server using an app-scoped CA enrolled through trusted setup. Manual local mode holds instead of silently switching to WAN when connectivity or consent is unavailable.
