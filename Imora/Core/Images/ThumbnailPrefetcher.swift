@@ -65,7 +65,8 @@ final class ThumbnailPrefetcher {
         client: ImoraClient?,
         backup: BackupManager?,
         targetPixelSize: CGFloat? = nil,
-        direction: Int = 0
+        direction: Int = 0,
+        isFast: Bool = false
     ) {
         if let targetPixelSize {
             updateTargetPixelSize(targetPixelSize)
@@ -95,9 +96,18 @@ final class ThumbnailPrefetcher {
         }
         let lastRowID = visibleRowIDs.reversed().first { model.firstAssetIDByRowID[$0] != nil }
         let visibleEnd = min(assets.count, high + (lastRowID.flatMap { rowAssetCounts[$0] } ?? 1))
-        let next = ThumbnailLoadState.prefetchWindow(visible: low..<visibleEnd, count: assets.count)
+        let visible = low..<visibleEnd
+        let nearby = ThumbnailLoadState.prefetchWindow(visible: visible, count: assets.count)
+        let screen = max(1, visible.count)
+        let nextLow = max(0, nearby.lowerBound - (direction < 0 ? screen : 0))
+        let nextHigh = min(assets.count, nearby.upperBound + (direction > 0 ? screen : 0))
+        let next = nextLow..<nextHigh
         guard !next.isEmpty else { return cancel() }
-        let nextDecoded = next
+        // During a fling, leave the trailing side as compressed bytes and
+        // reserve decode capacity for what is visible and immediately ahead.
+        let nextDecoded = isFast
+            ? (direction < 0 ? nearby.lowerBound : low)..<(direction > 0 ? nearby.upperBound : visibleEnd)
+            : nearby
 
         let version = model.flatAssetsVersion
         guard next != window || version != windowVersion || nextDecoded != decodedRange else { return }
@@ -112,14 +122,7 @@ final class ThumbnailPrefetcher {
             } else {
                 source = Self.source(of: assets[index], client: client, backup: backup, pixels: self.targetPixelSize)
             }
-            // photokit has one caching lane, so only server tiles split.
-            let isDecoded: Bool
-            if case .remote = source {
-                isDecoded = nextDecoded.contains(index)
-            } else {
-                isDecoded = true
-            }
-            entries.append(Warmed(source: source, isDecoded: isDecoded))
+            entries.append(Warmed(source: source, isDecoded: nextDecoded.contains(index)))
         }
 
         var start: [Warmed] = []
@@ -219,9 +222,13 @@ final class ThumbnailPrefetcher {
                         isStart ? data.start.append(url) : data.stop.append(url)
                     }
                 case .local(let identifier, let scope):
-                    if isStart { local.start[identifier] = scope } else { local.stop[identifier] = scope }
+                    if entry.isDecoded {
+                        if isStart { local.start[identifier] = scope } else { local.stop[identifier] = scope }
+                    }
                 case .paired(let identifier, let scope):
-                    if isStart { paired.start[identifier] = scope } else { paired.stop[identifier] = scope }
+                    if entry.isDecoded {
+                        if isStart { paired.start[identifier] = scope } else { paired.stop[identifier] = scope }
+                    }
                 }
             }
         }

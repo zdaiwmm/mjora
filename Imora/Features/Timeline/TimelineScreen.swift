@@ -48,6 +48,9 @@ private final class ScrollContext {
     /// held with hysteresis so a wobble never flips the buffers back and
     /// forth mid fling.
     var direction = 0
+    /// The window also changes when speed or direction changes inside one row.
+    var prefetchDirection: Int?
+    var prefetchIsFast: Bool?
 }
 
 /// speeds, in points per second, past which a fling counts as fast for the
@@ -630,19 +633,21 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             context.visibleLayoutVersion = layout.version
             context.firstVisibleRowID = rows[visibleLow].id
             context.visibleRowIDs = rows[visible].map(\.id)
-            // a scrub lands somewhere else every frame, and warming eighty
-            // tiles at each stop only queues work the next frame throws away.
-            // the window is rebuilt once the finger lifts.
-            if !scrub.isScrubbing {
-                prefetcher.update(
-                    visibleRowIDs: context.visibleRowIDs,
-                    model: model,
-                    client: session.client,
-                    backup: session.backup,
-                    targetPixelSize: thumbnailPixelSize(for: side),
-                    direction: context.direction
-                )
-            }
+        }
+        // A reversal or speed change can occur before the visible row changes.
+        // Scrubbing catches up once the finger lifts instead of warming each stop.
+        if !scrub.isScrubbing && (viewportChanged || context.prefetchDirection != context.direction || context.prefetchIsFast != motion.isFast) {
+            context.prefetchDirection = context.direction
+            context.prefetchIsFast = motion.isFast
+            prefetcher.update(
+                visibleRowIDs: context.visibleRowIDs,
+                model: model,
+                client: session.client,
+                backup: session.backup,
+                targetPixelSize: thumbnailPixelSize(for: side),
+                direction: context.direction,
+                isFast: motion.isFast
+            )
         }
         prewarmOpeningChrome(in: rows, visibleRange: visible)
         if context.isIdle || viewportChanged {
@@ -685,7 +690,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         let elapsed = now - context.lastSampleTime
         if context.lastSampleTime > 0, elapsed > 0, elapsed < 0.25 {
             let sample = (offsetY - context.lastSampledOffsetY) / CGFloat(elapsed)
-            context.velocity = context.velocity * 0.5 + sample * 0.5
+            if abs(sample) > 600 && context.direction != 0 && (sample > 0 ? 1 : -1) != context.direction {
+                context.velocity = sample
+            } else {
+                context.velocity = context.velocity * 0.5 + sample * 0.5
+            }
         } else {
             context.velocity = 0
         }
@@ -1025,15 +1034,10 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                         // handler lifts the hold once the scroll is
                         // actually at rest.
                         if scrollContext.isIdle { model.resumeRebuilds() }
-                        // the window went unwarmed for the length of
-                        // the drag; catch it up where it landed.
-                        prefetcher.update(
-                            visibleRowIDs: scrollContext.visibleRowIDs,
-                            model: model,
-                            client: session.client,
-                            backup: session.backup,
-                            targetPixelSize: thumbnailPixelSize(for: side)
-                        )
+                        // Force a new window where the drag landed, even if
+                        // its last frame happened to stay within the same row.
+                        scrollContext.prefetchDirection = nil
+                        scrollContext.prefetchIsFast = nil
                     }
                     let apply = { scrubbing ? scrub.beginScrub() : scrub.endScrub() }
                     if reduceMotion {
@@ -1114,7 +1118,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     model: model,
                     client: session.client,
                     backup: session.backup,
-                    targetPixelSize: thumbnailPixelSize(for: side)
+                    targetPixelSize: thumbnailPixelSize(for: side),
+                    direction: scrollContext.direction,
+                    isFast: motion.isFast
                 )
             }
             // keyed on the row tallies and the layout version, so any change

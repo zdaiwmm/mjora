@@ -134,6 +134,105 @@ final class Phase4ImageDemandTests: XCTestCase {
             "Promotion must reuse the same endpoint work")
     }
 
+    func testReverseScrollDropsOldWindow() async throws {
+        let bytes = try imageBytes(), starts = Mutex<[String]>([])
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            guard request.path.contains("/thumbnail") else { return .init(status: 503) }
+            starts.withLock { $0.append(request.path) }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "reverse-\(UUID())")
+        client.confirmMediaAccount("reverse-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let prefix = "direction-\(UUID())"
+        let assets = (0..<60).map { index in
+            Asset(id: "\(prefix)-\(index)", ownerId: "fixture", isImage: true, isFavorite: false,
+                isTrashed: false, visibility: .timeline, thumbhash: "r1",
+                fileCreatedAt: Date(timeIntervalSince1970: 1_700_000_000), localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil, createdAt: nil)
+        }
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: assets, groupsSuppliedAssetsByDate: false)
+        let rows = model.rows.compactMap { row -> (String, Int)? in
+            guard case .tiles(let id, let runs) = row else { return nil }
+            return (id, runs.reduce(0) { $0 + $1.assets.count })
+        }
+        let middle = try XCTUnwrap(rows.dropFirst(rows.count / 2).first)
+        let firstID = try XCTUnwrap(model.firstAssetIDByRowID[middle.0])
+        let low = try XCTUnwrap(model.flatAssetIndex(for: firstID)), end = low + middle.1
+        let reverseIndex = low - middle.1 - 1, oldIndex = end + middle.1
+        XCTAssertGreaterThanOrEqual(reverseIndex, 0); XCTAssertLessThan(oldIndex, model.flatAssets.count)
+        let reverseID = model.flatAssets[reverseIndex].id, oldID = model.flatAssets[oldIndex].id
+        let slots = ThumbnailLoadLimiter.shared
+        var held: [UUID] = []
+        for _ in 0..<4 { held.append(try await slots.acquire()) }
+        defer { Task { for permit in held { await slots.release(permit) } } }
+        let prefetcher = ThumbnailPrefetcher(targetPixelSize: 416)
+        defer { prefetcher.cancel() }
+        prefetcher.update(visibleRowIDs: [middle.0], model: model, client: client, backup: nil, direction: 1)
+        try await Task.sleep(for: .milliseconds(250))
+        prefetcher.update(visibleRowIDs: [middle.0], model: model, client: client, backup: nil, direction: -1)
+        try await Task.sleep(for: .milliseconds(250))
+        for permit in held { await slots.release(permit) }
+        held.removeAll()
+        for _ in 0..<400 {
+            if starts.withLock({ paths in paths.contains { $0.contains(reverseID) } }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(starts.withLock { paths in paths.contains { $0.contains(reverseID) } },
+            "The newly predicted side must reach the actual endpoint")
+        XCTAssertFalse(starts.withLock { paths in paths.contains { $0.contains(oldID) } },
+            "Queued far-side work from the old direction must be cancelled")
+    }
+
+    func testFastScrollPreservesForwardDecodeAndOnlyFetchesTrailingBytes() async throws {
+        let bytes = try imageBytes(), starts = Mutex<[String]>([])
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            guard request.path.contains("/thumbnail") else { return .init(status: 503) }
+            starts.withLock { $0.append(request.path) }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "fling-\(UUID())")
+        client.confirmMediaAccount("fling-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let prefix = "fling-asset-\(UUID())"
+        let assets = (0..<60).map { index in
+            Asset(id: "\(prefix)-\(index)", ownerId: "fixture", isImage: true, isFavorite: false,
+                isTrashed: false, visibility: .timeline, thumbhash: "r1",
+                fileCreatedAt: Date(timeIntervalSince1970: 1_700_000_000), localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil, createdAt: nil)
+        }
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: assets, groupsSuppliedAssetsByDate: false)
+        let rows = model.rows.compactMap { row -> (String, Int)? in
+            guard case .tiles(let id, let runs) = row else { return nil }
+            return (id, runs.reduce(0) { $0 + $1.assets.count })
+        }
+        let middle = try XCTUnwrap(rows.dropFirst(rows.count / 2).first)
+        let firstID = try XCTUnwrap(model.firstAssetIDByRowID[middle.0])
+        let low = try XCTUnwrap(model.flatAssetIndex(for: firstID)), end = low + middle.1
+        let trailingID = model.flatAssets[low - 1].id, forwardID = model.flatAssets[end].id
+        let trailing = client.thumbnailURL(assetID: trailingID, cacheKey: "r1")
+        let forward = client.thumbnailURL(assetID: forwardID, cacheKey: "r1")
+        let prefetcher = ThumbnailPrefetcher(targetPixelSize: 416)
+        defer { prefetcher.cancel() }
+        prefetcher.update(visibleRowIDs: [middle.0], model: model, client: client, backup: nil, direction: 1, isFast: true)
+        for _ in 0..<400 {
+            if starts.withLock({ paths in paths.contains { $0.contains(trailingID) } }),
+               ImageLoader.shared.cachedImage(for: forward, targetPixelSize: 416) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(starts.withLock { paths in paths.contains { $0.contains(trailingID) } },
+            "The trailing side should still fetch encoded bytes")
+        XCTAssertNotNil(ImageLoader.shared.cachedImage(for: forward, targetPixelSize: 416)?.cgImage,
+            "The immediately predicted side should have a decoded image")
+        XCTAssertNil(ImageLoader.shared.cachedImage(for: trailing, targetPixelSize: 416),
+            "A fast fling should not decode the trailing side")
+    }
+
     #if DEBUG
     func testSameURLNewGenerationDoesNotJoinRetiredTransfer() async throws {
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
