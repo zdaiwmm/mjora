@@ -57,7 +57,7 @@ struct ActiveBackupTransfersView: View {
                     }
                     if let fraction = transfer.fraction {
                         ProgressView(value: fraction)
-                            .tint(.indigo)
+                            .tint(.accentColor)
                     }
                     if let rate = transfer.bytesPerSecond(at: now) {
                         Text(String(localized: "Upload speed: \(speedText(rate))"))

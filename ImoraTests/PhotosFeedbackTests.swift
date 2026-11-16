@@ -43,9 +43,57 @@ final class PhotosFeedbackTests: XCTestCase {
         tile.isSelectable = true
         tile.layoutIfNeeded()
         tile.updateSelectionAppearance(isSelecting: true)
+        XCTAssertTrue(tile.subviews.compactMap { $0 as? UIImageView }.allSatisfy(\.isHidden),
+                      "Entering selection must not draw empty circles")
+        tile.isSelected = true
+        tile.updateSelectionAppearance(isSelecting: true)
         let indicator = try XCTUnwrap(tile.subviews.compactMap { $0 as? UIImageView }.first)
         XCTAssertEqual(indicator.frame, CGRect(x: 90, y: 90, width: 24, height: 24))
         XCTAssertFalse(indicator.isHidden)
+        tile.isSelected = false
+        tile.updateSelectionAppearance(isSelecting: true)
+        XCTAssertTrue(indicator.isHidden)
+    }
+
+    func testFavoritesFilterDoesNotRequestPartnerAssets() {
+        let favorites = PhotosLaunchSelection.cloudFilter(mergesSharedSpaces: false, favorites: true)
+        XCTAssertEqual(favorites.isFavorite, true)
+        XCTAssertFalse(favorites.withPartners, "Immich rejects favorite time buckets with partner assets")
+        XCTAssertFalse(favorites.queryItems.contains { $0.name == "withPartners" })
+        XCTAssertTrue(PhotosLaunchSelection.cloudFilter(mergesSharedSpaces: false).withPartners)
+    }
+
+    func testRetiredThumbnailOffersRetryWithoutBlockingTheOtherInitialPhotos() {
+        let client = ImoraClient(apiURL: URL(string: "http://127.0.0.1:1/api")!, accessToken: UUID().uuidString)
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let asset = Asset(id: "retry-\(UUID())", ownerId: "fixture", isImage: true, isFavorite: false,
+                          isTrashed: false, visibility: .timeline, thumbhash: "retired",
+                          fileCreatedAt: .now, localOffsetHours: 0, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+        let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 416)
+        _ = ImageLoader.shared.invalidateSubjects(client: client, subjects: [key.subject], keys: [key])
+        let tile = TimelineTileView(frame: CGRect(x: 0, y: 0, width: 132, height: 132))
+        tile.projectImage(asset: asset, source: .init(assetID: asset.id, localIdentifier: nil,
+            pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+            client: client, generation: 0, targetPixelSize: 416)
+        XCTAssertTrue(tile.initialDisplayIsReady)
+        XCTAssertFalse(tile.hasPreparedInitialImage)
+        XCTAssertFalse(tile.initialImageIsCurrent)
+        XCTAssertTrue(tile.subviews.compactMap { $0 as? UIButton }.contains { !$0.isHidden })
+    }
+
+    func testToastExpiresWithoutAMountedHostAndAdvancesQueue() async throws {
+        let center = ErrorToastCenter(duration: .milliseconds(60))
+        center.show("First", style: .information)
+        center.show("Second", style: .information)
+        center.show("First", style: .information)
+        let first = try XCTUnwrap(center.current?.id)
+        for _ in 0..<100 where center.current?.id == first { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(center.current?.message, "Second")
+        center.dismiss(first)
+        XCTAssertEqual(center.current?.message, "Second", "A stale host cannot dismiss a newer toast")
+        for _ in 0..<100 where center.current != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(center.current)
     }
 
     func testLivePhotoKeepsDecoderSurfaceMountedBehindStill() async throws {
@@ -141,7 +189,7 @@ final class PhotosFeedbackTests: XCTestCase {
         await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
                              autoPlays: false, rewindsAtEnd: true, defersItem: true) { AVPlayerItem(url: url) }
         playback.configureLiveHold(context: context, isAuthorized: { true })
-        playback.prepareLocalItem(AVPlayerItem(url: url), assetID: context.assetID)
+        playback.prepareLiveItem(AVPlayerItem(url: url), assetID: context.assetID)
         let player = try XCTUnwrap(playback.player)
         defer { playback.reload(assetID: context.assetID) }
         playback.handleLiveHold(.began, context: context)
@@ -253,7 +301,7 @@ final class PhotosFeedbackTests: XCTestCase {
             AVPlayerItem(url: url)
         }
         defer { playback.reload(assetID: "synthetic-live") }
-        playback.prepareLocalItem(AVPlayerItem(url: url), assetID: "synthetic-live")
+        playback.prepareLiveItem(AVPlayerItem(url: url), assetID: "synthetic-live")
         let player = try XCTUnwrap(playback.player)
         XCTAssertFalse(playback.isEngaged)
         for _ in 0..<2 {
@@ -272,5 +320,72 @@ final class PhotosFeedbackTests: XCTestCase {
             XCTAssertFalse(playback.isEngaged)
             XCTAssertTrue(playback.player === player)
         }
+    }
+
+    func testLoopLivePhotoRestartsAndSwitchingOffStopsThePreparedPlayer() async throws {
+        let url = try ownedMotionURL(), playback = VideoPlayback()
+        let context = LiveHoldContext(assetID: "loop-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) { AVPlayerItem(url: url) }
+        defer { playback.reload(assetID: context.assetID) }
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        playback.prepareLiveItem(AVPlayerItem(url: url), assetID: context.assetID)
+        let player = try XCTUnwrap(playback.player)
+        playback.setLiveMode(.loop)
+        var reachedEnd = false, restarted = false
+        for _ in 0..<250 {
+            try await Task.sleep(for: .milliseconds(20))
+            if playback.duration > 0, playback.currentTime > playback.duration * 0.75 { reachedEnd = true }
+            if reachedEnd, playback.currentTime < playback.duration * 0.25, playback.isEngaged { restarted = true; break }
+        }
+        XCTAssertTrue(restarted, "Loop must cross the end and restart the same prepared movie")
+        XCTAssertTrue(playback.player === player)
+        playback.setLiveMode(.off)
+        XCTAssertEqual(player.rate, 0)
+        XCTAssertFalse(playback.isEngaged)
+    }
+}
+
+@MainActor
+final class PhotosPolishTests: XCTestCase {
+    func testBounceCannotBeSelectedBeforeReverseDecodingIsAvailable() {
+        let playback = VideoPlayback()
+        XCTAssertFalse(playback.canBounce)
+        playback.setLiveMode(.bounce)
+        XCTAssertEqual(playback.liveMode, .live)
+    }
+
+    func testChinesePlaceNamesAreSharedOfflineAndPreserveWireValues() throws {
+        let zh = Locale(identifier: "zh_Hans_CN")
+        XCTAssertTrue(PhotoPlaceName.localized("Hangzhou", locale: zh).hasPrefix("杭州"))
+        XCTAssertTrue(PhotoPlaceName.localized("Hángzhōu", locale: zh).hasPrefix("杭州"))
+        XCTAssertEqual(PhotoPlaceName.localized("Chengdu", locale: zh), "成都")
+        XCTAssertEqual(PhotoPlaceName.localized("Suzhou", locale: zh), "苏州")
+        XCTAssertEqual(PhotoPlaceName.localized("China", locale: zh), "中国")
+        XCTAssertEqual(PhotoPlaceName.localized("CN", locale: zh), "中国")
+        XCTAssertEqual(PhotoPlaceName.localized("Unknown village", locale: zh), "Unknown village")
+        XCTAssertEqual(PhotoPlaceName.localized("Hangzhou", country: "United States", locale: zh), "Hangzhou")
+        XCTAssertEqual(PhotoPlaceName.localized("Hangzhou", locale: Locale(identifier: "en_US")), "Hangzhou")
+        XCTAssertEqual(PhotoPlaceName.title(city: " ", country: "China", locale: zh), "中国")
+        XCTAssertNil(PhotoPlaceName.title(city: nil, country: nil, locale: zh))
+        var filter = SearchFilter()
+        filter.city = .value("Hangzhou")
+        XCTAssertEqual(filter.city?.wireValue, "Hangzhou", "Localized presentation must not change the server filter")
+    }
+
+    func testLiveModesStopPlaybackAndOffIgnoresPresses() async {
+        let playback = VideoPlayback()
+        await playback.claim(assetID: "polish-live", forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) { nil }
+        let context = LiveHoldContext(assetID: "polish-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        playback.setLiveMode(.off)
+        playback.handleLiveHold(.began, context: context)
+        playback.handleLiveHold(.recognized, context: context)
+        XCTAssertFalse(playback.isEngaged)
+        XCTAssertFalse(playback.isBuffering)
+        XCTAssertEqual(playback.liveMode, .off)
+        playback.setLiveMode(.live)
+        XCTAssertEqual(playback.liveMode, .live)
     }
 }

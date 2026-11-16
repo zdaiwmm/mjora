@@ -495,6 +495,7 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
     }
 
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        guard grid.acceptsStatusBarScrollToTop else { return false }
         setIdle(false)
         return true
     }
@@ -508,6 +509,26 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
 /// exact layout, diffed by index while the rows hold and by id when they
 /// are swapped, and handed back to per-kind pools when they leave.
 final class TimelineGridView: UIScrollView {
+    private let chromeTouchObserver = PhotosChromeTouchObserver()
+    private weak var observedWindow: UIWindow?
+    var acceptsStatusBarScrollToTop: Bool {
+        CACurrentMediaTime() - chromeTouchObserver.lastNavigationTouch > 0.5
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if observedWindow !== window {
+            observedWindow?.removeGestureRecognizer(chromeTouchObserver)
+            observedWindow = window
+            window?.addGestureRecognizer(chromeTouchObserver)
+        }
+        #if DEBUG || PHASE4_PERFORMANCE
+        if LaunchPresentationTrace.enabled {
+            if window != nil, presentationTrace == nil { presentationTrace = LaunchPresentationTrace(grid: self) }
+            if window == nil { presentationTrace?.stop(); presentationTrace = nil }
+        }
+        #endif
+    }
     var initialPresentationCovered = false {
         didSet { if initialPresentationCovered != oldValue { setNeedsLayout() } }
     }
@@ -529,13 +550,6 @@ final class TimelineGridView: UIScrollView {
     }
     #if DEBUG || PHASE4_PERFORMANCE
     private var presentationTrace: LaunchPresentationTrace?
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        guard LaunchPresentationTrace.enabled else { return }
-        if window != nil, presentationTrace == nil { presentationTrace = LaunchPresentationTrace(grid: self) }
-        if window == nil { presentationTrace?.stop(); presentationTrace = nil }
-    }
 
     func presentationObservation(timestamp: Double, origin: String = "cad", displayTimestamp: Double? = nil) -> GridFrameObservation {
         let viewport = bounds.inset(by: adjustedContentInset)
@@ -796,7 +810,7 @@ final class TimelineGridView: UIScrollView {
         let safeHeight = max(1, bounds.height - safeAreaInsets.top - safeAreaInsets.bottom)
         let shortContent = usesFullPhotosCanvas && layout.total > 0
             && headerHeight + layout.total + footerHeight + tailPadding <= safeHeight
-        shortContentTopPadding = shortContent ? safeAreaInsets.top : 0
+        shortContentTopPadding = shortContent && contentInsetAdjustmentBehavior == .never ? safeAreaInsets.top : 0
         if lastEffectiveHeaderHeight != effectiveHeaderHeight {
             lastEffectiveHeaderHeight = effectiveHeaderHeight
             onEffectiveHeaderHeight?(effectiveHeaderHeight)
@@ -841,8 +855,7 @@ final class TimelineGridView: UIScrollView {
                 $0.kind == .placeholder && $0.view.frame.intersection(viewport).height > 1
             }
             if permitsEmptyInitialViewport || (initialPhotosPositionReady && !hasPlaceholders
-                && !visibleTiles.isEmpty && visibleTiles.allSatisfy(\.hasPreparedInitialImage)
-                && visibleTiles.allSatisfy(\.initialImageIsCurrent)) {
+                && !visibleTiles.isEmpty && visibleTiles.allSatisfy(\.initialDisplayIsReady)) {
                 initialReadinessDelivered = true
                 onInitialViewportPrepared?()
             }
@@ -1120,6 +1133,23 @@ final class TimelineGridView: UIScrollView {
         mounted = []
         mountedRange = 0..<0
         mountedVersion = -1
+    }
+}
+
+/// Observe navigation touches without claiming them. UIKit also forwards
+/// navigation-bar taps to scroll-to-top; only the status-bar gesture should
+/// trigger it in the photo library.
+private final class PhotosChromeTouchObserver: UIGestureRecognizer {
+    private(set) var lastNavigationTouch: CFTimeInterval = -.infinity
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let window = view as? UIWindow, let touch = touches.first {
+            let y = touch.location(in: window).y
+            if y > window.safeAreaInsets.top, y < window.safeAreaInsets.top + 96 {
+                lastNavigationTouch = CACurrentMediaTime()
+            }
+        }
+        state = .failed
     }
 }
 

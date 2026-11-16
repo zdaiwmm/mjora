@@ -170,7 +170,7 @@ struct CleanupRewindScreen: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(yearsAgo > 0 ? CleanupText.count(yearsAgo, unit: .yearAgo) : String(localized: "This year"))
                 .font(.title3.weight(.bold))
-            Text([asset.dateText, asset.city].compactMap { $0 }.joined(separator: ", "))
+            Text([asset.dateText, asset.city.map { PhotoPlaceName.localized($0) }].compactMap { $0 }.joined(separator: ", "))
                 .font(.subheadline)
             ForEach(hints(asset), id: \.self) { hint in
                 Label(hint, systemImage: "info.circle")

@@ -36,13 +36,18 @@ final class PhotoPeriodMotion {
             return
         }
         surfaces[mode, default: [:]][assetID] = Surface(view, prepared: prepared)
-        guard self.assetID == assetID, targetMode == mode else { return }
+        guard self.assetID == assetID, targetMode == mode, animator == nil else { return }
         let ticket = transitionID
         Task { [weak self, weak view] in
             await Task.yield()
             guard let self, let view, self.transitionID == ticket else { return }
             self.arrive(at: view, mode: mode)
         }
+    }
+
+    func carriedSurface(for assetID: String) -> CommittedGridSurface? {
+        guard self.assetID == assetID, activeSurface?.isCurrent() == true else { return nil }
+        return activeSurface
     }
 
     func begin(assetID: String, from: PhotoBrowseMode, to: PhotoBrowseMode,
@@ -83,6 +88,7 @@ final class PhotoPeriodMotion {
         sourceAlpha = sourceView?.alpha ?? 1
         sourceView?.alpha = 0
         imageView.frame = start
+        imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true
         imageView.layer.cornerRadius = from == .all ? 2 : 10
         imageView.isUserInteractionEnabled = false
@@ -114,6 +120,9 @@ final class PhotoPeriodMotion {
         destination = view
         destinationAlpha = view.alpha
         view.alpha = 0
+        // Keep the same crop while the bounds change. UIImageView's default
+        // scaleToFill stretched the travelling photo until the final handoff.
+        replica.contentMode = .scaleAspectFill
         let animator = PhotosMotion.springAnimator(duration: PhotosMotion.layoutDuration) {
             replica.frame = target
             replica.layer.cornerRadius = mode == .all ? 2 : 10
@@ -160,6 +169,8 @@ struct PhotoPeriodCoverSurface: UIViewRepresentable {
     let session: SessionStore
     let motion: PhotoPeriodMotion
     let size: CGSize
+    var gridViewportWidth: CGFloat = 393
+    var gridColumns = 3
 
     static func targetPixels(asset: Asset, size: CGSize, scale: CGFloat) -> CGFloat {
         guard size.width.isFinite, size.height.isFinite, scale.isFinite,
@@ -177,8 +188,11 @@ struct PhotoPeriodCoverSurface: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PeriodPhotoImageView { PeriodPhotoImageView(frame: .zero) }
     func updateUIView(_ view: PeriodPhotoImageView, context: Context) {
+        let gridSide = AssetGridLayout.tileSide(viewportWidth: gridViewportWidth, columns: gridColumns)
+        let fallbackPixels = min(1280, (max(1, gridSide * displayScale) / 32).rounded(.up) * 32)
         view.configure(asset: asset, mode: mode, session: session, motion: motion,
-                       targetPixelSize: Self.targetPixels(asset: asset, size: size, scale: displayScale))
+                       targetPixelSize: Self.targetPixels(asset: asset, size: size, scale: displayScale),
+                       fallbackPixelSize: fallbackPixels)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PeriodPhotoImageView, context: Context) -> CGSize? {
         guard let width = proposal.width, let height = proposal.height else { return nil }
@@ -212,6 +226,7 @@ final class PeriodPhotoImageView: UIImageView {
     private var key: Attempt?
     private var sourceIdentity: SourceIdentity?
     private var targetPixelSize: CGFloat = 900
+    private var fallbackPixelSize: CGFloat?
     private var asset: Asset?
     private var mode: PhotoBrowseMode = .years
     private weak var motion: PhotoPeriodMotion?
@@ -237,9 +252,9 @@ final class PeriodPhotoImageView: UIImageView {
     func preparedSurfaceForMotion() -> CommittedGridSurface? {
         guard let asset, let surface = registeredSurface, surface.isCurrent(),
               bounds.width > 0, bounds.height > 0, AssetTileRegistry.aspectMatches(surface.image, asset: asset) else { return nil }
-        let scale = traitCollection.displayScale
-        guard surface.image.size.width * surface.image.scale >= bounds.width * scale * 0.95,
-              surface.image.size.height * surface.image.scale >= bounds.height * scale * 0.95 else { return nil }
+        let scale = window?.traitCollection.displayScale ?? traitCollection.displayScale
+        guard surface.image.size.width * surface.image.scale >= bounds.width * scale - 1,
+              surface.image.size.height * surface.image.scale >= bounds.height * scale - 1 else { return nil }
         return surface
     }
 
@@ -253,16 +268,18 @@ final class PeriodPhotoImageView: UIImageView {
             lifetime.current = false
             boundSurface = nil; image = nil; key = nil
         }
-        configure(asset: asset, mode: mode, session: session, motion: motion, targetPixelSize: targetPixelSize)
+        configure(asset: asset, mode: mode, session: session, motion: motion, targetPixelSize: targetPixelSize,
+                  fallbackPixelSize: fallbackPixelSize)
     }
 
     func configure(asset: Asset, mode: PhotoBrowseMode, session: SessionStore, motion: PhotoPeriodMotion,
-                   targetPixelSize: CGFloat = 900) {
+                   targetPixelSize: CGFloat = 900, fallbackPixelSize: CGFloat? = nil) {
         self.asset = asset
         self.mode = mode
         self.motion = motion
         self.session = session
         self.targetPixelSize = targetPixelSize
+        self.fallbackPixelSize = fallbackPixelSize
         let client = session.client
         let privateGeneration = asset.visibility == .locked ? session.lockedFolder?.publicationGeneration : nil
         let identity = SourceIdentity(session: client?.context.id, assetID: asset.id, localID: asset.localIdentifier,
@@ -297,6 +314,25 @@ final class PeriodPhotoImageView: UIImageView {
             let url = client.thumbnailURL(assetID: asset.id, size: "preview", cacheKey: asset.thumbhash)
             if let cached = ImageLoader.shared.cachedBoundImage(for: url, targetPixelSize: targetPixelSize),
                bindRemote(cached, asset: asset, client: client, session: session, pixels: targetPixelSize) { return }
+        }
+        if image == nil, let carried = motion.carriedSurface(for: asset.id) {
+            boundSurface = carried
+            image = carried.image
+        }
+        if image == nil, let pixels = fallbackPixelSize {
+            if let localID = asset.localIdentifier, asset.visibility != .locked {
+                let scope = AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey,
+                    version: asset.localImageVersion ?? asset.thumbhash, pixels: pixels)
+                if let cached = LocalImageLoader.shared.cachedBoundImage(localIdentifier: localID, targetPixelSize: pixels,
+                    contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: scope) {
+                    _ = bindLocal(cached, asset: asset, client: client, session: session, scope: scope, pixels: pixels)
+                }
+            } else if asset.localIdentifier == nil {
+                let url = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
+                if let cached = ImageLoader.shared.cachedBoundImage(for: url, targetPixelSize: pixels) {
+                    _ = bindRemote(cached, asset: asset, client: client, session: session, pixels: pixels)
+                }
+            }
         }
         load = Task { [weak self] in
             if let localID = asset.localIdentifier, asset.visibility != .locked {

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// the photos thumbnail strip under the media. the current item opens to its
 /// own shape while its neighbours stay narrow slivers, and dragging the strip
@@ -19,6 +20,8 @@ struct AssetViewerCarousel: View {
     /// only a finger on the strip writes the selection back. programmatic
     /// scrolls animate through every id between, which must not page.
     @State private var isScrubbing = false
+    @State private var expandedID: String?
+    @State private var feedback = UISelectionFeedbackGenerator()
 
     var body: some View {
         GeometryReader { proxy in
@@ -36,25 +39,34 @@ struct AssetViewerCarousel: View {
                 for: .scrollContent
             )
         }
-        .frame(height: Self.height)
+        .frame(height: 52)
+        .contentShape(.rect)
         .scrollIndicators(.hidden)
         .scrollPosition(id: $scrolledID, anchor: .center)
         .scrollTargetBehavior(.viewAligned)
         .onScrollPhaseChange { _, phase in
+            if phase == .tracking { feedback.prepare() }
             isScrubbing = phase == .tracking
                 || phase == .interacting
                 || phase == .decelerating
         }
         .onChange(of: scrolledID) { _, id in
             guard isScrubbing, let id, id != selection else { return }
-            selection = id
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { selection = id }
+            feedback.selectionChanged()
+            feedback.prepare()
         }
         .onChange(of: isScrubbing) { _, scrubbing in
-            guard !scrubbing, scrolledID != selection else { return }
+            guard !scrubbing else { return }
+            expandedID = selection
             scroll(to: selection)
         }
         .onChange(of: selection, initial: true) { _, id in
-            guard !isScrubbing, scrolledID != id else { return }
+            guard !isScrubbing else { return }
+            expandedID = id
+            guard scrolledID != id else { return }
             scroll(to: id, animated: scrolledID != nil)
         }
         .accessibilityElement(children: .contain)
@@ -63,7 +75,7 @@ struct AssetViewerCarousel: View {
     }
 
     private func item(_ asset: Asset) -> some View {
-        let isExpanded = asset.id == selection && !isScrubbing
+        let isExpanded = asset.id == expandedID
         return AssetTile(asset: asset, targetPixelSize: 120, isGridTile: false)
             .frame(
                 width: isExpanded ? expandedWidth(for: asset) : Self.collapsedWidth,
@@ -71,6 +83,7 @@ struct AssetViewerCarousel: View {
             )
             .clipShape(.rect(cornerRadius: isExpanded ? 5 : 3, style: .continuous))
             .padding(.horizontal, isExpanded ? Self.expandedMargin : 0)
+            .frame(height: 52)
             .contentShape(.rect)
             .onTapGesture {
                 guard asset.id != selection else { return }

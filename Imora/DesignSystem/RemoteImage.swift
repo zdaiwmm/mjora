@@ -587,20 +587,21 @@ struct AssetTile: View {
             }
             .clipShape(.rect(cornerRadius: isGridTile ? 2 : 0))
             .overlay(alignment: .topTrailing) {
-                if isGridTile, let duration = asset.durationLabel {
-                    Label(duration, systemImage: "play.fill")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(.black.opacity(0.4), in: .capsule)
-                        .padding(5)
-                } else if isGridTile, asset.isLivePhoto {
+                if isGridTile, asset.isLivePhoto {
                     Image(systemName: "livephoto")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.white)
                         .shadow(color: .black.opacity(0.6), radius: 3)
                         .padding(7)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if isGridTile, let duration = asset.durationLabel {
+                    Text(duration)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.8), radius: 2)
+                        .padding(6)
                 }
             }
             .overlay(alignment: .topLeading) {

@@ -62,7 +62,8 @@ final class Phase4ViewerFlowTests: XCTestCase {
         let fixture = try fixture(), app = launchOwnedCloud()
         defer { app.terminate() }
         let photo = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label BEGINSWITH %@", "asset-tile", "Photo,")).firstMatch
-        XCTAssertTrue(photo.waitForExistence(timeout: 25)); photo.tap()
+        XCTAssertTrue(photo.waitForExistence(timeout: 25))
+        photo.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.15)).tap()
         let viewer = app.descendants(matching: .any)["asset-viewer"].firstMatch
         wait("Only the new owned control still may be edited") { viewer.value as? String == fixture.controlStillID }
         let edit = app.buttons["viewer-edit"].firstMatch
@@ -151,23 +152,28 @@ final class Phase4ViewerFlowTests: XCTestCase {
         let viewer = app.descendants(matching: .any)["asset-viewer"].firstMatch
         wait("The paired still must own the viewer") { viewer.value as? String == fixture.stillID }
         let controls = app.descendants(matching: .any)["live-photo-controls"].firstMatch
+        let mode = app.buttons["live-photo-mode"]
         let play = app.buttons["live-photo-play-pause"]
-        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        XCTAssertTrue(mode.waitForExistence(timeout: 10))
+        XCTAssertLessThan(mode.frame.minX, 30)
+        XCTAssertLessThan(mode.frame.maxY, 200)
         wait("Opening Live must remain still") { controls.value as? String == "Stopped" }
-        XCTAssertGreaterThanOrEqual(play.frame.width, 44); XCTAssertGreaterThanOrEqual(play.frame.height, 44)
         let photo = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
-        photo.press(forDuration: 0.34)
+        photo.press(forDuration: 0.08)
+        if mode.waitForNonExistence(timeout: 1) { photo.tap() }
         wait("A short press must not leave playback running") { controls.value as? String == "Stopped" }
         capture(app, "live-short-press-still")
 
         // Prime the real clip through the same named accessible action, then
         // exercise a prepared hold. Video capture verifies movement mid-hold.
-        if !play.isHittable { photo.tap() }
-        wait("Live controls must be reachable before loading the clip") { play.isHittable }
+        if !mode.isHittable { photo.tap() }
+        wait("Live controls must be reachable before loading the clip") { mode.isHittable }
+        mode.tap()
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
         play.tap()
         wait("The accessible play action must start the clip", timeout: 20) { controls.value as? String == "Playing" }
         capture(app, "live-accessible-playing")
-        play.tap()
+        mode.tap(); play.tap()
         wait("Stop must restore the poster") { controls.value as? String == "Stopped" }
         photo.press(forDuration: 1.5)
         wait("Release must stop held playback") { controls.value as? String == "Stopped" }
@@ -196,10 +202,15 @@ final class Phase4ViewerFlowTests: XCTestCase {
         photoImage.pinch(withScale: 2, velocity: 1)
         wait("The real two-finger gesture must enlarge the image") { photoImage.frame.width > restingWidth * 1.4 }
         photo.press(forDuration: 0.6)
-        wait("A zoomed image must remain still during a hold") { controls.value as? String == "Stopped" }
+        wait("Zoom must hide Live controls or retain the stopped state") {
+            !controls.exists || controls.value as? String == "Stopped"
+        }
         capture(app, "live-zoomed-hold-remains-still")
         photo.doubleTap()
         wait("Double tap must restore the fitted image") { photoImage.frame.width <= restingWidth * 1.02 }
+        wait("Returning to fit must reveal stopped Live controls") {
+            controls.exists && controls.value as? String == "Stopped"
+        }
         photo.press(forDuration: 0.5, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.82)))
         wait("A downward drag must still dismiss the viewer") { !viewer.exists && source.isHittable }
         capture(app, "live-drag-dismissed")

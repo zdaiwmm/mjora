@@ -9,6 +9,7 @@ nonisolated enum PhotosMotion {
     static let chromeDuration = 0.20
     static let layoutDuration = 0.5058237870785645
     static let editorToolsDuration = 0.25
+    static let imageFadeDuration = 0.25
     static let removalDuration = 0.30
 
     // Photos' information/layout spring: mass 3, stiffness 1000, damping 500.

@@ -3780,6 +3780,38 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image)
     }
 
+    func testPhotoKitChangeRetainsUnchangedDecodedImagesAndAccessGeneration() async throws {
+        let (changedID, image) = try await createSurfaceFixture()
+        let (unchangedID, _) = try await createSurfaceFixture()
+        let changedAsset = try XCTUnwrap(PHAsset.fetchAssets(withLocalIdentifiers: [changedID], options: nil).firstObject)
+        let loader = LocalImageLoader.fixture(manager: PHCachingImageManager())
+        let permission = loader.permissionGeneration
+        for id in [changedID, unchangedID] {
+            loader.installPrepared(image, localIdentifier: id, targetPixelSize: 416, cacheScope: "change-fixture",
+                permission: permission, sourceRevision: try XCTUnwrap(LocalImageLoader.currentModificationRevision(id)))
+        }
+        let unchanged = try XCTUnwrap(loader.cachedBoundImage(localIdentifier: unchangedID, targetPixelSize: 416,
+            contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: "change-fixture"))
+        let observer = SurfacePhotoChangeObserver()
+        PHPhotoLibrary.shared().register(observer)
+        defer { PHPhotoLibrary.shared().unregisterChangeObserver(observer) }
+        try await favoriteSyntheticSurfacePhoto(identifier: changedID)
+        var notification: PHChange?
+        for _ in 0..<200 {
+            notification = observer.changes.withLock { $0.first { $0.changeDetails(for: changedAsset) != nil } }
+            if notification != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        loader.noteLibraryChange(try XCTUnwrap(notification))
+        XCTAssertEqual(loader.permissionGeneration, permission, "An unrelated photo change must not retire every mounted image")
+        XCTAssertTrue(unchanged.isCurrent)
+        XCTAssertTrue(loader.cachedImage(localIdentifier: unchangedID, targetPixelSize: 416,
+            contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: "change-fixture") === image)
+        XCTAssertNil(loader.cachedImage(localIdentifier: changedID, targetPixelSize: 416,
+            contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: "change-fixture"),
+            "The photo whose modification revision advanced must still invalidate its own cache")
+    }
+
     func testUIKitViewportReplacesShorterSwiftUIGeometryBeforeRestoration() {
         let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: [])
         model.launchLayout = .init(width: 402, height: 724, scale: 3, columns: 3)
@@ -4356,6 +4388,11 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
     }
 }
 
+private nonisolated final class SurfacePhotoChangeObserver: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
+    let changes = Mutex<[PHChange]>([])
+    func photoLibraryDidChange(_ changeInstance: PHChange) { changes.withLock { $0.append(changeInstance) } }
+}
+
 private final class RecordingPhotoKitManager: PHCachingImageManager, @unchecked Sendable {
     struct Request: Equatable {
         let assetID: String
@@ -4397,6 +4434,12 @@ private func observePhotoKitFetches(for identifier: String, denyingRead: Bool = 
     defer { method_setImplementation(method, original); imp_removeBlock(installed) }
     body()
     return count.withLock { $0 }
+}
+
+@concurrent
+private nonisolated func favoriteSyntheticSurfacePhoto(identifier: String) async throws {
+    let asset = try XCTUnwrap(PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject)
+    try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest(for: asset).isFavorite = true }
 }
 
 @concurrent

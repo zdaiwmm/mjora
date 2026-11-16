@@ -363,12 +363,14 @@ private struct FacetRow: View {
     var isEnabled = true
     var count: (SearchFilter.Facet) -> Int? = { _ in nil }
 
+    private var isPlace: Bool { ["country", "state", "city"].contains(stableID) }
+
     var body: some View {
         NavigationLink {
-            FacetListView(title: title, selection: $selection, options: options, count: count)
+            FacetListView(title: title, selection: $selection, options: options, count: count, isPlace: isPlace)
         } label: {
             LabeledContent(title) {
-                Text(selection?.label ?? String(localized: "Any"))
+                Text(selection.map { isPlace ? PhotoPlaceName.localized($0.label) : $0.label } ?? String(localized: "Any"))
                     .foregroundStyle(selection == nil ? .secondary : .primary)
             }
         }
@@ -383,13 +385,15 @@ private struct FacetListView: View {
     @Binding var selection: SearchFilter.Facet?
     let options: [SearchFilter.Facet]?
     let count: (SearchFilter.Facet) -> Int?
+    var isPlace = false
 
     @State private var searchText = ""
 
     private var visible: [SearchFilter.Facet] {
         let all = options ?? []
         guard !searchText.isEmpty else { return all }
-        return all.filter { $0.label.localizedStandardContains(searchText) }
+        return all.filter { $0.label.localizedStandardContains(searchText)
+            || (isPlace && PhotoPlaceName.localized($0.label).localizedStandardContains(searchText)) }
     }
 
     var body: some View {
@@ -399,7 +403,7 @@ private struct FacetListView: View {
             }
             ForEach(visible, id: \.self) { facet in
                 let count = count(facet)
-                row(facet.label, value: facet, count: count)
+                row(isPlace ? PhotoPlaceName.localized(facet.label) : facet.label, value: facet, count: count)
                     .foregroundStyle(facet == .unknown ? .secondary : .primary)
                     .dimmedWhenEmpty(selection == facet ? nil : count)
             }

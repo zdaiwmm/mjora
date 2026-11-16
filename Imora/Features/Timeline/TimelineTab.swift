@@ -2,22 +2,25 @@ import SwiftUI
 
 struct TimelineTab: View {
     @Environment(SessionStore.self) private var session
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable private var router = TimelineNavigationRouter.shared
     @AppStorage("imora.photos.source") private var source = "cloud"
     var cloudControls = PhotosGridControls()
     var deviceControls = PhotosGridControls()
     @State private var showSettings = false
     @State private var showBackupSettings = false
+    @State private var visitedSources = Set<String>()
 
     private var controls: PhotosGridControls { source == "local" ? deviceControls : cloudControls }
     private var filter: TimelineFilter {
         PhotosLaunchSelection.cloudFilter(mergesSharedSpaces: session.capabilities.mergesSharedSpacesIntoTimeline,
             favorites: cloudControls.mediaFilter == .favorites, sortByAdded: cloudControls.sortByAdded)
     }
-    private var configuration: PhotosToolbarConfiguration {
-        PhotosToolbarConfiguration(source: $source, controls: controls,
-            completePeriodIndex: source == "local" || [.all, .favorites].contains(controls.mediaFilter),
-            supportsDateAdded: source != "local" && [.all, .favorites].contains(controls.mediaFilter),
+    private func configuration(for value: String) -> PhotosToolbarConfiguration {
+        let controls = value == "local" ? deviceControls : cloudControls
+        return PhotosToolbarConfiguration(source: $source, controls: controls,
+            completePeriodIndex: value == "local" || [.all, .favorites].contains(controls.mediaFilter),
+            supportsDateAdded: value != "local" && [.all, .favorites].contains(controls.mediaFilter),
             onAccount: { showSettings = true }, onBackup: { showBackupSettings = true },
             onNotifications: { NotificationRouter.shared.openInbox() },
             onSearch: { router.searchRequested = true },
@@ -27,43 +30,67 @@ struct TimelineTab: View {
     }
 
     var body: some View {
+        ZStack {
+            ForEach(["cloud", "local"], id: \.self) { value in
+                if source == value || visitedSources.contains(value) {
+                    sourceStack(value)
+                        .opacity(source == value ? 1 : 0)
+                        .allowsHitTesting(source == value)
+                        .accessibilityHidden(source != value)
+                        .zIndex(source == value ? 1 : 0)
+                        .transformPreference(PhotosSelectionPreferenceKey.self) {
+                            if source != value { $0 = false }
+                        }
+                }
+            }
+        }
+        .background(Color(.systemBackground))
+        .onAppear { visitedSources.insert(source) }
+        .animation(reduceMotion ? nil : PhotosMotion.controls, value: source)
+        .onChange(of: source) { oldSource, newSource in
+            visitedSources.formUnion([oldSource, newSource])
+            if session.cachedLaunchHandle?.source != (newSource == "local" ? "device" : "cloud") {
+                session.cachedLaunchHandle?.cancel()
+            }
+        }
+        .onChange(of: controls.mediaFilter) { _, _ in
+            controls.periodAnchor = nil
+            controls.scrollRequest = nil
+            controls.mode = .all
+            controls.browsingPast = false
+            controls.scrollOffset = nil
+            if ![.all, .favorites].contains(controls.mediaFilter) { controls.sortByAdded = false }
+        }
+        .onChange(of: controls.sortByAdded) { controls.scrollOffset = nil }
+        .onChange(of: router.pendingTarget, initial: true) { _, target in
+            if let target {
+                source = target.assetID.hasPrefix("local-") ? "local" : "cloud"
+                controls.mediaFilter = .all
+                controls.mode = .all
+            }
+        }
+        .sheet(isPresented: $showSettings) { SettingsView() }
+    }
+
+    private func sourceStack(_ value: String) -> some View {
         NavigationStack {
             Group {
-                if source == "local" {
+                if value == "local" {
                     DeviceLibraryScreen(session: session, navigationTarget: $router.pendingTarget,
-                                        photosConfiguration: configuration)
+                                        photosConfiguration: configuration(for: value))
                 } else if [.all, .favorites].contains(cloudControls.mediaFilter) {
                     CloudPhotosScreen(session: session, filter: filter, navigationTarget: $router.pendingTarget,
-                                      configuration: configuration)
+                                      configuration: configuration(for: value))
                         .id(filter)
                 } else {
-                    PhotosMediaTimeline(media: cloudControls.mediaFilter, configuration: configuration)
+                    PhotosMediaTimeline(media: cloudControls.mediaFilter, configuration: configuration(for: value))
                         .id(cloudControls.mediaFilter)
                 }
             }
-            .onChange(of: source) { _, newSource in
-                if session.cachedLaunchHandle?.source != (newSource == "local" ? "device" : "cloud") {
-                    session.cachedLaunchHandle?.cancel()
-                }
-            }
-            .onChange(of: controls.mediaFilter) { _, _ in
-                controls.periodAnchor = nil
-                controls.scrollRequest = nil
-                controls.mode = .all
-                controls.browsingPast = false
-                controls.scrollOffset = nil
-                if ![.all, .favorites].contains(controls.mediaFilter) { controls.sortByAdded = false }
-            }
-            .onChange(of: controls.sortByAdded) { controls.scrollOffset = nil }
-            .onChange(of: router.pendingTarget, initial: true) { _, target in
-                if let target {
-                    source = target.assetID.hasPrefix("local-") ? "local" : "cloud"
-                    controls.mediaFilter = .all
-                    controls.mode = .all
-                }
-            }
-            .navigationDestination(isPresented: $showBackupSettings) { BackupScreen() }
-            .sheet(isPresented: $showSettings) { SettingsView() }
+            .navigationDestination(isPresented: Binding(
+                get: { showBackupSettings && source == value },
+                set: { if source == value { showBackupSettings = $0 } }
+            )) { BackupScreen() }
         }
     }
 }

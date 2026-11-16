@@ -8,12 +8,17 @@ import SwiftUI
 struct AssetContextPreview: View {
     @Environment(SessionStore.self) private var session
     let asset: Asset
+    var openingSurface: CommittedGridSurface? = nil
 
     @State private var player: AVQueuePlayer?
     @State private var looper: AVPlayerLooper?
+    @State private var localUnavailable = false
+    @State private var imageReady = false
 
     private var pairedLocalIdentifier: String? {
-        asset.visibility == .locked ? nil : (asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id])
+        guard !localUnavailable, asset.visibility != .locked else { return nil }
+        if let localID = asset.localIdentifier { return localID }
+        return asset.isEdited == true ? nil : session.backup?.localIdentifierByRemoteId[asset.id]
     }
 
     var body: some View {
@@ -22,10 +27,16 @@ struct AssetContextPreview: View {
                 LocalPhotoImage(
                     localIdentifier: localId,
                     targetPixelSize: 1280,
+                    cacheScope: AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey,
+                        version: asset.localImageVersion ?? asset.thumbhash, pixels: 1280),
                     fallbackTargetPixelSize: 640,
                     fallbackRequestContentMode: .aspectFit,
                     requestContentMode: .aspectFit,
-                    expectedAspectRatio: asset.ratio
+                    contentMode: .fit,
+                    allowsNetwork: asset.isLocal,
+                    expectedAspectRatio: asset.ratio,
+                    onUnavailable: { localUnavailable = true },
+                    onReady: { imageReady = true }
                 )
             } else if let client = session.client {
                 RemoteImage(
@@ -33,8 +44,15 @@ struct AssetContextPreview: View {
                     targetPixelSize: 1280,
                     thumbhash: asset.thumbhash,
                     fallbackURL: client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash),
-                    fallbackTargetPixelSize: 640
+                    fallbackTargetPixelSize: 640,
+                    contentMode: .fit,
+                    onReady: { imageReady = true }
                 )
+            }
+            if !imageReady, let openingSurface, openingSurface.isCurrent() {
+                ContextPreviewSurface(surface: openingSurface, session: session,
+                                      isPrivate: asset.visibility == .locked)
+                    .allowsHitTesting(false)
             }
             if let player {
                 PlayerLayerView(player: player)
@@ -74,6 +92,20 @@ struct AssetContextPreview: View {
         queue.play()
         player = queue
     }
+}
+
+private struct ContextPreviewSurface: UIViewRepresentable {
+    let surface: CommittedGridSurface
+    let session: SessionStore
+    let isPrivate: Bool
+
+    func makeUIView(context: Context) -> AssetViewerBoundImageView {
+        let view = AssetViewerBoundImageView(surface: surface, session: session, isPrivate: isPrivate)
+        view.contentMode = .scaleAspectFit
+        return view
+    }
+
+    func updateUIView(_ view: AssetViewerBoundImageView, context: Context) { view.setNeedsUpdateProperties() }
 }
 
 /// Bare video layer with no transport chrome. It stays hidden until the first

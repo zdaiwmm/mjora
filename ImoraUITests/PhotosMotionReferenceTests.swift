@@ -38,7 +38,14 @@ final class PhotosMotionReferenceTests: XCTestCase {
         if edit.exists && edit.isHittable {
             mark("editor-open"); edit.tap(); capture(photos, "editor")
             let crop = photos.buttons["edit.tool.crop"]
-            if crop.exists && crop.isHittable { mark("editor-crop"); crop.tap(); capture(photos, "crop") }
+            XCTAssertTrue(crop.waitForExistence(timeout: 5))
+            if crop.exists, crop.frame.intersects(photos.frame) {
+                mark("editor-crop")
+                let frame = crop.frame
+                photos.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
+                capture(photos, "crop")
+            }
             let cancel = photos.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消"])).firstMatch
             if cancel.exists && cancel.isHittable { mark("editor-close"); cancel.tap() }
         }

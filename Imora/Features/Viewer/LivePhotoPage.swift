@@ -124,9 +124,7 @@ struct LivePhotoPage: View {
                 seedDuration: nil,
                 autoPlays: false,
                 rewindsAtEnd: true,
-                // the clip loads on the first long press or transport tap.
-                // swiping a run of live photos used to fetch one motion video
-                // per page, nearly all of them thrown away.
+                // Keep the still visible while the paired clip warms.
                 defersItem: true,
                 liveSource: identity.source
             ) {
@@ -141,16 +139,19 @@ struct LivePhotoPage: View {
                     client?.context.isActive == true && UIApplication.shared.applicationState == .active
                         && (!requiresElevation || lease?.isCurrent == true)
                 })
-            // Let rapid paging pass without exports. Once this page settles,
-            // prepare an on-device clip and its decoding layer behind the still.
-            // iCloud and remote clips continue to load only on engagement.
+            // Device clips warm immediately. A remote page must first settle;
+            // prefetching never uses cellular or constrained connections.
             if let localIdentifier {
-                try? await Task.sleep(for: .milliseconds(180))
-                guard !Task.isCancelled else { return }
                 if let item = await LocalImageLoader.shared.motionPlayerItem(
                     localIdentifier: localIdentifier, allowsNetwork: false
                 ), !Task.isCancelled {
-                    playback.prepareLocalItem(item, assetID: asset.id)
+                    playback.prepareLiveItem(item, assetID: asset.id)
+                }
+            } else if !asset.isLocal, !forcesMute {
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                if let item = await makeItem(isPrewarming: true), !Task.isCancelled {
+                    playback.prepareLiveItem(item, assetID: asset.id)
                 }
             }
         }
@@ -184,7 +185,7 @@ struct LivePhotoPage: View {
 
     /// the paired video on device costs nothing to read; the server keeps the
     /// motion half as its own asset, addressed by the still's pairing id.
-    private func makeItem() async -> AVPlayerItem? {
+    private func makeItem(isPrewarming: Bool = false) async -> AVPlayerItem? {
         if let localIdentifier,
            let item = await LocalImageLoader.shared.motionPlayerItem(
                localIdentifier: localIdentifier,
@@ -204,12 +205,12 @@ struct LivePhotoPage: View {
             // A cached controlled file remains available offline. For a miss,
             // URLSession enforces the policy even if Wi-Fi changes mid-load.
             let file = try await client.localMediaFile(client.playbackURL(assetID: motionID),
-                allowsExpensiveNetworkAccess: playback.permitsExpensiveLiveDownload,
+                allowsExpensiveNetworkAccess: !isPrewarming && playback.permitsExpensiveLiveDownload,
                 requiresElevation: asset.visibility == .locked)
             guard !Task.isCancelled else { return nil }
             return AVPlayerItem(asset: try file.makeAsset())
         } catch let error as URLError {
-            if [.dataNotAllowed, .internationalRoamingOff, .notConnectedToInternet].contains(error.code), !Task.isCancelled {
+            if !isPrewarming, [.dataNotAllowed, .internationalRoamingOff, .notConnectedToInternet].contains(error.code), !Task.isCancelled {
                 _ = await playback.liveNetworkAllowed()
             }
             return nil
@@ -219,62 +220,59 @@ struct LivePhotoPage: View {
 
 // MARK: - controls
 
-/// Frame selection belongs to the editor; viewing only needs play/stop.
+/// Live effects and playback share a compact menu above the image.
 struct LivePhotoControlsBar: View {
     let playback: VideoPlayback
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 12) {
-                Button(action: playback.togglePlayPause) {
-                    Group {
-                        if playback.isFailed { Image(systemName: "arrow.clockwise") }
-                        else if playback.isBuffering { ProgressView() }
-                        else { Image(systemName: playback.isPlaying ? "stop.fill" : "livephoto") }
+        HStack(spacing: 4) {
+            Menu {
+                Picker("Live Photo", selection: Binding(get: { playback.liveMode }, set: playback.setLiveMode)) {
+                    ForEach(LivePhotoMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.symbol).tag(mode)
+                            .disabled(mode == .bounce && !playback.canBounce)
                     }
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(playback.isFailed ? String(localized: "Retry Live Photo") : (playback.isPlaying || playback.isBuffering ? String(localized: "Stop Live Photo") : String(localized: "Play Live Photo")))
-                .accessibilityIdentifier("live-photo-play-pause")
-
-                Text(playback.isFailed ? String(localized: "Live Photo unavailable") : String(localized: "Live Photo"))
-                    .font(.subheadline.weight(.medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                if playback.isBuffering {
-                    Button("Cancel", action: playback.cancelLivePlayback)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("live-photo-cancel-load")
+                if playback.liveMode != .off {
+                    Button(action: playback.togglePlayPause) {
+                        Label(playback.isPlaying ? String(localized: "Stop Live Photo") : String(localized: "Play Live Photo"),
+                              systemImage: playback.isPlaying ? "stop.fill" : "play.fill")
+                    }
+                    .accessibilityIdentifier("live-photo-play-pause")
+                    Button(action: { playback.isMuted.toggle() }) {
+                        Label(playback.isMuted ? String(localized: "Unmute") : String(localized: "Mute"),
+                              systemImage: playback.isMuted ? "speaker.slash" : "speaker.wave.2")
+                    }
                 }
-                Spacer(minLength: 8)
-                Button {
-                    playback.isMuted.toggle()
-                } label: {
-                    Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(.rect)
+                if playback.liveNetworkNeedsPermission {
+                    Button("Allow Download and Play", action: playback.allowLiveDownloadAndPlay)
+                        .accessibilityIdentifier("live-photo-allow-download")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(playback.isMuted ? String(localized: "Unmute") : String(localized: "Mute"))
-                .accessibilityIdentifier("live-photo-mute")
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: playback.liveMode.symbol)
+                    Text(playback.liveMode.title)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 36)
+                .contentShape(.capsule)
             }
-            if playback.liveNetworkNeedsPermission {
-                Button("Allow Download and Play", action: playback.allowLiveDownloadAndPlay)
-                    .font(.subheadline.weight(.medium))
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("live-photo-allow-download")
+            .menuIndicator(.hidden)
+            .accessibilityValue(playback.liveMode.title)
+            .accessibilityIdentifier("live-photo-mode")
+            if playback.isBuffering {
+                ProgressView().controlSize(.mini)
+                Button("Cancel", action: playback.cancelLivePlayback)
+                    .font(.caption)
+                    .accessibilityIdentifier("live-photo-cancel-load")
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
-        .padding(.horizontal, 24)
-        .frame(maxWidth: 560)
+        .foregroundStyle(.white)
+        .glassEffect(.regular, in: .capsule)
         .accessibilityElement(children: .contain)
-        .accessibilityValue(playback.isBuffering ? String(localized: "Loading") : (playback.isPlaying ? String(localized: "Playing") : String(localized: "Stopped")))
+        .accessibilityValue(playback.isEngaged ? "Playing" : "Stopped")
         .accessibilityHint("Touch and hold the photo to play. Release to stop.")
         .accessibilityIdentifier("live-photo-controls")
     }

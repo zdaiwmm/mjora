@@ -26,7 +26,10 @@ struct MapScreen: View {
     @State private var locator = MapLocator()
     @Namespace private var zoomNamespace
 
-    var body: some View { AppleMapConsentGate { mapContent } }
+    var body: some View {
+        AppleMapConsentGate { mapContent }
+            .preference(key: PhotosSelectionPreferenceKey.self, value: true)
+    }
 
     @ViewBuilder private var mapContent: some View {
         @Bindable var viewer = viewer
@@ -278,7 +281,7 @@ nonisolated struct MapAreaLink: Hashable, Identifiable {
 
 /// one map pin: a round thumbnail for a single asset, a counted circle for a
 /// group - the same split the official web client makes.
-private struct MapAssetMarker: View {
+struct MapAssetMarker: View {
     let cluster: MapCluster
     let isOpening: Bool
     let thumbnailURL: URL?
@@ -310,16 +313,19 @@ private struct MapAssetMarker: View {
                     }
                 } else {
                     Circle()
-                        .fill(Color.accentColor)
+                        .fill(Color.blue)
                         .frame(width: side, height: side)
                     Text(cluster.count.formatted())
                         .font(.system(size: cluster.count > 9_999 ? 12 : 15, weight: .bold))
                         .monospacedDigit()
                         .foregroundStyle(.white)
+                        .lineLimit(1)
                         .minimumScaleFactor(0.7)
                         .padding(.horizontal, 4)
+                        .frame(width: side, height: side)
                 }
             }
+            .frame(width: side, height: side)
             .overlay {
                 Circle().strokeBorder(.white.opacity(0.9), lineWidth: 2)
             }

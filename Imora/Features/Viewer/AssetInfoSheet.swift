@@ -34,6 +34,7 @@ private extension Person {
 struct AssetInfoPanel: View {
     @AppStorage(MapServiceConsent.key) private var appleMapsEnabled = false
     @State private var showAppleMapsConsent = false
+    @State private var showsMap = false
     @Environment(SessionStore.self) private var session
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -42,10 +43,8 @@ struct AssetInfoPanel: View {
     /// presentations can omit it because the surrounding viewer flow already
     /// establishes the information context and vertical space is at a premium.
     var showsHeader = true
-    /// compact viewers keep this panel mounted below the fold on every page.
-    /// false holds the network and disk work back until the user actually
-    /// pulls the information up - otherwise every swipe costs two requests,
-    /// a cache write and a map for a panel never seen.
+    /// Compact viewers keep this panel mounted below the fold. Details warm
+    /// after the active page settles; maps wait until information is visible.
     var isRevealed = true
     /// Fires after an adjust-date save so the viewer can refresh its copy:
     /// UTC capture instant + photographer-local offset in hours.
@@ -166,8 +165,8 @@ struct AssetInfoPanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("asset-details")
-        .task(id: "\(asset.id)|\(isRevealed)") {
-            guard isRevealed else { return }
+        .task(id: asset.id) {
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
             await load()
         }
         .onDisappear {
@@ -765,9 +764,9 @@ struct AssetInfoPanel: View {
         let place = hidesStalePlaceName ? "" : [exif?.city, exif?.state, exif?.country]
             .compactMap { value in
                 guard let value, !value.isEmpty else { return nil }
-                return value
+                return PhotoPlaceName.localized(value, country: exif?.country)
             }
-            .joined(separator: ", ")
+            .joined(separator: " · ")
         let markerName = place.isEmpty ? String(localized: "Photo Location") : place
         let coordinates = "\(latitude.formatted(.number.precision(.fractionLength(4)))), \(longitude.formatted(.number.precision(.fractionLength(4))))"
 
@@ -777,15 +776,23 @@ struct AssetInfoPanel: View {
                 else { showAppleMapsConsent = true }
             } label: {
                 MapPreviewGate {
+                if showsMap {
                 Map(initialPosition: .region(MKCoordinateRegion(
                     center: coordinate,
                     span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
                 ))) {
                     Marker(markerName, coordinate: coordinate)
                 }
+                } else { Color.secondary.opacity(0.08) }
                 }
                 .frame(height: 168)
                 .allowsHitTesting(false)
+                .task(id: isRevealed) {
+                    guard isRevealed else { showsMap = false; return }
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    showsMap = true
+                }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(place.isEmpty ? String(localized: "Photo location") : place)

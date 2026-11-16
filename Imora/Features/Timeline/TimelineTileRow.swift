@@ -319,6 +319,7 @@ final class TimelineTileView: UIView {
     private let content = UIView()
     private let imageView = UIImageView()
     private var topTrailingBadge: UIView?
+    private var durationBadge: UILabel?
     private var topLeadingBadge: UIView?
     private var favoriteBadge: UIView?
     private var backupBadge: TileGlyphBadge?
@@ -527,6 +528,9 @@ final class TimelineTileView: UIView {
                 boundSurface = nil; boundSurfaceID = nil
                 loadKey = nil; loadedKey = nil
                 projectionClient = client; projectionSource = source; activeDisplayKey = key
+                thumbnailState = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
+                _ = thumbnailState.remoteResult(pixels: nil, isPreview: true)
+                updateThumbnailStatus()
                 return
             }
         }
@@ -804,7 +808,7 @@ final class TimelineTileView: UIView {
         }
         UIView.transition(
             with: imageView,
-            duration: 0.15,
+            duration: PhotosMotion.imageFadeDuration,
             options: [.transitionCrossDissolve, .curveEaseIn, .allowUserInteraction]
         ) {
             self.imageView.image = image
@@ -820,6 +824,13 @@ final class TimelineTileView: UIView {
     }
 
     var initialImageIsCurrent: Bool { boundSurface?.isCurrent() == true }
+
+    var initialDisplayIsReady: Bool {
+        // One failed derivative must not hide every successfully loaded photo.
+        // A failed tile may reveal its retry control once no stale bitmap remains.
+        (hasPreparedInitialImage && initialImageIsCurrent)
+            || (thumbnailState.phase == .retry && imageView.image == nil)
+    }
 
     #if DEBUG && targetEnvironment(simulator)
     /// Calibration only: corrupt the final on-screen pixels after a real,
@@ -1101,10 +1112,23 @@ final class TimelineTileView: UIView {
     private func updateAssetBadges(for asset: Asset) {
         topTrailingBadge?.removeFromSuperview()
         topTrailingBadge = nil
-        if let duration = asset.durationLabel {
-            topTrailingBadge = TileCapsuleBadge(symbol: "play.fill", text: duration)
-        } else if asset.isLivePhoto {
+        if asset.isLivePhoto {
             topTrailingBadge = TileGlyphBadge(.livePhoto)
+        }
+        durationBadge?.removeFromSuperview()
+        durationBadge = nil
+        if let duration = asset.durationLabel {
+            let label = UILabel()
+            label.text = duration
+            label.font = UIFontMetrics(forTextStyle: .caption2)
+                .scaledFont(for: .systemFont(ofSize: 11, weight: .semibold))
+            label.textColor = .white
+            label.layer.shadowColor = UIColor.black.cgColor
+            label.layer.shadowOpacity = 0.8
+            label.layer.shadowRadius = 2
+            label.layer.shadowOffset = .zero
+            durationBadge = label
+            content.addSubview(label)
         }
 
         topLeadingBadge?.removeFromSuperview()
@@ -1198,7 +1222,7 @@ final class TimelineTileView: UIView {
         if let current = selectionAppearance, current == appearance { return }
         selectionAppearance = appearance
         setNeedsLayout()
-        guard isSelecting, isSelectable else {
+        guard isSelecting, isSelectable, isSelected else {
             selectionIndicator?.isHidden = true
             return
         }
@@ -1211,14 +1235,9 @@ final class TimelineTileView: UIView {
             setNeedsLayout()
             return view
         }()
-        let name = isSelected ? "checkmark.circle.fill" : "circle"
-        // Match the system Photos selection control used by the native shell.
-        let secondary = isSelected
-            ? UIColor.systemBlue
-            : UIColor.black.withAlphaComponent(0.25)
         let configuration = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            .applying(UIImage.SymbolConfiguration(paletteColors: [.white, secondary]))
-        indicator.image = UIImage(systemName: name, withConfiguration: configuration)
+            .applying(UIImage.SymbolConfiguration(paletteColors: [.white, .systemBlue]))
+        indicator.image = UIImage(systemName: "checkmark.circle.fill", withConfiguration: configuration)
         // The first indicator has no frame yet. Lay it out outside the shell's
         // selection animation before revealing it, including on recycled tiles.
         UIView.performWithoutAnimation {
@@ -1273,15 +1292,22 @@ final class TimelineTileView: UIView {
         }
 
         place(topTrailingBadge, leading: false, top: true, inset: topTrailingBadge is TileCapsuleBadge ? 5 : 7)
+        place(durationBadge, leading: false, top: false, inset: 6)
         place(topLeadingBadge, leading: true, top: true, inset: 5)
         place(favoriteBadge, leading: true, top: false, inset: 6)
         place(backupBadge, leading: false, top: false, inset: 6)
+        if let durationBadge, let backupBadge {
+            backupBadge.frame.origin.y = durationBadge.frame.minY - backupBadge.frame.height - 4
+        }
         if selectionAppearance?.isSelecting == true, let backupBadge {
             backupBadge.frame.origin.x += rightToLeft ? 30 : -30
         }
         if let selectionIndicator {
             let x = rightToLeft ? 6 : bounds.width - 6 - 24
             selectionIndicator.frame = CGRect(x: x, y: bounds.height - 6 - 24, width: 24, height: 24)
+            if selectionAppearance?.isSelected == true, let durationBadge {
+                durationBadge.frame.origin.x += rightToLeft ? 30 : -30
+            }
         }
     }
 

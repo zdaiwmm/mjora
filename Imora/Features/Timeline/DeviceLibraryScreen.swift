@@ -92,8 +92,11 @@ struct DeviceLibraryScreen: View {
             .onChange(of: PhotoAccess.shared.status) { _, _ in mediaFactsStore.invalidate(); reload() }
             .onChange(of: mediaFactsStore.generation) { _, _ in
                 if usesMediaFacts || PhotoAccess.shared.status != .authorized {
-                    filterFacts = nil; allAssets = []
-                    model.replaceSuppliedAssets([], groupsByDate: true)
+                    filterFacts = nil
+                    if PhotoAccess.shared.status != .authorized {
+                        allAssets = []
+                        model.replaceSuppliedAssets([], groupsByDate: true)
+                    }
                     reload()
                 }
             }
@@ -106,7 +109,7 @@ struct DeviceLibraryScreen: View {
             }
             .onDisappear { loadTask?.cancel() }
             .overlay {
-                if filterLoading && !model.hasRestoredLaunchViewport {
+                if filterLoading && model.isEmpty && !model.hasRestoredLaunchViewport {
                     ProgressView(photosConfiguration?.controls.mediaFilter == .notInAlbum
                                  ? String(localized: "Checking App album membership") : String(localized: "Loading photos"))
                         .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(.systemBackground))

@@ -60,8 +60,7 @@ struct SearchTab: View {
             // Keep the native search host available on the empty discovery
             // page too; hiding it prevents programmatic search activation.
             .toolbarVisibility(.visible, for: .navigationBar)
-            .toolbarBackground(.background, for: .navigationBar)
-            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .task(id: query) {
                 if trimmedQuery.isEmpty {
                     submit()
@@ -126,12 +125,6 @@ struct SearchTab: View {
 
     private var searchLayout: some View {
         VStack(spacing: 0) {
-            HStack {
-                PhotoSearchSourcePicker(source: $source)
-                Spacer()
-            }
-            .padding(.horizontal)
-            .padding(.top, 6)
             HStack(spacing: 0) {
                 searchModeMenu
                     .padding(.leading)
@@ -150,7 +143,7 @@ struct SearchTab: View {
                 }
                 .padding(.bottom, 8)
                 .background(.background)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(.opacity)
             }
             if model.hasActiveSearch {
                 SearchResultsTimeline(search: model, onClearFilters: clearFiltersAction,
@@ -357,7 +350,7 @@ struct PlaceScreen: View {
     @State private var showMap = false
 
     var body: some View {
-        SearchResultsTimeline(search: model, title: city)
+        SearchResultsTimeline(search: model, title: PhotoPlaceName.localized(city))
             .toolbar {
                 if coordinate != nil, session.features?.map != false {
                     ToolbarItem(placement: .topBarTrailing) {

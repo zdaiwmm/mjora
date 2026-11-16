@@ -361,7 +361,7 @@ struct PlacesScreen: View {
 
     private var visible: [(city: String, asset: AssetDetail)] {
         guard !searchText.isEmpty else { return places }
-        return places.filter { $0.city.localizedStandardContains(searchText) }
+        return places.filter { PhotoPlaceName.localized($0.city).localizedStandardContains(searchText) || $0.city.localizedStandardContains(searchText) }
     }
 
     private var showsMapHeader: Bool {
@@ -404,7 +404,7 @@ struct PlacesScreen: View {
                                 .frame(width: 64, height: 64)
                                 .clipShape(.rect(cornerRadius: 14))
                             }
-                            Text(place.city)
+                            Text(PhotoPlaceName.localized(place.city, country: place.asset.exifInfo?.country))
                                 .font(.body.weight(.medium))
                         }
                     }
@@ -526,7 +526,7 @@ struct TrashScreen: View {
                         Button(role: .destructive) {
                             confirmEmpty = true
                         } label: {
-                            Label("Empty Trash", systemImage: "trash.slash")
+                            Label("Delete All", systemImage: "trash.slash")
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -536,7 +536,7 @@ struct TrashScreen: View {
                     // sits on the menu button - on the screen root it floats
                     // detached.
                     .confirmationDialog("Permanently delete everything in the trash?", isPresented: $confirmEmpty, titleVisibility: .visible) {
-                        Button("Empty Trash", role: .destructive) {
+                        Button("Delete All", role: .destructive) {
                             serverCommand = .emptyTrash
                         }
                     }

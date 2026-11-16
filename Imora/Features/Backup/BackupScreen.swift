@@ -328,7 +328,7 @@ struct BackupScreen: View {
                 }
                 if let fraction = progressFraction(backup.phase) {
                     ProgressView(value: fraction)
-                        .tint(.indigo)
+                        .tint(.accentColor)
                         .accessibilityIdentifier("backup-progress")
                 }
             }

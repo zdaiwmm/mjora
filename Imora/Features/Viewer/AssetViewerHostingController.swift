@@ -553,7 +553,6 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
         container.addSubview(toView)
         toView.layoutIfNeeded()
         controller?.installDismissalGesture(on: container)
-        controller?.prepareViewerContentForPresentation()
         // views below this threshold stop receiving touches. keeping a nearly
         // invisible destination live lets back and swipe reverse immediately.
         toView.alpha = AssetViewerOpeningChromeReveal.initialBackdropOpacity
@@ -566,6 +565,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
                   imageAspectRatio: AssetViewerHostingController.aspectRatio(of: source.image)
               )
         else {
+            controller?.prepareViewerContentForPresentation()
             controller?.setTransitionMediaVisible(true)
             if let openingChrome {
                 container.addSubview(openingChrome)
@@ -578,6 +578,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
         }
 
         source.hide()
+        controller?.prepareViewerContentForPresentation()
         let zoomView = source.makeZoomView()
         container.addSubview(zoomView)
         activePresentationZoomView = zoomView
@@ -978,6 +979,11 @@ final class AssetTileRegistry {
     private var tiles: [String: WeakTile] = [:]
     private var suppressedInteractionIDs: Set<String> = []
 
+    fileprivate func tilesForPreview(assetID: String) -> CommittedGridSurface? {
+        guard let tile = tiles[assetID]?.view as? TimelineTileView else { return nil }
+        return tile.preparedSurfaceForMotion()
+    }
+
     func register(
         _ view: UIView,
         asset: Asset,
@@ -1281,7 +1287,8 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         let initialRoot: AnyView
         if startsAsContextPreview,
            let asset = route.assets[safe: route.initialIndex] {
-            initialRoot = AnyView(AssetContextPreview(asset: asset).environment(session))
+            let surface = sourceRegistry.tilesForPreview(assetID: asset.id)
+            initialRoot = AnyView(AssetContextPreview(asset: asset, openingSurface: surface).environment(session))
         } else {
             initialRoot = AnyView(Color.clear.ignoresSafeArea())
         }
@@ -1300,7 +1307,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         if startsAsContextPreview,
            let asset = route.assets[safe: route.initialIndex] {
             let ratio = CGFloat(asset.ratio > 0 ? asset.ratio : 1)
-            let height = min(previewBounds.height * 0.62, (previewBounds.width - 24) / ratio)
+            let height = min(previewBounds.height * 0.34, (previewBounds.width - 40) / ratio)
             preferredContentSize = CGSize(width: ratio * height, height: height)
             view.frame = CGRect(origin: .zero, size: preferredContentSize)
             view.layoutIfNeeded()
@@ -1371,6 +1378,8 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
 
     func prepareViewerContentForContextCommit() {
         guard displayState.mode == .viewer else { return }
+        displayState.viewerContentReady = true
+        displayState.viewerChromeRevealed = true
         scheduleViewerRootInstallation(after: .milliseconds(4))
     }
 
@@ -1439,7 +1448,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
     }
 
     fileprivate func returnTransition(in container: UIView) -> (source: AssetViewerZoomSource?, surface: CommittedGridSurface)? {
-        guard let surface = displayState.displayedMediaSurface, surface.isCurrent() else { return nil }
+        let gridSource = sourceRegistry?.zoomSource(for: displayState.currentAssetID, in: container)
+        guard let surface = displayState.displayedMediaSurface ?? gridSource?.surface,
+              surface.isCurrent() else { return nil }
         let source = sourceRegistry?.prepareReturnSource(for: displayState.currentAssetID, surface: surface, in: container)
         return (source, surface)
     }
@@ -1617,8 +1628,11 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
 
     fileprivate func prepareViewerContentForPresentation() {
         guard displayState.mode == .viewer else { return }
-        // let the first opacity frame reach the compositor before swiftui mounts.
-        scheduleViewerRootInstallation(after: .milliseconds(18))
+        // Mount interactive pages and chrome during the opening transition.
+        // Waiting for its completion left only a snapshot accepting touches.
+        displayState.viewerContentReady = true
+        displayState.viewerChromeRevealed = true
+        installViewerRootIfNeeded()
     }
 
     fileprivate func installDismissalGesture(on container: UIView) {
@@ -1652,6 +1666,10 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         _ overlay: AssetViewerOpeningChromeOverlay
     ) {
         guard overlay.superview != nil else { return }
+        guard !displayState.viewerChromeRevealed else {
+            overlay.removeFromSuperview()
+            return
+        }
         openingChromeHandoffGeneration &+= 1
         openingChromeOverlay?.removeFromSuperview()
         openingChromeOverlay = overlay
@@ -1853,6 +1871,12 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             )
             return
         }
+        // A page still loading its full rendition can move with the finger
+        // directly until it has a bound image for the zoom transition.
+        view.alpha = 1
+        let scale = 1 - progress * 0.12
+        view.transform = CGAffineTransform(translationX: translation.x, y: max(0, translation.y))
+            .scaledBy(x: scale, y: scale)
     }
 
     fileprivate func finishSwipeDismissal() {
@@ -2426,6 +2450,7 @@ private struct AssetViewerHostRoot: View {
                     mediaTopSafeAreaInset: displayState.mediaSafeAreaInsets?.top,
                     mediaBottomSafeAreaInset: displayState.mediaSafeAreaInsets?.bottom,
                     openingMediaSurface: displayState.openingMediaSurface,
+                    editorOpeningSurface: { displayState.displayedMediaSurface },
                     zoomCommandBridge: displayState.zoomCommandBridge,
                     album: album,
                     onSetAlbumCover: onSetAlbumCover,
