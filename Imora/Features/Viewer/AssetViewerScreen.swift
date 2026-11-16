@@ -870,6 +870,7 @@ struct AssetViewerScreen: View {
     let mediaTopSafeAreaInset: CGFloat?
     let mediaBottomSafeAreaInset: CGFloat?
     let openingMediaSurface: CommittedGridSurface?
+    let editorOpeningSurface: () -> CommittedGridSurface?
     /// set when the grid behind is an album, which adds removal to the menu.
     let album: AlbumContext?
     /// set by album grids the signed-in user owns, so the photo on screen can
@@ -983,6 +984,7 @@ struct AssetViewerScreen: View {
         mediaTopSafeAreaInset: CGFloat? = nil,
         mediaBottomSafeAreaInset: CGFloat? = nil,
         openingMediaSurface: CommittedGridSurface? = nil,
+        editorOpeningSurface: @escaping () -> CommittedGridSurface? = { nil },
         zoomCommandBridge: AssetViewerZoomCommandBridge? = nil,
         album: AlbumContext? = nil,
         onSetAlbumCover: ((String) async -> Bool)? = nil,
@@ -1016,6 +1018,7 @@ struct AssetViewerScreen: View {
         self.mediaTopSafeAreaInset = mediaTopSafeAreaInset
         self.mediaBottomSafeAreaInset = mediaBottomSafeAreaInset
         self.openingMediaSurface = openingMediaSurface
+        self.editorOpeningSurface = editorOpeningSurface
         _zoomCommandBridge = State(
             initialValue: zoomCommandBridge ?? AssetViewerZoomCommandBridge()
         )
@@ -1331,6 +1334,7 @@ struct AssetViewerScreen: View {
                     let isVideo = current.isVideo
                     AssetEditScreen(
                         asset: current,
+                        openingSurface: editorOpeningSurface(),
                         localAssetIdentifier: current.localIdentifier,
                         onLocalSaved: { _ in commitLocalEdit(assetID: editedID) },
                         onRemoteSaveUnconfirmed: { _ in
@@ -1562,6 +1566,13 @@ struct AssetViewerScreen: View {
                     bottomInset: proxy.safeAreaInsets.bottom
                 )
             } action: { updateViewport($0) }
+            .overlay(alignment: .topLeading) {
+                if current?.isLivePhoto == true, chromePresentation.showsCarousel {
+                    LivePhotoControlsBar(playback: playback)
+                        .padding(.leading, 16)
+                        .padding(.top, physicalSafeAreaInsets.top + 58)
+                }
+            }
         }
         .ignoresSafeArea()
         .overlay(alignment: .topTrailing) {
@@ -1972,46 +1983,25 @@ struct AssetViewerScreen: View {
         }
     }
 
-    /// A playable asset's transport row owns a stable system safe-area slot for
-    /// the entire page lifetime. Visibility never changes its height, so opening
-    /// information cannot rebase the scroll view, and the system places it
-    /// above (rather than behind) the native bottom toolbar. the thumbnail
-    /// strip sits under it and stays mounted across every page, so scrubbing
-    /// never loses it.
+    /// Every page keeps the same filmstrip slot. Video transport overlays it,
+    /// so changing media type cannot rebase the pager during a swipe.
     private var bottomAccessoryBar: some View {
-        // photos floats its video palette 22pt above the thumbnails.
-        VStack(spacing: 22) {
+        AssetViewerCarousel(
+            assets: assets,
+            selection: $selectedAssetID,
+            aspectRatio: projectedAspectRatio(for:)
+        )
+        .opacity(chromePresentation.showsCarousel ? 1 : 0)
+        .allowsHitTesting(chromePresentation.showsCarousel)
+        .accessibilityHidden(!chromePresentation.showsCarousel)
+        .overlay(alignment: .bottom) {
             if chromePresentation.reservesTransportControls {
-                Group {
-                    if current?.isLivePhoto == true {
-                        LivePhotoControlsBar(playback: playback)
-                    } else {
-                        VideoControlsBar(playback: playback)
-                    }
-                }
-                .environment(\.colorScheme, .dark)
-                .opacity(chromePresentation.showsTransportControls ? 1 : 0)
-                .allowsHitTesting(chromePresentation.showsTransportControls)
-                .accessibilityHidden(!chromePresentation.showsTransportControls)
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.16),
-                    value: chromePresentation.showsTransportControls
-                )
-            }
-
-            if loadsViewerContent, !isContextPreview {
-                AssetViewerCarousel(
-                    assets: assets,
-                    selection: $selectedAssetID,
-                    aspectRatio: projectedAspectRatio(for:)
-                )
-                .opacity(chromePresentation.showsCarousel ? 1 : 0)
-                .allowsHitTesting(chromePresentation.showsCarousel)
-                .accessibilityHidden(!chromePresentation.showsCarousel)
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.16),
-                    value: chromePresentation.showsCarousel
-                )
+                VideoControlsBar(playback: playback)
+                    .environment(\.colorScheme, .dark)
+                    .opacity(chromePresentation.showsTransportControls ? 1 : 0)
+                    .allowsHitTesting(chromePresentation.showsTransportControls)
+                    .accessibilityHidden(!chromePresentation.showsTransportControls)
+                    .offset(y: -66)
             }
         }
         .padding(.bottom, 4)
@@ -3184,7 +3174,7 @@ struct AssetViewerScreen: View {
         let date = current.localDate
         let day = relativeDayLabel(for: date) ?? date.formatted(dateTitleFormat(for: date))
         let time = date.formatted(.dateTime.hour().minute().utc())
-        let place = current.city ?? current.country
+        let place = PhotoPlaceName.title(city: current.city, country: current.country)
         return VStack(spacing: 1) {
             Text(place ?? day)
                 .font(.subheadline.weight(.semibold))
@@ -3484,9 +3474,13 @@ struct AssetViewerScreen: View {
             guard session.client === client else { return }
             apply(.favoriteCommitted(asset.id, newValue))
             if result.storageFailed {
-                toast = String(localized: "Saved on device. Cloud favorite couldn't be queued.")
+                toast = newValue
+                    ? String(localized: "Added to Favorites on this device. Cloud sync couldn't be queued.")
+                    : String(localized: "Removed from Favorites on this device. Cloud sync couldn't be queued.")
             } else if result.syncPending {
-                toast = String(localized: "Favorite saved. Cloud sync is pending.")
+                toast = newValue
+                    ? String(localized: "Added to Favorites. Cloud sync is pending.")
+                    : String(localized: "Removed from Favorites. Cloud sync is pending.")
             }
         } catch {
             guard session.client === client else { return }
@@ -3907,8 +3901,8 @@ struct ToastBanner: View {
             .padding(.vertical, 10)
             .glassEffect(.regular, in: .capsule)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .task {
-                try? await Task.sleep(for: .seconds(2.2))
+            .task(id: text) {
+                do { try await Task.sleep(for: .seconds(2.2)) } catch { return }
                 withAnimation(.smooth(duration: 0.3)) { onDone() }
             }
     }
@@ -3995,6 +3989,7 @@ private struct AssetPager: View {
     /// scroll view.
     @State private var position: ScrollPosition
     @State private var visibleAssetID: String?
+    @State private var isUserScrolling = false
     @State private var initialPositionResolved = false
 
     /// a container resize preserves the raw horizontal offset, not the page.
@@ -4140,6 +4135,10 @@ private struct AssetPager: View {
         .scrollPosition($position, anchor: .center)
         .scrollIndicators(.hidden)
         .onScrollPhaseChange { oldPhase, phase, _ in
+            isUserScrolling = phase != .idle
+            if phase == .idle, let visibleAssetID, selection != visibleAssetID {
+                selection = visibleAssetID
+            }
             if AssetViewerOpeningMediaHandoff.beginsCompactInteraction(
                 isTracking: phase == .tracking,
                 isInteracting: phase == .interacting,
@@ -4183,7 +4182,7 @@ private struct AssetPager: View {
             }
 
             visibleAssetID = id
-            if selection != id { selection = id }
+            if !isUserScrolling, selection != id { selection = id }
         }
         .onChange(of: selection) { _, id in
             guard let id,

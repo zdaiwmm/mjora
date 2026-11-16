@@ -11,6 +11,7 @@ struct PhotosMediaTimeline: View {
     var body: some View {
         Group {
             if media == .edited { PhotosEditedTimeline(configuration: configuration, title: title) }
+            else if media == .screenshots { PhotosScreenshotTimeline(configuration: configuration, title: title) }
             else { PhotosServerMediaTimeline(media: media, configuration: configuration, title: title) }
         }
         .id(session.client.map(ObjectIdentifier.init))

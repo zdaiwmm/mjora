@@ -11,6 +11,8 @@ struct MemoryLane: View {
     var cornerRadius: CGFloat = 16
     var contentInset: CGFloat = 16
     var showsEmptyPlaceholder = false
+    var suppliedMemories: [Memory]? = nil
+    var onEmpty: () -> Void = {}
     @State private var memories: [Memory] = []
     @State private var hasLoaded = false
     @State private var loadFailed = false
@@ -199,9 +201,16 @@ struct MemoryLane: View {
             rollback: { memories = snapshot },
             request: { try await client.deleteMemory(id: memory.id) }
         )
+        if memories.isEmpty { onEmpty() }
     }
 
     private func load() async {
+        if let suppliedMemories {
+            guard !hasLoaded else { return }
+            memories = suppliedMemories
+            hasLoaded = true
+            return
+        }
         guard let client = session.client, memories.isEmpty else { return }
         defer { hasLoaded = true }
         if let fetched = try? await client.memories() {

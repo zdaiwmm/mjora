@@ -22,7 +22,7 @@ def placeholders(value):
     return collections.Counter(result)
 
 errors = []; total = 0
-allowed_identical = {'RAW', '', '%@ %@', '%@ · %@', '%@ • %@ • %@', '%lld', '%lld %@', '%lld × %lld', '%lld%%', '+%lld', 'GMT%@', 'ID', 'Imora', 'MB', 'http://192.168.1.10:2283', 'my-album', '·', '· %@'}
+allowed_identical = {'', '%@ %@', '%@ · %@', '%@ • %@ • %@', '%lld', '%lld %@', '%lld × %lld', '%lld%%', '+%lld', 'GMT%@', 'ID', 'Imora', 'MB', 'RAW', 'http://192.168.1.10:2283', 'my-album', '·', '· %@'}
 for path in [root/'Shared/Resources/Localizable.xcstrings', root/'Imora/Resources/InfoPlist.xcstrings', root/'ImoraShare/Resources/InfoPlist.xcstrings']:
     data = json.loads(path.read_text()); strings = data['strings']; total += len(strings)
     for key, entry in strings.items():

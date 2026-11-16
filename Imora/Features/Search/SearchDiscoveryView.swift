@@ -114,7 +114,7 @@ nonisolated enum SearchSuggestion: Identifiable, Hashable {
     var title: String {
         switch self {
         case .person(let person): person.name
-        case .place(let city): city
+        case .place(let city): PhotoPlaceName.localized(city)
         case .tag(let tag): tag.value
         }
     }
@@ -384,7 +384,7 @@ struct SearchDiscoveryView: View {
                             placeCard(place)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(place.value)
+                        .accessibilityLabel(PhotoPlaceName.localized(place.value))
                         .accessibilityHint("Searches for photos taken here.")
                     }
                 }
@@ -412,7 +412,7 @@ struct SearchDiscoveryView: View {
                 LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .center, endPoint: .bottom)
             }
             .overlay(alignment: .bottomLeading) {
-                Text(place.value)
+                Text(PhotoPlaceName.localized(place.value))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
