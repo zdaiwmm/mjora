@@ -5,7 +5,7 @@ import os
 
 /// one step of a progressive photokit load: the library's own stored
 /// thumbnail while the sharp render is still being decoded, then the render.
-nonisolated enum LocalImageDelivery {
+nonisolated enum LocalImageDelivery: @unchecked Sendable {
     case preview(UIImage)
     case final(UIImage)
     case terminal(LocalImageResult)
@@ -32,11 +32,23 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
 
     /// caching manager rather than the default one: it prefetches and holds
     /// decoded thumbnails for the identifiers the grid asks it to keep warm.
-    private let manager = PHCachingImageManager()
+    private let manager: PHCachingImageManager
     // Reserve two of the shared four slots for a server fallback while
     // local providers are slow or only send degraded callbacks.
     private static let localSlots = ThumbnailLoadLimiter(limit: 2)
     private var prefetchTasks: [String: Task<Void, Never>] = [:]
+    private struct Consumer {
+        let continuation: AsyncStream<LocalImageDelivery>.Continuation
+        var globalDemand: UUID?
+        var localDemand: UUID?
+    }
+    private struct SharedWork {
+        let id: UUID
+        var consumers: [UUID: Consumer]
+        var producer: Task<Void, Never>?
+        var latest: LocalImageDelivery?
+    }
+    private let sharedWork = OSAllocatedUnfairLock(initialState: [String: SharedWork]())
     /// decoded results still get a small cache of their own so a tile
     /// scrolling back into view renders on its first frame, synchronously -
     /// photokit only ever answers through a callback.
@@ -100,7 +112,8 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         await localSlots.release(permit)
     }
 
-    private init() {
+    private init(manager: PHCachingImageManager = PHCachingImageManager()) {
+        self.manager = manager
         cache = NSCache()
         cache.totalCostLimit = 48 << 20
         previews = NSCache()
@@ -108,6 +121,10 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         assets = NSCache()
         assets.countLimit = 512
     }
+
+    #if DEBUG
+    static func fixture(manager: PHCachingImageManager) -> LocalImageLoader { LocalImageLoader(manager: manager) }
+    #endif
 
     /// asset lookups are cached; a library change invalidates them all.
     func noteLibraryChange() {
@@ -259,7 +276,8 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         contentMode: PHImageContentMode = .aspectFill,
         coversTarget: Bool = false,
         allowsNetwork: Bool = true,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        priority: ThumbnailDemandPriority = .visible
     ) async -> UIImage? {
         for await delivery in deliveries(
             localIdentifier: localIdentifier,
@@ -267,7 +285,8 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
             contentMode: contentMode,
             coversTarget: coversTarget,
             allowsNetwork: allowsNetwork,
-            cacheScope: cacheScope
+            cacheScope: cacheScope,
+            priority: priority
         ) {
             guard !Task.isCancelled else { return nil }
             if case .final(let image) = delivery { return image }
@@ -286,7 +305,8 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         contentMode: PHImageContentMode = .aspectFill,
         coversTarget: Bool = false,
         allowsNetwork: Bool = true,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        priority: ThumbnailDemandPriority = .visible
     ) -> AsyncStream<LocalImageDelivery> {
         if let cached = cachedImage(
             localIdentifier: localIdentifier,
@@ -300,6 +320,96 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                 continuation.finish()
             }
         }
+        let workKey = "local|\(key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope))|\(Double(targetPixelSize).bitPattern)|network:\(allowsNetwork)"
+        let consumerID = UUID()
+        return AsyncStream { continuation in
+            let registration = sharedWork.withLock { works -> (UUID, Bool, LocalImageDelivery?) in
+                if var work = works[workKey] {
+                    work.consumers[consumerID] = Consumer(continuation: continuation)
+                    works[workKey] = work
+                    return (work.id, false, work.latest)
+                }
+                let id = UUID()
+                works[workKey] = SharedWork(id: id, consumers: [consumerID: Consumer(continuation: continuation)])
+                return (id, true, nil)
+            }
+            continuation.onTermination = { [weak self] _ in self?.removeConsumer(consumerID, key: workKey, workID: registration.0) }
+            if let latest = registration.2 { continuation.yield(latest) }
+            let demand = Task { [self] in
+                let global = await ThumbnailDemandScheduler.shared.addDemand(key: workKey, priority: priority)
+                let local = await Self.localSlots.addDemand(key: workKey, priority: priority)
+                let installed = sharedWork.withLock { works -> Bool in
+                    guard var work = works[workKey], work.id == registration.0,
+                          var consumer = work.consumers[consumerID] else { return false }
+                    consumer.globalDemand = global; consumer.localDemand = local
+                    work.consumers[consumerID] = consumer; works[workKey] = work
+                    return true
+                }
+                if !installed {
+                    await ThumbnailDemandScheduler.shared.releaseDemand(key: workKey, id: global)
+                    await Self.localSlots.releaseDemand(key: workKey, id: local)
+                }
+            }
+            guard registration.1 else { return }
+            let producer = Task.detached(priority: priority == .visible ? .userInitiated : .utility) { [self] in
+                await demand.value
+                guard !Task.isCancelled else { return }
+                for await delivery in providerDeliveries(localIdentifier: localIdentifier, targetPixelSize: targetPixelSize,
+                    contentMode: contentMode, coversTarget: coversTarget, allowsNetwork: allowsNetwork,
+                    cacheScope: cacheScope, priority: priority, demandKey: workKey) {
+                    publish(delivery, key: workKey, workID: registration.0)
+                }
+                finishSharedWork(key: workKey, workID: registration.0)
+            }
+            let installed = sharedWork.withLock { works -> Bool in
+                guard var work = works[workKey], work.id == registration.0 else { return false }
+                work.producer = producer; works[workKey] = work; return true
+            }
+            if !installed { producer.cancel() }
+        }
+    }
+
+    private func removeConsumer(_ consumerID: UUID, key: String, workID: UUID) {
+        let removed = sharedWork.withLock { works -> (Consumer?, Task<Void, Never>?) in
+            guard var work = works[key], work.id == workID else { return (nil, nil) }
+            let consumer = work.consumers.removeValue(forKey: consumerID)
+            if work.consumers.isEmpty { works[key] = nil; return (consumer, work.producer) }
+            works[key] = work; return (consumer, nil)
+        }
+        removed.1?.cancel()
+        releaseDemands(removed.0, key: key)
+    }
+
+    private func releaseDemands(_ consumer: Consumer?, key: String) {
+        guard let consumer else { return }
+        Task {
+            if let id = consumer.globalDemand { await ThumbnailDemandScheduler.shared.releaseDemand(key: key, id: id) }
+            if let id = consumer.localDemand { await Self.localSlots.releaseDemand(key: key, id: id) }
+        }
+    }
+
+    private func publish(_ delivery: LocalImageDelivery, key: String, workID: UUID) {
+        let continuations = sharedWork.withLock { works -> [AsyncStream<LocalImageDelivery>.Continuation] in
+            guard var work = works[key], work.id == workID else { return [] }
+            work.latest = delivery; works[key] = work
+            return work.consumers.values.map(\.continuation)
+        }
+        for continuation in continuations { continuation.yield(delivery) }
+    }
+
+    private func finishSharedWork(key: String, workID: UUID) {
+        let consumers = sharedWork.withLock { works -> [Consumer] in
+            guard let work = works[key], work.id == workID else { return [] }
+            works[key] = nil; return Array(work.consumers.values)
+        }
+        for consumer in consumers { consumer.continuation.finish(); releaseDemands(consumer, key: key) }
+    }
+
+    private func providerDeliveries(
+        localIdentifier: String, targetPixelSize: CGFloat, contentMode: PHImageContentMode,
+        coversTarget: Bool, allowsNetwork: Bool, cacheScope: String,
+        priority: ThumbnailDemandPriority, demandKey: String
+    ) -> AsyncStream<LocalImageDelivery> {
         let generation = libraryGeneration.withLock { $0 }
         let request = ImageRequestBox()
         let manager = manager
@@ -310,9 +420,9 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
             let work = Task.detached(priority: .userInitiated) { [self] in
                 do {
                     try await ThumbnailProviderStart.run(acquireCapacity: {
-                        let localPermit = try await Self.localSlots.acquire()
+                        let localPermit = try await Self.localSlots.acquire(priority: priority, key: demandKey)
                         request.registerLocalPermit(localPermit)
-                        let permit = try await ThumbnailLoadLimiter.shared.acquire()
+                        let permit = try await ThumbnailLoadLimiter.shared.acquire(priority: priority, key: demandKey)
                         request.registerPermit(permit)
                     }, startProvider: {
                         guard !request.isCancelled else {
@@ -505,12 +615,13 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         // the same cancellable render lane as visible tiles instead.
         for identifier in localIdentifiers {
             let scope = cacheScopes[identifier] ?? ""
-            let cacheKey = "\(ownerID?.uuidString ?? "default")|\(key(identifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: scope))"
+            let cacheKey = "\(ownerID?.uuidString ?? "default")|\(key(identifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: scope))|network:\(allowsNetwork)"
             if caching {
                 guard prefetchTasks[cacheKey] == nil else { continue }
                 prefetchTasks[cacheKey] = Task.detached(priority: .utility) { [self] in
                     _ = await image(localIdentifier: identifier, targetPixelSize: targetPixelSize,
-                                    contentMode: contentMode, coversTarget: coversTarget, allowsNetwork: false, cacheScope: scope)
+                                    contentMode: contentMode, coversTarget: coversTarget, allowsNetwork: allowsNetwork, cacheScope: scope,
+                                    priority: .adjacent)
                 }
             } else {
                 prefetchTasks.removeValue(forKey: cacheKey)?.cancel()

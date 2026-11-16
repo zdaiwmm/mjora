@@ -1106,6 +1106,111 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         await finish()
     }
 
+    func testPhotoKitPreheatMatchesActualRequestOptions() async throws {
+        let (localID, _) = try await createSurfaceFixture()
+        let manager = RecordingPhotoKitManager(), loader = LocalImageLoader.fixture(manager: manager)
+        let scope = "shared-\(UUID())", first = UUID(), second = UUID()
+        let slots = ThumbnailLoadLimiter.shared
+        var held: [UUID] = []
+        for _ in 0..<4 { held.append(try await slots.acquire()) }
+        defer { Task { for permit in held { await slots.release(permit) } } }
+        loader.startCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: first)
+        loader.startCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: second)
+        try await Task.sleep(for: .milliseconds(250))
+        let visible = Task { await loader.image(localIdentifier: localID, targetPixelSize: 416,
+            contentMode: .aspectFit, coversTarget: true, allowsNetwork: false, cacheScope: scope) }
+        try await Task.sleep(for: .milliseconds(250))
+        loader.stopCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: first)
+        for permit in held { await slots.release(permit) }; held.removeAll()
+        let image = await visible.value
+        XCTAssertNotNil(image?.cgImage, "A visible consumer must survive another owner's cancellation")
+        for _ in 0..<100 {
+            if manager.requests.withLock({ !$0.isEmpty }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(manager.requests.withLock { $0.count }, 1, "The two preheats and visible request must share one actual PhotoKit request")
+        let control = await loader.image(localIdentifier: localID, targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScope: "control-\(UUID())")
+        XCTAssertNotNil(control?.cgImage)
+        let requests = manager.requests.withLock { $0 }
+        XCTAssertEqual(requests.count, 2)
+        if requests.count == 2 {
+            XCTAssertEqual(requests[0], requests[1], "Preheat and visible PhotoKit requests must use the same manager, target and options")
+            XCTAssertEqual(requests[0].target, CGSize(width: 416, height: 416))
+            XCTAssertEqual(requests[0].mode, PHImageContentMode.aspectFit.rawValue)
+            XCTAssertEqual(requests[0].delivery, PHImageRequestOptionsDeliveryMode.opportunistic.rawValue)
+            XCTAssertEqual(requests[0].resize, PHImageRequestOptionsResizeMode.fast.rawValue)
+            XCTAssertFalse(requests[0].allowsNetwork)
+        }
+        loader.stopCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: second)
+    }
+
+    func testCancellingOneLocalPreheatKeepsOtherOwner() async throws {
+        let (localID, _) = try await createSurfaceFixture()
+        let manager = RecordingPhotoKitManager(), loader = LocalImageLoader.fixture(manager: manager)
+        let scope = "owners-\(UUID())", first = UUID(), second = UUID(), slots = ThumbnailLoadLimiter.shared
+        var held: [UUID] = []
+        for _ in 0..<4 { held.append(try await slots.acquire()) }
+        defer { Task { for permit in held { await slots.release(permit) } } }
+        for owner in [first, second] {
+            loader.startCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+                coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: owner)
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        loader.stopCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: first)
+        try await Task.sleep(for: .milliseconds(100))
+        for permit in held { await slots.release(permit) }; held.removeAll()
+        for _ in 0..<200 {
+            if loader.cachedImage(localIdentifier: localID, targetPixelSize: 416,
+                contentMode: .aspectFit, coversTarget: true, cacheScope: scope) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(loader.cachedImage(localIdentifier: localID, targetPixelSize: 416,
+            contentMode: .aspectFit, coversTarget: true, cacheScope: scope)?.cgImage,
+            "The remaining owner must receive the actual PhotoKit image")
+        XCTAssertEqual(manager.requests.withLock { $0.count }, 1)
+        loader.stopCaching(localIdentifiers: [localID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [localID: scope], ownerID: second)
+    }
+
+    func testVisibleLocalDemandPromotesQueuedPreheat() async throws {
+        let (olderID, _) = try await createSurfaceFixture(), (visibleID, _) = try await createSurfaceFixture()
+        let manager = RecordingPhotoKitManager(), loader = LocalImageLoader.fixture(manager: manager)
+        let olderScope = "older-\(UUID())", visibleScope = "visible-\(UUID())"
+        let first = UUID(), second = UUID(), slots = ThumbnailLoadLimiter.shared
+        var held: [UUID] = []
+        for _ in 0..<4 { held.append(try await slots.acquire()) }
+        defer { Task { for permit in held { await slots.release(permit) } } }
+        loader.startCaching(localIdentifiers: [olderID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [olderID: olderScope], ownerID: first)
+        try await Task.sleep(for: .milliseconds(250))
+        loader.startCaching(localIdentifiers: [visibleID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [visibleID: visibleScope], ownerID: second)
+        try await Task.sleep(for: .milliseconds(250))
+        let visible = Task { await loader.image(localIdentifier: visibleID, targetPixelSize: 416,
+            contentMode: .aspectFit, coversTarget: true, allowsNetwork: false, cacheScope: visibleScope) }
+        try await Task.sleep(for: .milliseconds(250))
+        await slots.release(held.removeFirst())
+        for _ in 0..<200 {
+            if manager.requests.withLock({ !$0.isEmpty }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(manager.requests.withLock { $0.first?.assetID }, visibleID,
+            "The visible subscriber must promote its queued PhotoKit producer")
+        for permit in held { await slots.release(permit) }; held.removeAll()
+        let image = await visible.value
+        XCTAssertNotNil(image?.cgImage)
+        loader.stopCaching(localIdentifiers: [olderID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [olderID: olderScope], ownerID: first)
+        loader.stopCaching(localIdentifiers: [visibleID], targetPixelSize: 416, contentMode: .aspectFit,
+            coversTarget: true, allowsNetwork: false, cacheScopes: [visibleID: visibleScope], ownerID: second)
+    }
+
     func testViewerReturnCarriesDisplayedPixelsIntoUnreadyDestination() async throws {
         let userID = "viewer-return-\(UUID())"
         let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
@@ -3496,6 +3601,26 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         try await LaunchPreviewStore(root: LaunchPreviewStore.rootDirectory).restore(scope: client.mediaDisplayScope,
             context: .init(access: MediaPresentationCoordinator.access(for: client), protectedDataAvailable: true,
                 filter: snapshot.filter, layout: snapshot.layout))
+    }
+}
+
+private final class RecordingPhotoKitManager: PHCachingImageManager, @unchecked Sendable {
+    struct Request: Equatable {
+        let assetID: String
+        let target: CGSize
+        let mode: Int
+        let delivery: Int
+        let resize: Int
+        let allowsNetwork: Bool
+    }
+    let requests = Mutex<[Request]>([])
+
+    override func requestImage(for asset: PHAsset, targetSize: CGSize, contentMode: PHImageContentMode,
+        options: PHImageRequestOptions?, resultHandler: @escaping (UIImage?, [AnyHashable: Any]?) -> Void) -> PHImageRequestID {
+        requests.withLock { $0.append(.init(assetID: asset.localIdentifier, target: targetSize, mode: contentMode.rawValue,
+            delivery: options?.deliveryMode.rawValue ?? -1, resize: options?.resizeMode.rawValue ?? -1,
+            allowsNetwork: options?.isNetworkAccessAllowed ?? false)) }
+        return super.requestImage(for: asset, targetSize: targetSize, contentMode: contentMode, options: options, resultHandler: resultHandler)
     }
 }
 
