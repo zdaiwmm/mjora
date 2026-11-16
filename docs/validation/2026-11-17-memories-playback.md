@@ -33,3 +33,9 @@ Local result bundles are retained under `execution/memories-20261117`: `unit-fin
 The dedicated memory UI fixture can be prepared with `python3 tests/integration/prepare-memories-ui.py` after the existing Phase 4 local service and legacy synthetic account are available. The script accepts no production destination. UI fixture and simulator ownership guards remain enforced; unrelated simulators skip these task-specific acceptance tests.
 
 Physical-device frame rate and listening quality have not been measured. This implementation uses the existing memory API and selection; Apple's private story generation and Apple Music integration are outside this change.
+
+## Integration follow-up
+
+The feature was integrated with Photos polish main `f7db0124cbf6f97dc68005cc5363136705d72b14` as candidate `2e5f00d4d5b50b162e4e6a04ddd45d5de79c8e4e`. The supplied-memory loading and empty callbacks from the updated collection home are preserved. Shared translation conflicts retain main's wording; new memory strings are added without reordering the existing catalog.
+
+On this integrated candidate, **44 relevant unit/integration checks and all four memory UI flows passed**, including the actual system Reduce Motion setting. English/zh-Hans validation passed for **1,914 entries**. Retained results: `unit-integrated.xcresult`, `ui-integrated.xcresult`. The private release candidate is 1.0.12 (17); signing and live-channel checks are recorded separately in the deployment receipt.
