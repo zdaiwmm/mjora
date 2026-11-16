@@ -56,6 +56,15 @@ struct PinnedCollectionsEditor: View {
                         pinRow(id: "album:\(album.id)", title: album.albumName, symbol: "rectangle.stack")
                     }
                 }
+                if layout.pinnedIDs.contains(where: { $0.hasPrefix("deviceMedia:") }) {
+                    Section("On Device") {
+                        ForEach(layout.pinnedIDs.filter { $0.hasPrefix("deviceMedia:") }, id: \.self) { id in
+                            if let media = PhotoMediaFilter(rawValue: String(id.dropFirst("deviceMedia:".count))) {
+                                pinRow(id: id, title: media.title, symbol: media.symbol)
+                            }
+                        }
+                    }
+                }
             }
             .navigationTitle("Pinned Collections")
             .navigationBarTitleDisplayMode(.inline)

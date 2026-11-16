@@ -103,6 +103,9 @@ struct AlbumsTab: View {
                         TimelineScreen(title: String(localized: "Recently Added"),
                                        filter: TimelineFilter(orderBy: "createdAt"), showsLargeTitle: false)
                     case .media(let media): PhotosMediaTimeline(media: media, title: media.title)
+                    case .deviceMedia(let media):
+                        DeviceLibraryScreen(session: session, navigationTarget: .constant(nil), mediaFilter: media)
+                            .navigationTitle(media.title).navigationBarTitleDisplayMode(.inline)
                     case .memories:
                         ScrollView {
                             MemoryLane(showsHeading: false, cardWidth: 250, cardHeight: 250,

@@ -119,7 +119,7 @@ nonisolated enum PhotoLibraryService {
         fetchPHAsset(localIdentifier) != nil
     }
 
-    private static func snapshot(of asset: PHAsset) -> DeviceAsset {
+    static func snapshot(of asset: PHAsset) -> DeviceAsset {
         DeviceAsset(
             localIdentifier: asset.localIdentifier,
             isVideo: asset.mediaType == .video,

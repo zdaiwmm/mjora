@@ -35,15 +35,15 @@ private struct PhotosServerMediaTimeline: View {
             PhotosMediaFooter(search: search, count: visibleAssets.count, hidesCount: false)
         })
             .task(id: session.client?.offlineAccountKey) {
-                guard media != .screenshots, let client = session.client else { return }
+                guard media.isAvailable(onDevice: false), let client = session.client else { return }
                 search.attach(client, hub: session.realtime)
                 let filter = media.cloudSearchFilter
                 if search.hasActiveSearch, search.filter == filter { await search.refresh() }
                 else { search.apply(filter, allowEmpty: true) }
             }
-            .refreshable { if media != .screenshots { await search.refresh() } }
+            .refreshable { if media.isAvailable(onDevice: false) { await search.refresh() } }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active, media != .screenshots { Task { await search.refresh() } }
+                if phase == .active, media.isAvailable(onDevice: false) { Task { await search.refresh() } }
             }
             .onChange(of: search.queryRevision, initial: true) { _, revision in
                 let searchModel = search
@@ -57,9 +57,9 @@ private struct PhotosServerMediaTimeline: View {
                 updateProjection()
             }
             .overlay {
-                if media == .screenshots {
+                if !media.isAvailable(onDevice: false) {
                     ContentUnavailableView("Available On Device", systemImage: media.symbol,
-                        description: Text("This server does not provide screenshot classification. Switch the Library source to On Device."))
+                        description: Text("This media type is available On Device. This server does not provide reliable classification for it."))
                         .background(Color(.systemBackground))
                 } else if search.loadFailed, search.assets.isEmpty {
                     ContentUnavailableView {

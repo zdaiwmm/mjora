@@ -148,7 +148,7 @@ struct PhotosBrowseMenu: View {
                 }
                 Menu("Media Types", systemImage: "photo.on.rectangle") {
                     Picker("Media Types", selection: $controls.mediaFilter) {
-                        ForEach([PhotoMediaFilter.photos, .videos, .livePhotos]) { type in
+                        ForEach(PhotoMediaFilter.mediaTypes.filter { $0.isAvailable(onDevice: source == "local") }) { type in
                             Label(type.title, systemImage: type.symbol).tag(type)
                         }
                     }

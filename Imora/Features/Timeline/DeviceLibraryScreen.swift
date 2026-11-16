@@ -1,9 +1,11 @@
 import SwiftUI
+import Photos
 
 /// A device-only projection. Supplied assets never request server time buckets.
 struct DeviceLibraryScreen: View {
     @Binding var navigationTarget: TimelineNavigationTarget?
     var photosConfiguration: PhotosToolbarConfiguration? = nil
+    var mediaFilter: PhotoMediaFilter? = nil
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
     @State private var modelHolder: TimelineModelHolder
@@ -14,14 +16,20 @@ struct DeviceLibraryScreen: View {
     @State private var filterError: String?
     @State private var loadID = UUID()
     @State private var albumMembership = PhotoAppAlbumMembershipCache.shared
+    @State private var mediaFactsStore = DeviceMediaFactsStore.shared
+    @State private var filterFacts: MediaFactsSnapshot?
+
+    private var selectedFilter: PhotoMediaFilter { mediaFilter ?? photosConfiguration?.controls.mediaFilter ?? .all }
+    private var usesMediaFacts: Bool { mediaFilter != nil || selectedFilter.requiresDeviceFacts }
 
     init(session: SessionStore, navigationTarget: Binding<TimelineNavigationTarget?>,
-         photosConfiguration: PhotosToolbarConfiguration? = nil) {
+         photosConfiguration: PhotosToolbarConfiguration? = nil, mediaFilter: PhotoMediaFilter? = nil) {
         _navigationTarget = navigationTarget
         self.photosConfiguration = photosConfiguration
+        self.mediaFilter = mediaFilter
         _modelHolder = State(initialValue: TimelineModelHolder {
             let model = TimelineModel(filter: TimelineFilter(order: "asc"), suppliedAssets: [])
-            let selected = photosConfiguration?.controls.mediaFilter ?? .all
+            let selected = mediaFilter ?? photosConfiguration?.controls.mediaFilter ?? .all
             model.suppliedLaunchContext = "device|\(selected.rawValue)|\(photosConfiguration?.controls.sortByAdded == true ? "added" : "date")"
             if let client = session.client {
                 model.attachCachedLaunch(session.cachedLaunchHandle, client: client, backup: session.backup)
@@ -31,13 +39,23 @@ struct DeviceLibraryScreen: View {
     }
 
     var body: some View {
-        TimelineScreen(title: "", filter: model.filter, emptyMessage: String(localized: "No accessible photos on this device."),
+        TimelineScreen(title: mediaFilter?.title ?? "", filter: model.filter, emptyMessage: String(localized: "No accessible photos on this device."),
             showsLargeTitle: false, photosConfiguration: photosConfiguration,
             showsEmptyState: !filterLoading && filterError == nil, suppliedModel: model,
             mergesLocalPhotos: true, navigationTarget: $navigationTarget, header: {
                 if photosConfiguration?.controls.mediaFilter == .notInAlbum {
                     Text("App cloud albums. Albums in the device Photos app are separate.")
                         .font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
+                }
+                if mediaFilter != nil { Text("On Device").font(.footnote).foregroundStyle(.secondary) }
+                if PhotoAccess.shared.status == .limited {
+                    Text("Selected Photos Only").font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("device-media-selected-scope")
+                }
+                if let category = selectedFilter.deviceCategory, let filterFacts,
+                   filterFacts.counts(in: category).unknown > 0 {
+                    Text("\(filterFacts.counts(in: category).unknown) items have not been classified.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 if PhotoAccess.shared.canAsk {
                     Button("Allow Photo Access") {
@@ -57,6 +75,7 @@ struct DeviceLibraryScreen: View {
             })
             .task(id: session.client.map(ObjectIdentifier.init)) {
                 session.realtime?.addListener(albumMembership)
+                mediaFactsStore.startObserving()
                 reload()
             }
             .refreshable {
@@ -70,9 +89,17 @@ struct DeviceLibraryScreen: View {
             .onChange(of: albumMembership.generation) { _, _ in
                 if photosConfiguration?.controls.mediaFilter == .notInAlbum { reload() }
             }
-            .onChange(of: PhotoAccess.shared.status) { _, _ in reload() }
+            .onChange(of: PhotoAccess.shared.status) { _, _ in mediaFactsStore.invalidate(); reload() }
+            .onChange(of: mediaFactsStore.generation) { _, _ in
+                if usesMediaFacts || PhotoAccess.shared.status != .authorized {
+                    filterFacts = nil; allAssets = []
+                    model.replaceSuppliedAssets([], groupsByDate: true)
+                    reload()
+                }
+            }
             .onChange(of: scenePhase) { _, value in
                 if value == .active {
+                    mediaFactsStore.invalidate()
                     albumMembership.invalidate(account: session.client?.offlineAccountKey)
                     reload()
                 }
@@ -97,7 +124,8 @@ struct DeviceLibraryScreen: View {
         let requested = UUID()
         loadID = requested
         let client = session.client
-        let selectedFilter = photosConfiguration?.controls.mediaFilter ?? .all
+        let selectedFilter = self.selectedFilter
+        let needsFacts = usesMediaFacts
         filterError = nil
         filterLoading = true
         loadTask = Task {
@@ -109,17 +137,24 @@ struct DeviceLibraryScreen: View {
                 guard !Task.isCancelled else { return }
                 await model.load()
             }
-            var assets: [Asset]
-            if PhotoLibraryService.hasFullAccess, let backup = session.backup {
-                assets = await backup.localTimelineAssets().map { $0.device.asAsset(backedUp: $0.backedUp) }
-            } else {
-                assets = await PhotoLibraryService.browsableAssets().map { $0.asAsset(backedUp: false) }
-            }
-            guard !Task.isCancelled, session.client === client else { return }
-            #if DEBUG || PHASE4_PERFORMANCE
-            LaunchPipelineTrace.mark("device-library-visible-inventory", items: assets.count)
-            #endif
             do {
+                var assets: [Asset]
+                if needsFacts {
+                    let inventory = try await mediaFactsStore.refresh()
+                    guard !Task.isCancelled, loadID == requested else { return }
+                    filterFacts = inventory.facts
+                    assets = inventory.assets.map { $0.asAsset(backedUp: session.backup?.hasVerifiedBackup(localIdentifier: $0.localIdentifier) == true) }
+                } else if PhotoLibraryService.hasFullAccess, let backup = session.backup {
+                    filterFacts = nil
+                    assets = await backup.localTimelineAssets().map { $0.device.asAsset(backedUp: $0.backedUp) }
+                } else {
+                    filterFacts = nil
+                    assets = await PhotoLibraryService.browsableAssets().map { $0.asAsset(backedUp: false) }
+                }
+                guard !Task.isCancelled, session.client === client else { return }
+                #if DEBUG || PHASE4_PERFORMANCE
+                LaunchPipelineTrace.mark("device-library-visible-inventory", items: assets.count)
+                #endif
                 if selectedFilter == .edited {
                     assets = await PhotoFilterMetadata.editedDeviceAssets(assets)
                 } else if selectedFilter == .notInAlbum {
@@ -151,12 +186,9 @@ struct DeviceLibraryScreen: View {
     }
 
     private func applyPresentation() {
-        guard let controls = photosConfiguration?.controls else {
-            model.replaceSuppliedAssets(allAssets, groupsByDate: true)
-            return
-        }
-        let visible = allAssets.filter { controls.mediaFilter.includes($0) }.sorted {
-            controls.sortByAdded ? $0.uploadLocalDate < $1.uploadLocalDate : $0.localDate < $1.localDate
+        let sortByAdded = photosConfiguration?.controls.sortByAdded == true
+        let visible = allAssets.filter { selectedFilter.includes($0, facts: filterFacts) }.sorted {
+            sortByAdded ? $0.uploadLocalDate < $1.uploadLocalDate : $0.localDate < $1.localDate
         }
         model.replaceSuppliedAssets(visible, groupsByDate: true)
     }

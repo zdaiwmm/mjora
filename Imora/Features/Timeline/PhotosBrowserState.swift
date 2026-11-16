@@ -16,6 +16,10 @@ nonisolated enum PhotoBrowseMode: String, CaseIterable, Identifiable {
 
 nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
     case all, favorites, photos, videos, livePhotos, edited, notInAlbum, screenshots
+    case panoramas, selfPortraits, highFrameRate, timeLapses, screenRecordings, raw, bursts
+
+    static let mediaTypes: [Self] = [.photos, .videos, .livePhotos, .panoramas, .selfPortraits,
+        .highFrameRate, .timeLapses, .screenRecordings, .raw, .bursts]
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -27,6 +31,13 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .edited: String(localized: "Edited")
         case .notInAlbum: String(localized: "Not in an Album")
         case .screenshots: String(localized: "Screenshots")
+        case .panoramas: String(localized: "Panoramas")
+        case .selfPortraits: String(localized: "Selfies")
+        case .highFrameRate: String(localized: "High Frame Rate")
+        case .timeLapses: String(localized: "Time-Lapse")
+        case .screenRecordings: String(localized: "Screen Recordings")
+        case .raw: String(localized: "RAW")
+        case .bursts: String(localized: "Bursts")
         }
     }
     var symbol: String {
@@ -39,9 +50,36 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .edited: "slider.horizontal.3"
         case .notInAlbum: "rectangle.stack.badge.minus"
         case .screenshots: "camera.viewfinder"
+        case .panoramas: "pano"
+        case .selfPortraits: "person.crop.rectangle"
+        case .highFrameRate: "gauge.with.dots.needle.67percent"
+        case .timeLapses: "timelapse"
+        case .screenRecordings: "record.circle"
+        case .raw: "camera"
+        case .bursts: "square.3.layers.3d"
         }
     }
-    func isAvailable(onDevice: Bool) -> Bool { self != .screenshots || onDevice }
+    var deviceCategory: MediaCategory? {
+        switch self {
+        case .photos: .photo
+        case .videos: .video
+        case .livePhotos: .livePhoto
+        case .screenshots: .screenshot
+        case .edited: .edited
+        case .panoramas: .panorama
+        case .selfPortraits: .selfPortrait
+        case .highFrameRate: .highFrameRate
+        case .timeLapses: .timeLapse
+        case .screenRecordings: .screenRecording
+        case .raw: .raw
+        case .bursts: .burst
+        case .all, .favorites, .notInAlbum: nil
+        }
+    }
+    var requiresDeviceFacts: Bool {
+        [.panoramas, .selfPortraits, .highFrameRate, .timeLapses, .screenRecordings, .raw, .bursts].contains(self)
+    }
+    func isAvailable(onDevice: Bool) -> Bool { onDevice || (self != .screenshots && !requiresDeviceFacts) }
 
     var cloudSearchFilter: SearchFilter {
         var filter = SearchFilter()
@@ -52,12 +90,13 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .livePhotos: filter.mediaType = .image; filter.isMotion = true
         case .favorites: filter.isFavorite = true
         case .notInAlbum: filter.notInAlbum = true
-        case .all, .edited, .screenshots: break
+        case .all, .edited, .screenshots, .panoramas, .selfPortraits, .highFrameRate,
+                .timeLapses, .screenRecordings, .raw, .bursts: break
         }
         return filter
     }
 
-    func includes(_ asset: Asset) -> Bool {
+    func includes(_ asset: Asset, facts: MediaFactsSnapshot? = nil) -> Bool {
         switch self {
         case .all: true
         case .favorites: asset.isFavorite
@@ -67,6 +106,10 @@ nonisolated enum PhotoMediaFilter: String, CaseIterable, Identifiable {
         case .edited: asset.isEdited == true
         case .notInAlbum: asset.isInAppAlbum == false
         case .screenshots: asset.isScreenshot == true
+        case .panoramas, .selfPortraits, .highFrameRate, .timeLapses, .screenRecordings, .raw, .bursts:
+            if let identifier = asset.localIdentifier, let category = deviceCategory {
+                facts?.value(category, for: identifier) == .yes
+            } else { false }
         }
     }
 }

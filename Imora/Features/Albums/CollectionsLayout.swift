@@ -112,7 +112,10 @@ nonisolated struct CollectionsLayout: Codable, Equatable {
     mutating func removeAlbum(_ id: String) { pinnedIDs.removeAll { $0 == "album:\(id)" } }
 
     private static func isValidPin(_ id: String) -> Bool {
-        ["favorites", "recent", "places", "people", "archive", "locked", "trash", "duplicates", "largeFiles", "cleanup"].contains(id)
+        if id.hasPrefix("deviceMedia:") {
+            return PhotoMediaFilter(rawValue: String(id.dropFirst("deviceMedia:".count)))?.deviceCategory != nil
+        }
+        return ["favorites", "recent", "places", "people", "archive", "locked", "trash", "duplicates", "largeFiles", "cleanup"].contains(id)
             || (id.hasPrefix("album:") && id.count > "album:".count)
     }
 }

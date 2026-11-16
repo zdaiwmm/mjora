@@ -1,8 +1,11 @@
 import SwiftUI
+import UIKit
+import Photos
 
 nonisolated enum CollectionsRoute: Hashable {
     case albums, recent, memories
     case media(PhotoMediaFilter)
+    case deviceMedia(PhotoMediaFilter)
 }
 
 struct CollectionsHome: View {
@@ -16,6 +19,9 @@ struct CollectionsHome: View {
     let onEditPins: () -> Void
     @State private var people: [Person] = []
     @State private var changingPeople = Set<String>()
+    @AppStorage("imora.photos.source") private var source = "cloud"
+    @State private var mediaFacts = DeviceMediaFactsStore.shared
+    @State private var mediaFactsError: String?
     @ScaledMetric(relativeTo: .body) private var previewSide = 112.0
 
     private var availableSections: [CollectionSection] {
@@ -46,8 +52,17 @@ struct CollectionsHome: View {
         .background(Color(.systemBackground))
         .accessibilityIdentifier("collections-home")
         .task(id: session.client?.offlineAccountKey) { await loadPeople() }
+        .task(id: "\(source)|\(mediaFacts.generation)|\(PhotoAccess.shared.status.rawValue)|\(layout.pinnedIDs)") {
+            guard source == "local" || layout.pinnedIDs.contains(where: { $0.hasPrefix("deviceMedia:") }) else { return }
+            do { mediaFactsError = nil; _ = try await mediaFacts.refresh() }
+            catch is CancellationError { }
+            catch { mediaFactsError = error.localizedDescription }
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await loadPeople() } }
+            if phase == .active {
+                if source == "local" || layout.pinnedIDs.contains(where: { $0.hasPrefix("deviceMedia:") }) { mediaFacts.invalidate() }
+                Task { await loadPeople() }
+            }
         }
     }
 
@@ -197,6 +212,9 @@ struct CollectionsHome: View {
             .accessibilityIdentifier("collections-places-map")
             }
         case .media:
+          if source == "local" {
+            deviceMediaContent
+          } else {
             VStack(spacing: 0) {
                 ForEach([PhotoMediaFilter.photos, .videos, .livePhotos]) { type in
                     NavigationLink(value: CollectionsRoute.media(type)) {
@@ -204,7 +222,10 @@ struct CollectionsHome: View {
                     }
                     .accessibilityIdentifier("collections-media-\(type.rawValue)")
                 }
+                Text("More media types are available On Device.")
+                    .font(.footnote).foregroundStyle(.secondary).padding(.vertical, 8)
             }
+          }
         case .utilities:
             VStack(spacing: 0) {
                 if session.capabilities.supportsCleanup {
@@ -238,10 +259,72 @@ struct CollectionsHome: View {
             NavigationLink(value: CollectionsRoute.recent) {
                 CollectionsPreview(id: id, title: String(localized: "Recently Added"), symbol: "clock", previewSize: layout.previewSize)
             }.buttonStyle(.plain)
+        } else if id.hasPrefix("deviceMedia:"),
+                  let media = PhotoMediaFilter(rawValue: String(id.dropFirst("deviceMedia:".count))),
+                  let inventory = mediaFacts.inventory,
+                  let category = media.deviceCategory, inventory.facts.counts(in: category).knownYes > 0 {
+            deviceMediaLink(media, inventory: inventory, pinned: true)
         } else if let destination = shortcutDestination(id), isAvailable(destination) {
             NavigationLink(value: destination) {
                 CollectionsPreview(id: id, title: shortcutTitle(id), symbol: shortcutSymbol(id), previewSize: layout.previewSize)
             }.buttonStyle(.plain)
+        }
+    }
+
+    private var deviceMediaTypes: [PhotoMediaFilter] { PhotoMediaFilter.mediaTypes + [.screenshots, .edited] }
+
+    @ViewBuilder private var deviceMediaContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(PhotoAccess.shared.status == .limited ? String(localized: "On Device · Selected Photos Only") : String(localized: "On Device"))
+                .font(.footnote).foregroundStyle(.secondary)
+                .accessibilityIdentifier("collections-media-source")
+            if let inventory = mediaFacts.inventory {
+                if inventory.facts.coverage == .unavailable {
+                    if PhotoAccess.shared.canAsk {
+                        Button("Allow Photo Access") {
+                            Task { _ = await PhotoLibraryService.requestFullAccess(); mediaFacts.invalidate() }
+                        }.frame(minHeight: 44)
+                    } else if let url = URL(string: UIApplication.openSettingsURLString) {
+                        Link("Manage Photo Access", destination: url).frame(minHeight: 44)
+                    }
+                } else {
+                    let known = deviceMediaTypes.filter { type in
+                        type.deviceCategory.map { inventory.facts.counts(in: $0).knownYes > 0 } == true
+                    }
+                    previewStrip {
+                        ForEach(known) { type in deviceMediaLink(type, inventory: inventory) }
+                    }
+                    if known.isEmpty { Text("No accessible photos on this device.").foregroundStyle(.secondary) }
+                    if deviceMediaTypes.contains(where: { type in type.deviceCategory.map { inventory.facts.counts(in: $0).unknown > 0 } == true }) {
+                        Text("Some media types have not been classified.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if inventory.facts.counts(in: .highFrameRate).knownYes > 0 {
+                        Text("High frame rate does not confirm slow motion.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            } else if let mediaFactsError {
+                Text(mediaFactsError).font(.footnote).foregroundStyle(.secondary)
+                Button("Retry") { mediaFacts.invalidate() }.frame(minHeight: 44)
+            } else { ProgressView("Reading media types") }
+        }
+    }
+
+    private func deviceMediaLink(_ media: PhotoMediaFilter, inventory: DeviceMediaInventory, pinned: Bool = false) -> some View {
+        let category = media.deviceCategory!
+        let ids = inventory.facts.identifiers(in: category)
+        let cover = inventory.assets.first { ids.contains($0.localIdentifier) }?.asAsset(backedUp: false)
+        let pin = "deviceMedia:\(media.rawValue)"
+        return NavigationLink(value: CollectionsRoute.deviceMedia(media)) {
+            CollectionsPreview(id: pin, title: media.title, symbol: media.symbol,
+                previewSize: layout.previewSize, deviceCover: cover,
+                subtitle: String(localized: "\(inventory.facts.counts(in: category).knownYes) items"))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("collections-\(pinned ? "pinned-device-media" : "device-media")-\(media.rawValue)")
+        .contextMenu {
+            Button { layout.togglePin(pin) } label: {
+                Label(layout.pinnedIDs.contains(pin) ? "Unpin Collection" : "Pin Collection", systemImage: "pin")
+            }
         }
     }
 
@@ -315,11 +398,14 @@ struct CollectionsHome: View {
 
 private struct CollectionsPreview: View {
     @Environment(SessionStore.self) private var session
+    @Environment(\.displayScale) private var displayScale
     let id: String
     let title: String
     let symbol: String
     var albumCoverID: String? = nil
     var previewSize: CollectionPreviewSize = .large
+    var deviceCover: Asset? = nil
+    var subtitle: String? = nil
     @State private var cover: Asset?
     @State private var portraitURL: URL?
     @ScaledMetric(relativeTo: .body) private var largeSide = 160.0
@@ -332,7 +418,10 @@ private struct CollectionsPreview: View {
             if previewSize == .none {
                 HStack(spacing: 12) {
                     Image(systemName: symbol).font(.title3).frame(width: 27)
-                    Text(title).frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                        if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                 }
                 .foregroundStyle(.primary)
@@ -341,6 +430,7 @@ private struct CollectionsPreview: View {
             } else { preview }
         }
         .accessibilityLabel(title)
+        .accessibilityValue(subtitle ?? "")
         .task(id: "\(session.client?.offlineAccountKey ?? ""):\(id):\(previewSize.rawValue)") {
             await loadCover()
         }
@@ -350,7 +440,9 @@ private struct CollectionsPreview: View {
         Color(.secondarySystemBackground)
             .frame(width: side, height: side)
             .overlay {
-                if let assetID, let client = session.client {
+                if let deviceCover {
+                    AssetTile(asset: deviceCover, targetPixelSize: side * displayScale, isGridTile: false)
+                } else if let assetID, let client = session.client {
                     RemoteImage(url: client.thumbnailURL(assetID: assetID, cacheKey: cover?.id == assetID ? cover?.thumbhash : nil), targetPixelSize: 400,
                                 thumbhash: cover?.thumbhash)
                 } else if let portraitURL {
@@ -358,13 +450,16 @@ private struct CollectionsPreview: View {
                 } else { Image(systemName: symbol).font(.largeTitle).foregroundStyle(.tertiary) }
             }
             .overlay {
-                if assetID != nil || portraitURL != nil {
+                if deviceCover != nil || assetID != nil || portraitURL != nil {
                     LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                Text(title).font(.caption.weight(.semibold)).lineLimit(2)
-                    .foregroundStyle(assetID == nil && portraitURL == nil ? Color.primary : .white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.caption.weight(.semibold)).lineLimit(2)
+                    if let subtitle { Text(subtitle).font(.caption2) }
+                }
+                    .foregroundStyle(deviceCover == nil && assetID == nil && portraitURL == nil ? Color.primary : .white)
                     .padding(10)
             }
             .clipShape(.rect(cornerRadius: 18))
@@ -373,7 +468,7 @@ private struct CollectionsPreview: View {
     private func loadCover() async {
         cover = nil
         portraitURL = nil
-        guard previewSize != .none, albumCoverID == nil, let client = session.client else { return }
+        guard previewSize != .none, albumCoverID == nil, deviceCover == nil, let client = session.client else { return }
         if id == "places" {
             guard let asset = try? await client.cities().first, !Task.isCancelled, session.client === client else { return }
             portraitURL = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
