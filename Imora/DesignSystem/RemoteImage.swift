@@ -6,6 +6,7 @@ import SwiftUI
 /// memory-cached images render on the first frame, and fast loads skip the
 /// fade so cells never flicker when they scroll back into view.
 struct RemoteImage: View {
+    @Environment(SessionStore.self) private var session: SessionStore?
     let url: URL
     var targetPixelSize: CGFloat = 320
     var thumbhash: String?
@@ -57,9 +58,9 @@ struct RemoteImage: View {
         return nil
     }
 
-    private func displayImage(key: String) -> UIImage? {
+    private func displayImage(key: String, allowsExternalPlaceholder: Bool) -> UIImage? {
         if let ready = readyImage(key: key) { return ready }
-        if let placeholderImage { return placeholderImage }
+        if allowsExternalPlaceholder, let placeholderImage { return placeholderImage }
         if let placeholder, placeholder.key == key { return placeholder.image }
         return nil
     }
@@ -81,11 +82,18 @@ struct RemoteImage: View {
     var body: some View {
         // one string build per pass instead of the five the computed keys used
         // to cost; a grid tile's key is a full url and this is its hot path.
+        let isPrivate = ImageLoader.shared.requiresPrivateLease(for: url, targetPixelSize: targetPixelSize)
+        // Only private images observe this generation. A newer independent
+        // status must invalidate a mounted E1 image even if its denial's
+        // notification was superseded by the E2 producer.
+        let privateGeneration = isPrivate ? session?.lockedFolder?.publicationGeneration : nil
+        let lease = isPrivate ? session?.client?.lockedMediaLease : nil
+        let mayPresent = !isPrivate || lease != nil
         let key = requestKey
-        let taskID = "\(key)|\(thumbhash ?? "")|\(ImageLoadRecovery.shared.generation)|\(retryAttempt)"
+        let taskID = "\(key)|\(thumbhash ?? "")|\(ImageLoadRecovery.shared.generation)|\(retryAttempt)|\(privateGeneration.map(String.init) ?? "")"
 
         ZStack {
-            if let displayImage = displayImage(key: key) {
+            if mayPresent, let displayImage = displayImage(key: key, allowsExternalPlaceholder: !isPrivate) {
                 Image(uiImage: displayImage)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
@@ -108,9 +116,10 @@ struct RemoteImage: View {
             }
         }
         .onAppear {
-            if let image = readyImage(key: key) { signalReady(image) }
+            if mayPresent, let image = readyImage(key: key) { signalReady(image) }
         }
         .task(id: taskID) {
+            guard mayPresent else { return }
             guard image?.key != key else { return }
             if upgradeURL == nil, let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize) {
                 image = KeyedImage(key: requestKey, image: cached)
@@ -127,6 +136,7 @@ struct RemoteImage: View {
                         thumbnailURL: url, previewURL: upgradeURL,
                         targetPixelSize: targetPixelSize, aspectRatio: assetAspectRatio
                     ) { preview in
+                        guard key == requestKey, !isPrivate || lease?.isCurrent == true else { return }
                         fallbackImage = KeyedImage(key: key, image: preview)
                     }
                 } else {
@@ -136,7 +146,7 @@ struct RemoteImage: View {
                 if !Task.isCancelled { failedKey = key }
                 return
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, key == requestKey, !isPrivate || lease?.isCurrent == true else { return }
             failedKey = nil
             let keyed = KeyedImage(key: key, image: loaded)
 
@@ -160,7 +170,7 @@ struct RemoteImage: View {
             }
         }
         .task(id: taskID) {
-            guard animatesLoads, let thumbhash, placeholder?.key != key else { return }
+            guard mayPresent, !isPrivate, animatesLoads, let thumbhash, placeholder?.key != key else { return }
             // disk hits normally finish before this delay, avoiding placeholder
             // work for images that would never display it.
             try? await Task.sleep(for: .milliseconds(50))
@@ -183,7 +193,7 @@ struct RemoteImage: View {
         // usually a disk cache hit, so it paints the view while the full size
         // is still on the wire instead of leaving a flat placeholder.
         .task(id: taskID) {
-            guard let fallbackURL, image?.key != requestKey else { return }
+            guard mayPresent, let fallbackURL, image?.key != requestKey else { return }
             let key = requestKey
             guard ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize) == nil,
                   ImageLoader.shared.cachedImage(for: fallbackURL, targetPixelSize: fallbackPixelSize) == nil
@@ -192,7 +202,8 @@ struct RemoteImage: View {
                 for: fallbackURL,
                 targetPixelSize: fallbackPixelSize
             )
-            guard !Task.isCancelled, let loaded, image?.key != key else { return }
+            guard !Task.isCancelled, key == requestKey, !isPrivate || lease?.isCurrent == true,
+                  let loaded, image?.key != key else { return }
             fallbackImage = KeyedImage(key: key, image: loaded)
             signalReady(loaded)
         }

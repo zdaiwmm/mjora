@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 import Nuke
 import Photos
 import Synchronization
@@ -746,6 +747,135 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
             XCTAssertTrue((publicTile.makeZoomReplica() as? UIImageView)?.image === publicSurface.image)
         } catch { oldEndpointGate.signal(); newEndpointGate.signal(); newGridGate.signal(); releaseStatus(); await finish(); throw error }
+        await finish()
+    }
+
+    func testIndependentStatusAutomaticallyClearsAndRebindsMountedSwiftUIPrivateImage() async throws {
+        let heldStatus = Mutex<CheckedContinuation<Void, Never>?>(nil), denialReached = Mutex(false)
+        let newGridGate = DispatchSemaphore(value: 0), newGridStarted = Mutex(false)
+        let privateReads = Mutex(0), deadline = Mutex("2099-01-01T00:00:00Z")
+        let userID = "swiftui-private-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        func bytes(_ color: UIColor) throws -> Data {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 640), format: format).image { context in
+                color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 640, height: 640))
+            }
+            return try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+        }
+        let oldBytes = try bytes(.red), newBytes = try bytes(.blue), publicBytes = try bytes(.purple)
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" {
+                return .init(body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline.withLock { $0 })\"}".utf8))
+            }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") {
+                if request.path.contains("public-swiftui") { return .init(headers: ["Content-Type": "image/jpeg"], body: publicBytes) }
+                if privateReads.withLock({ $0 += 1; return $0 }) == 1 {
+                    return .init(headers: ["Content-Type": "image/jpeg"], body: oldBytes)
+                }
+                newGridStarted.withLock { $0 = true }
+                _ = newGridGate.wait(timeout: .now() + 25)
+                return .init(headers: ["Content-Type": "image/jpeg"], body: newBytes)
+            }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { newGridGate.signal(); server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "swiftui-private", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        func releaseDenial() { heldStatus.withLock { let held = $0; $0 = nil; return held }?.resume() }
+        defer { releaseDenial(); client.setInvalidStatusFixtureHook(nil) }
+        var value = asset(); value.visibility = .locked
+        ImageLoader.shared.markEphemeral(assetIDs: [value.id])
+        await locked.refreshStatus()
+        let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+        let privateURL = client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash)
+        let publicURL = client.thumbnailURL(assetID: "public-swiftui", cacheKey: "r1")
+        let root = HStack(spacing: 16) {
+            RemoteImage(url: privateURL, targetPixelSize: 416).frame(width: 132, height: 132)
+            RemoteImage(url: publicURL, targetPixelSize: 416).frame(width: 132, height: 132)
+        }.environment(session)
+        let host = UIHostingController(rootView: root)
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        host.view.layoutIfNeeded() // Initial fixture layout only.
+        func finish() async {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        func pixel(x: CGFloat) throws -> [UInt8] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: false)
+            }
+            let cg = try XCTUnwrap(image.cgImage)
+            let rect = CGRect(x: x.rounded(.down), y: (host.view.bounds.midY).rounded(.down), width: 1, height: 1)
+            let cropped = try XCTUnwrap(cg.cropping(to: rect))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(cropped, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return pixel
+        }
+        do {
+            let privateX = host.view.bounds.midX - 74, publicX = host.view.bounds.midX + 74
+            for _ in 0..<200 {
+                let a = try pixel(x: privateX), b = try pixel(x: publicX)
+                if a[0] > 180 && a[2] < 80 && b[0] > 50 && b[2] > 50 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let old = try pixel(x: privateX), publicBefore = try pixel(x: publicX)
+            XCTAssertGreaterThan(old[0], 180, "E1 must be an actually rendered red endpoint image")
+            XCTAssertLessThan(old[2], 80)
+            XCTAssertGreaterThan(publicBefore[0], 50); XCTAssertGreaterThan(publicBefore[2], 50)
+            let oldLease = try XCTUnwrap(client.lockedMediaLease)
+            client.setInvalidStatusFixtureHook {
+                await withCheckedContinuation { continuation in
+                    heldStatus.withLock { $0 = continuation }; denialReached.withLock { $0 = true }
+                }
+            }
+            deadline.withLock { $0 = "not-a-date" }
+            let denied = Task { try? await client.authStatus() }
+            for _ in 0..<200 {
+                if denialReached.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard denialReached.withLock({ $0 }) else { XCTFail("The invalid acceptance was not held"); throw CocoaError(.fileReadUnknown) }
+            client.setInvalidStatusFixtureHook(nil)
+            deadline.withLock { $0 = "2099-01-01T00:00:00Z" }
+            _ = try await client.authStatus()
+            XCTAssertFalse(oldLease.isCurrent)
+            for _ in 0..<200 {
+                if newGridStarted.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let whileHeld = try pixel(x: privateX)
+            XCTAssertFalse(whileHeld[0] > 180 && whileHeld[2] < 80,
+                "Retired E1 pixels must clear automatically from the mounted SwiftUI view")
+            guard newGridStarted.withLock({ $0 }) else { XCTFail("The mounted view did not request fresh E2 bytes"); throw CocoaError(.fileReadUnknown) }
+            XCTAssertEqual(try pixel(x: publicX), publicBefore, "A private change must preserve the public rendered surface")
+            newGridGate.signal()
+            for _ in 0..<200 {
+                let image = try pixel(x: privateX)
+                if image[2] > 180 && image[0] < 80 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let renewed = try pixel(x: privateX)
+            XCTAssertGreaterThan(renewed[2], 180, "Fresh E2 bytes must become the actual rendered image")
+            XCTAssertLessThan(renewed[0], 80)
+            releaseDenial(); _ = await denied.value
+            XCTAssertEqual(try pixel(x: publicX), publicBefore)
+        } catch { newGridGate.signal(); releaseDenial(); await finish(); throw error }
         await finish()
     }
 

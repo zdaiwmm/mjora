@@ -126,6 +126,10 @@ nonisolated final class ImageLoader: Sendable {
         return "\(url.absoluteString)#\(Self.normalizedPixelSize(targetPixelSize, for: url))#\(generation)\(privateSuffix)"
     }
 
+    func requiresPrivateLease(for url: URL, targetPixelSize: CGFloat) -> Bool {
+        binding(for: url, pixels: targetPixelSize)?.requiresElevation == true
+    }
+
     func cachedImage(for url: URL, targetPixelSize: CGFloat) -> UIImage? {
         cachedSurface(for: url, targetPixelSize: targetPixelSize)?.image
     }
