@@ -26,9 +26,10 @@ nonisolated enum ImoraError: LocalizedError {
 nonisolated struct LockedMediaLease: Sendable {
     fileprivate let client: ImoraClient
     fileprivate let nonce: UUID
+    fileprivate let producer: UUID
     fileprivate let scope: StableMediaScope
     let deadline: Date
-    var identity: String { nonce.uuidString }
+    var identity: String { producer.uuidString }
     var isCurrent: Bool { client.lockedLeaseMatches(self) }
 }
 
@@ -45,11 +46,13 @@ nonisolated final class ImoraClient: Sendable {
     private enum ElevationTransition { case revoke, explicitLock, unlock }
     private enum StatusRevocationFence {
         case expiry(sequence: UInt64, deadline: Date)
-        case invalid(sequence: UInt64)
         case rejection(sequence: UInt64)
     }
     private struct Elevation {
         var nonce = UUID()
+        // Status ordering uses nonce; each accepted denial also retires every
+        // image producer without discarding newer already-issued statuses.
+        var producer = UUID()
         var deadline: Date?
         var scope: StableMediaScope?
         var expiry: Task<Void, Never>?
@@ -72,13 +75,15 @@ nonisolated final class ImoraClient: Sendable {
         let scope = mediaDisplayScope
         return elevation.withLock { value in
             guard value.scope == scope, let deadline = value.deadline, deadline > Date() else { return nil }
-            return .init(client: self, nonce: value.nonce, scope: scope, deadline: deadline)
+            return .init(client: self, nonce: value.nonce, producer: value.producer, scope: scope, deadline: deadline)
         }
     }
 
     fileprivate func lockedLeaseMatches(_ lease: LockedMediaLease) -> Bool {
         guard context.isActive, lease.client === self, lease.scope == mediaDisplayScope, lease.deadline > Date() else { return false }
-        return elevation.withLock { $0.nonce == lease.nonce && $0.deadline.map { $0 > Date() } == true }
+        return elevation.withLock {
+            $0.nonce == lease.nonce && $0.producer == lease.producer && $0.deadline.map { $0 > Date() } == true
+        }
     }
 
     func setLockedMediaObserver(_ observer: (@MainActor @Sendable () -> Void)?) {
@@ -101,26 +106,26 @@ nonisolated final class ImoraClient: Sendable {
 
     func rejectLockedMediaLease(_ lease: LockedMediaLease) {
         guard lease.client === self else { return }
-        revokeLockedMediaLease(expected: lease.nonce)
+        revokeLockedMediaLease(expected: lease.nonce, expectedProducer: lease.producer)
     }
 
     @discardableResult
-    private func revokeLockedMediaLease(expected: UUID?, transition: ElevationTransition = .revoke,
+    private func revokeLockedMediaLease(expected: UUID?, expectedProducer: UUID? = nil, transition: ElevationTransition = .revoke,
                                         statusFence: StatusRevocationFence? = nil) -> UUID? {
-        let result = elevation.withLock { value -> (UUID?, (@MainActor @Sendable () -> Void)?) in
-            guard expected == nil || value.nonce == expected else { return (nil, nil) }
+        let result = elevation.withLock { value -> (UUID?, UUID?, UUID?, (@MainActor @Sendable () -> Void)?) in
+            guard (expected == nil || value.nonce == expected),
+                  (expectedProducer == nil || value.producer == expectedProducer) else { return (nil, nil, nil, nil) }
             if let statusFence {
                 switch statusFence {
                 case .expiry(let sequence, let deadline):
-                    guard value.acceptedStatus == sequence, value.deadline == deadline else { return (nil, nil) }
-                case .invalid(let sequence):
-                    guard value.acceptedStatus == sequence, value.deadline == nil else { return (nil, nil) }
+                    guard value.acceptedStatus == sequence, value.deadline == deadline else { return (nil, nil, nil, nil) }
                 case .rejection(let sequence):
-                    guard sequence > value.acceptedStatus else { return (nil, nil) }
+                    guard sequence > value.acceptedStatus else { return (nil, nil, nil, nil) }
                 }
             }
-            if case .unlock = transition, value.pendingLock != nil { return (nil, nil) }
-            value.nonce = UUID(); value.deadline = nil; value.scope = nil
+            if case .unlock = transition, value.pendingLock != nil { return (nil, nil, nil, nil) }
+            let retiredProducer = value.producer
+            value.nonce = UUID(); value.producer = UUID(); value.deadline = nil; value.scope = nil
             value.expiry?.cancel(); value.expiry = nil
             value.issuedStatus = 0; value.acceptedStatus = 0
             switch transition {
@@ -128,11 +133,16 @@ nonisolated final class ImoraClient: Sendable {
             case .explicitLock: value.explicitLock = true; value.pendingLock = value.nonce
             case .unlock: value.explicitLock = true
             }
-            return (value.nonce, value.observer)
+            return (value.nonce, retiredProducer, value.producer, value.observer)
         }
-        guard let nonce = result.0 else { return nil }
-        ImageLoader.shared.revokePrivateImages(client: self)
-        if let observer = result.1 { Task { @MainActor in observer() } }
+        guard let nonce = result.0, let retiredProducer = result.1, let replacement = result.2 else { return nil }
+        ImageLoader.shared.revokePrivateImages(client: self, leaseIdentity: retiredProducer.uuidString)
+        if let observer = result.3 {
+            Task { @MainActor [weak self] in
+                guard let self, self.elevation.withLock({ $0.nonce == nonce && $0.producer == replacement && $0.deadline == nil }) else { return }
+                observer()
+            }
+        }
         return nonce
     }
 
@@ -443,11 +453,16 @@ nonisolated final class ImoraClient: Sendable {
         try Task.checkCancellation()
         guard context.isActive, mediaDisplayScope == scope else { throw CancellationError() }
         let deadline = Self.elevationDeadline(status)
-        let accepted = elevation.withLock { value -> (Bool, (@MainActor @Sendable () -> Void)?) in
-            guard value.nonce == nonce, !value.explicitLock, sequence > value.acceptedStatus else { return (false, nil) }
+        let accepted = elevation.withLock { value -> (Bool, (@MainActor @Sendable () -> Void)?, UUID?, UUID?) in
+            guard value.nonce == nonce, !value.explicitLock, sequence > value.acceptedStatus else { return (false, nil, nil, nil) }
             value.acceptedStatus = sequence
             let changed = value.deadline != deadline || value.scope != (deadline == nil ? nil : scope)
             value.expiry?.cancel(); value.expiry = nil
+            let retiredProducer: UUID?
+            if deadline == nil {
+                retiredProducer = value.producer
+                value.producer = UUID()
+            } else { retiredProducer = nil }
             value.deadline = deadline
             value.scope = deadline == nil ? nil : scope
             if let deadline {
@@ -462,16 +477,23 @@ nonisolated final class ImoraClient: Sendable {
                     self?.revokeLockedMediaLease(expected: nonce, statusFence: .expiry(sequence: sequence, deadline: deadline))
                 }
             }
-            return (true, deadline != nil && changed ? value.observer : nil)
+            return (true, deadline == nil || changed ? value.observer : nil, retiredProducer, value.producer)
         }
         guard accepted.0 else { throw CancellationError() }
-        if deadline == nil {
+        if let retiredProducer = accepted.2, let replacement = accepted.3 {
             #if DEBUG
             let fixtureHook = invalidStatusFixtureHook.withLock { $0 }
             await fixtureHook?()
             #endif
-            guard revokeLockedMediaLease(expected: nonce, statusFence: .invalid(sequence: sequence)) != nil else {
-                throw CancellationError()
+            ImageLoader.shared.revokePrivateImages(client: self, leaseIdentity: retiredProducer.uuidString)
+            guard elevation.withLock({ $0.nonce == nonce && $0.producer == replacement && $0.acceptedStatus == sequence && $0.deadline == nil }) else {
+                throw CancellationError() // Cleanup is E1-only; a newer decision remains authoritative.
+            }
+            if let observer = accepted.1 {
+                Task { @MainActor [weak self] in
+                    guard let self, self.elevation.withLock({ $0.nonce == nonce && $0.producer == replacement && $0.acceptedStatus == sequence && $0.deadline == nil }) else { return }
+                    observer()
+                }
             }
         }
         else if let observer = accepted.1 { Task { @MainActor in observer() } }

@@ -93,11 +93,12 @@ nonisolated final class ImageLoader: Sendable {
         }
     }
 
-    func revokePrivateImages(client: ImoraClient) {
+    func revokePrivateImages(client: ImoraClient, leaseIdentity: String) {
         let requests = observedRequests.withLock { values in
             let privateRequests = values.filter { _, request in
                 guard let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding else { return false }
                 return binding.key.scope == client.mediaDisplayScope && binding.requiresElevation
+                    && binding.privateLease?.identity == leaseIdentity
             }
             for key in privateRequests.keys { values[key] = nil }
             return Array(privateRequests.values)
@@ -106,13 +107,15 @@ nonisolated final class ImageLoader: Sendable {
         visibleTasks.withLock { values in
             for task in values.values {
                 guard let binding = task.request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding,
-                      binding.key.scope == client.mediaDisplayScope, binding.requiresElevation else { continue }
+                      binding.key.scope == client.mediaDisplayScope, binding.requiresElevation,
+                      binding.privateLease?.identity == leaseIdentity else { continue }
                 task.cancel()
             }
         }
         authorization.networkTasks.withLock { values in
             for transfer in values.values where transfer.binding?.key.scope == client.mediaDisplayScope
-                && transfer.binding?.requiresElevation == true { transfer.task.cancel() }
+                && transfer.binding?.requiresElevation == true
+                && transfer.binding?.privateLease?.identity == leaseIdentity { transfer.task.cancel() }
         }
     }
 
