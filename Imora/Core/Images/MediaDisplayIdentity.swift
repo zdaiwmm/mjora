@@ -103,21 +103,21 @@ nonisolated final class MediaContentGenerations: Sendable {
         var durableScopeDenied = false
     }
     static let shared = MediaContentGenerations(root: LaunchPreviewStore.rootDirectory)
-    private struct Subject: Codable {
+    private struct Subject: Codable, Equatable {
         var generation = UUID().uuidString
         var retiredSources: Set<String> = []
         var accessBlocked: Bool?
         var canonicalVisibility: String?
         var authorizedEpoch: String?
     }
-    private struct Scope: Codable {
+    private struct Scope: Codable, Equatable {
         var generation = ""
         var subjects: [String: Subject] = [:]
         var requiresCanonicalProof: Bool?
         // An unrepresentable negative cannot be reconstructed by positive reads.
         var historyUnavailable: Bool?
     }
-    private struct State: Codable {
+    private struct State: Codable, Equatable {
         var generation = UUID().uuidString
         var scopes: [String: Scope] = [:]
         var legacyMigrationAllowed = true
@@ -127,6 +127,72 @@ nonisolated final class MediaContentGenerations: Sendable {
     private let root: URL
     private var file: URL { root.appending(path: "content-generations.json") }
     init(root: URL) { self.root = root }
+
+    #if DEBUG
+    /// Test-only isolation for the real shared journal. Restore refuses to
+    /// overwrite unrelated changes and reinstates the exact prior file bytes.
+    func isolatedFixtureRestorer(scopes: [StableMediaScope]) throws -> () throws -> Void {
+        try memory.withLock { value in
+            let previousMemory = value
+            let previousBytes = FileManager.default.fileExists(atPath: file.path) ? try Data(contentsOf: file) : nil
+            let previousAttributes = previousBytes == nil ? nil : try FileManager.default.attributesOfItem(atPath: file.path)
+            load(&value)
+            guard !value.unavailable else { value = previousMemory; throw CocoaError(.fileReadCorruptFile) }
+            if let previousBytes {
+                guard try JSONDecoder().decode(State.self, from: previousBytes) == value.state else {
+                    value = previousMemory; throw CocoaError(.fileReadCorruptFile)
+                }
+            } else if value.state != nil {
+                value = previousMemory; throw CocoaError(.fileReadCorruptFile)
+            }
+            let baseline = value.state ?? State()
+            let owned = Set(scopes.map(Self.identifier))
+            guard owned.count == scopes.count, owned.allSatisfy({ baseline.scopes[$0] == nil }) else {
+                value = previousMemory; throw CocoaError(.fileWriteFileExists)
+            }
+            value = Memory(state: baseline, loaded: true, unavailable: false)
+            return { [self] in
+                try memory.withLock { current in
+                    try PreviewDiskBudget.withLock {
+                        guard !current.unavailable, let actual = current.state,
+                              FileManager.default.fileExists(atPath: file.path) else { throw CocoaError(.fileReadCorruptFile) }
+                        let actualBytes = try Data(contentsOf: file)
+                        guard try JSONDecoder().decode(State.self, from: actualBytes) == actual else { throw CocoaError(.fileReadCorruptFile) }
+                        var unowned = actual
+                        for id in owned { unowned.scopes[id] = nil }
+                        guard unowned == baseline else { throw CocoaError(.fileWriteUnknown) }
+                        if let previousBytes {
+                            try previousBytes.write(to: file, options: .atomic)
+                            if let previousAttributes {
+                                var attributes: [FileAttributeKey: Any] = [:]
+                                if let permissions = previousAttributes[.posixPermissions] { attributes[.posixPermissions] = permissions }
+                                #if os(iOS)
+                                if let protection = previousAttributes[.protectionKey] { attributes[.protectionKey] = protection }
+                                #endif
+                                try FileManager.default.setAttributes(attributes, ofItemAtPath: file.path)
+                            }
+                            guard try Data(contentsOf: file) == previousBytes else { throw CocoaError(.fileWriteUnknown) }
+                        } else {
+                            try FileManager.default.removeItem(at: file)
+                            guard !FileManager.default.fileExists(atPath: file.path) else { throw CocoaError(.fileWriteUnknown) }
+                        }
+                        current = previousMemory
+                    }
+                }
+            }
+        }
+    }
+
+    /// Simulates process reconstruction without replacing the journal bytes.
+    func reloadIsolatedFixtureFromDisk() throws {
+        try memory.withLock { value in
+            let disk = try JSONDecoder().decode(State.self, from: Data(contentsOf: file))
+            guard !value.unavailable, value.state == disk else { throw CocoaError(.fileReadCorruptFile) }
+            value = Memory(); load(&value)
+            guard !value.unavailable, value.state == disk else { throw CocoaError(.fileReadCorruptFile) }
+        }
+    }
+    #endif
 
     struct CapturedAccess: Sendable {
         fileprivate struct Entry: Sendable { let generation: String; let policy: String?; let blocked: Bool }
@@ -216,14 +282,7 @@ nonisolated final class MediaContentGenerations: Sendable {
             stored.canonicalVisibility = visibilityPolicy
             stored.authorizedEpoch = account.generation
             account.subjects[subjectID] = stored; state.scopes[scopeID] = account
-            if try JSONEncoder().encode(state).count > 768 << 10 {
-                account.generation = UUID().uuidString
-                account.requiresCanonicalProof = true
-                account.subjects = account.subjects.filter { !$0.value.retiredSources.isEmpty }
-                stored.generation = UUID().uuidString; stored.authorizedEpoch = account.generation
-                account.subjects[subjectID] = stored
-                state.scopes[scopeID] = account
-            }
+            try Self.foldIfUseful(&state, scopeID: scopeID, preservingGrant: subjectID)
             // Failure leaves the previous persisted/memory block intact.
             try persist(state)
             value = Memory(state: state, loaded: true, unavailable: false)
@@ -353,14 +412,8 @@ nonisolated final class MediaContentGenerations: Sendable {
                 }
             } else { account.generation = UUID().uuidString }
             state.scopes[scopeID] = account
-            // Fold only recoverable policy/access records, at actual byte pressure.
-            // The scope epoch denies even subjects not represented in this map.
-            if try JSONEncoder().encode(state).count > 768 << 10 {
-                account.generation = UUID().uuidString
-                account.requiresCanonicalProof = true
-                account.subjects = account.subjects.filter { !$0.value.retiredSources.isEmpty }
-                state.scopes[scopeID] = account
-            }
+            try Self.foldIfUseful(&state, scopeID: scopeID)
+            account = state.scopes[scopeID] ?? account
             do {
                 try persist(state)
                 value = Memory(state: state, loaded: true, unavailable: false)
@@ -395,6 +448,32 @@ nonisolated final class MediaContentGenerations: Sendable {
                 }
             }
         }
+    }
+
+    /// Fold this scope only when it can bring the journal below high water,
+    /// or when it is necessary and sufficient to fit the normal write budget.
+    /// Unrelated retained edit history cannot cause repeated scope rotations.
+    private static func foldIfUseful(_ state: inout State, scopeID: String, preservingGrant: String? = nil) throws {
+        let highWater = 768 << 10, normalLimit = (1 << 20) - 16_384
+        let encoder = JSONEncoder(), total = try encoder.encode(state).count
+        guard total > highWater, var account = state.scopes[scopeID] else { return }
+        let before = try encoder.encode(account).count
+        // Even removing this entire scope cannot reach high water. Do not
+        // walk its subjects unless the normal byte budget is actually full.
+        guard total > normalLimit || total - before <= highWater else { return }
+        let granted = preservingGrant.flatMap { account.subjects[$0] }
+        account.generation = UUID().uuidString
+        account.requiresCanonicalProof = true
+        account.subjects = account.subjects.filter { !$0.value.retiredSources.isEmpty }
+        if let preservingGrant, var granted {
+            granted.generation = UUID().uuidString
+            granted.authorizedEpoch = account.generation
+            account.subjects[preservingGrant] = granted
+        }
+        let compacted = total - before + (try encoder.encode(account).count)
+        guard compacted < total,
+              compacted <= highWater || (total > normalLimit && compacted <= normalLimit) else { return }
+        state.scopes[scopeID] = account
     }
 
     private func persist(_ state: State, emergency: Bool = false) throws {

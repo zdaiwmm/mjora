@@ -62,8 +62,15 @@ final class LockedFolderSession {
         biometricsEnabled = LockedPinStore.exists(account: account)
         client.setLockedMediaObserver { [weak self] in
             guard let self else { return }
-            self.publicationGeneration &+= 1
-            if self.client.lockedMediaLease == nil, self.phase == .unlocked { self.enterLockedState() }
+            if let lease = self.client.lockedMediaLease {
+                if self.phase == .unlocked, self.elevatedUntil != lease.deadline {
+                    self.elevatedUntil = lease.deadline
+                    self.scheduleExpiry()
+                }
+            } else {
+                self.publicationGeneration &+= 1
+                if self.phase == .unlocked { self.enterLockedState() }
+            }
         }
     }
 
@@ -78,12 +85,15 @@ final class LockedFolderSession {
             let status = try await client.authStatus()
             guard revision == statusRevision else { return }
             apply(status)
+        } catch is CancellationError {
+            return
         } catch ImoraError.http(404, _) {
+            guard revision == statusRevision else { return }
             phase = .unsupported
         } catch {
             // the first look decides what the screen shows, so it has to say
             // something. a later refresh just keeps what it has.
-            guard phase == .unknown else { return }
+            guard revision == statusRevision, phase == .unknown else { return }
             phase = .locked
             ErrorToastCenter.shared.show(String(localized: "Couldn't check the locked folder"), error: error)
         }
@@ -93,8 +103,9 @@ final class LockedFolderSession {
         publicationGeneration &+= 1
         hasPin = status.pinCode
         hasPassword = status.password
-        elevatedUntil = client.lockedMediaLease?.deadline
-        phase = client.lockedMediaLease != nil ? .unlocked : (hasPin ? .locked : .needsSetup)
+        let lease = client.lockedMediaLease
+        elevatedUntil = lease?.deadline
+        phase = lease != nil ? .unlocked : (hasPin ? .locked : .needsSetup)
         scheduleExpiry()
     }
 
@@ -163,7 +174,7 @@ final class LockedFolderSession {
     /// server call follows.
     func lock() {
         guard phase == .unlocked else { return }
-        enterLockedState()
+        enterLockedState(explicit: true)
         lockTask = Task { [client] in
             try? await client.lockSession()
         }
@@ -175,8 +186,9 @@ final class LockedFolderSession {
         enterLockedState()
     }
 
-    private func enterLockedState() {
-        client.revokeLockedMediaLease()
+    private func enterLockedState(explicit: Bool = false) {
+        if explicit { client.beginExplicitLockedMediaLock() }
+        else { client.revokeLockedMediaLease() }
         publicationGeneration &+= 1
         statusRevision &+= 1
         expiryTask?.cancel()

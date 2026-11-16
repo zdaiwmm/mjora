@@ -26,6 +26,127 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         try await checkLockedRecovery(rollbackFromLockedPage: true)
     }
 
+    #if DEBUG
+    func testLargeRetiredHistoryDoesNotBreakRealLockedBucketAcrossRestart() async throws {
+        let account = "bucket-pressure-\(UUID())"
+        let bytes = try XCTUnwrap(solidImage(pixels: 512).jpegData(compressionQuality: 0.8))
+        let payload = Data(#"{"id":["bucket-one","bucket-two","bucket-three"],"ownerId":["alice","alice","alice"],"isImage":[true,true,true],"isFavorite":[false,false,false],"isTrashed":[false,false,false],"visibility":["locked","locked","locked"],"thumbhash":["revision-one","revision-two","revision-three"],"fileCreatedAt":["2023-11-14T00:00:00.000Z","2023-11-14T00:00:00.000Z","2023-11-14T00:00:00.000Z"],"localOffsetHours":[0,0,0],"duration":[null,null,null],"livePhotoVideoId":[null,null,null],"ratio":[1,1,1]}"#.utf8)
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/auth/status" { return .init(body: Data(#"{"isElevated":true,"pinCode":true,"password":true,"pinExpiresAt":"2099-01-01T00:00:00Z"}"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":3}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let historyScope = StableMediaScope.verified(server: "https://history.invalid/api", accountID: "history-\(UUID())")
+        let scope = StableMediaScope.verified(server: ServerTrustPolicy(apiURL: server.apiURL).canonicalRoot, accountID: account)
+        let journal = MediaContentGenerations.shared
+        let journalFile = LaunchPreviewStore.rootDirectory.appending(path: "content-generations.json")
+        let beforeBytes = FileManager.default.fileExists(atPath: journalFile.path) ? try Data(contentsOf: journalFile) : nil
+        let restore = try journal.isolatedFixtureRestorer(scopes: [historyScope, scope])
+        let history = (0..<150).map { MediaDisplayKeyV1.Subject.remoteAsset("edited-asset-\($0)") }
+        let revisions = (0..<180).map { Data(String(format: "revision-%010d", $0).utf8).base64EncodedString() }
+        weak var priorModel: TimelineModel?
+        weak var priorSession: LockedFolderSession?
+        weak var priorClient: ImoraClient?
+        var savedError: (any Error)?
+
+        func runBucket() async throws -> [MediaDisplayKeyV1] {
+            let client = ImoraClient(apiURL: server.apiURL, accessToken: "bucket-pressure-token")
+            client.confirmMediaAccount(account); ImageLoader.shared.configure(client: client)
+            let locked = LockedFolderSession(client: client)
+            var model: TimelineModel? = TimelineModel(filter: TimelineFilter(visibility: .locked))
+            let publicTile = TimelineTileView(frame: .init(x: 0, y: 0, width: 132, height: 132))
+            priorClient = client; priorSession = locked; priorModel = model
+            defer {
+                publicTile.unregister(); model = nil; locked.shutdown()
+                ImageLoader.shared.configure(client: nil); client.invalidate()
+            }
+            await locked.refreshStatus()
+            XCTAssertNotNil(client.lockedMediaLease)
+            let publicAsset = Asset(id: "public-pressure", ownerId: "alice", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "public-revision", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+            let publicKey = MediaPresentationCoordinator.gridKey(asset: publicAsset, client: client, pixels: 416)
+            publicTile.projectImage(asset: publicAsset, source: .init(assetID: publicAsset.id, localIdentifier: nil,
+                pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+                client: client, generation: 0, targetPixelSize: 416)
+            for _ in 0..<200 {
+                if publicTile.checkpointSurface(for: publicKey, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let publicSurface = try XCTUnwrap(publicTile.checkpointSurface(for: publicKey, client: client))
+            let oldReceipt = try await client.timeBucket("2023-11-01T00:00:00Z", filter: TimelineFilter(visibility: .locked))
+            let oldKeys = oldReceipt.assets.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: 416) }
+            let subjects = oldReceipt.assets.map { MediaDisplayKeyV1.Subject.remoteAsset($0.id) }
+            try journal.retire(scope: scope, subjects: subjects, retiresSourceRevisions: false, blocksAccess: true)
+            ImageLoader.shared.markEphemeral(assetIDs: oldReceipt.assets.map(\.id))
+            oldReceipt.authorizePresented(oldReceipt.assets, visibility: .locked, using: client)
+            XCTAssertTrue(oldKeys.allSatisfy { !$0.isCurrentContent }, "A pre-retirement bucket cannot regrant stale producers")
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertNotNil((publicTile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+
+            model?.attach(client); await model?.load()
+            let canonical = try XCTUnwrap(model?.sections.flatMap { $0.days?.flatMap(\.assets) ?? [] })
+            XCTAssertEqual(canonical.count, 3, "The locked model must project the real three-item response")
+            for value in canonical {
+                let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+                XCTAssertTrue(key.isCurrentContent, "All items from the same bucket receipt must be granted")
+                do {
+                    let image = try await ImageLoader.shared.image(for: client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash), targetPixelSize: 416)
+                    XCTAssertNotNil(image.cgImage)
+                } catch { XCTFail("A current locked bucket item did not load real endpoint bytes: \(error)") }
+            }
+            await model?.loadBucket("2023-11-01T00:00:00Z", refresh: true)
+            for value in canonical {
+                XCTAssertTrue(MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416).isCurrentContent,
+                    "A subsequent response must preserve earlier grants")
+            }
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertTrue(journal.isRetired(scope: historyScope, subject: history[0], sourceRevision: revisions[0]))
+            XCTAssertTrue(journal.isRetired(scope: historyScope, subject: history[149], sourceRevision: revisions[179]))
+            return oldKeys
+        }
+
+        func awaitShutdown() async throws {
+            for _ in 0..<200 {
+                if priorModel == nil && priorSession == nil && priorClient == nil { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTFail("Fixture model, client and session must finish before journal reconstruction or restore")
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        do {
+            let keys = history.flatMap { subject in revisions.map { revision in
+                MediaDisplayKeyV1(scope: historyScope, subject: subject, sourceRevision: revision, presentationRevision: revision,
+                    variant: .grid, pixelBucket: 64, fitMode: "fill", orientationRevision: "up", colorProfile: "sRGB",
+                    contentGeneration: "synthetic-old-producer")
+            } }
+            try journal.retire(scope: historyScope, subjects: history, keys: keys)
+            let size = try Data(contentsOf: LaunchPreviewStore.rootDirectory.appending(path: "content-generations.json")).count
+            print("TASK17_FIX4 real bucket journal bytes=\(size), synthetic retired revisions=\(keys.count)")
+            XCTAssertGreaterThan(size, 768 << 10); XCTAssertLessThan(size, (1 << 20) - 16_384)
+            let old = try await runBucket()
+            try await awaitShutdown()
+            try journal.reloadIsolatedFixtureFromDisk()
+            XCTAssertTrue(old.allSatisfy { !$0.isCurrentContent }, "Old producers stay retired after journal reconstruction")
+            XCTAssertTrue(journal.isRetired(scope: historyScope, subject: history[0], sourceRevision: revisions[0]))
+            _ = try await runBucket()
+            try await awaitShutdown()
+            try journal.reloadIsolatedFixtureFromDisk()
+            XCTAssertTrue(journal.isRetired(scope: historyScope, subject: history[149], sourceRevision: revisions[179]))
+        } catch { savedError = error }
+        try await awaitShutdown()
+        try restore()
+        let afterBytes = FileManager.default.fileExists(atPath: journalFile.path) ? try Data(contentsOf: journalFile) : nil
+        XCTAssertEqual(afterBytes, beforeBytes, "Fixture teardown must restore the exact pre-test file or its absence")
+        print("TASK17_FIX4 journal restoration verified; prior bytes=\(beforeBytes?.count ?? 0), prior file exists=\(beforeBytes != nil)")
+        if let savedError { throw savedError }
+    }
+    #endif
+
     func testElevatedStatusWithoutCurrentValidPINExpiryCannotUnlockOrReadPrivateImage() async throws {
         for expiry in ["", "not-a-date", "2000-01-01T00:00:00Z", "2099-01-01T00:00:00Z"] {
             let payload = "{\"isElevated\":true,\"pinCode\":true,\"password\":true"
@@ -74,6 +195,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
         let server = try LocalHTTPServer { request in
             if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/session/unlock" { return .init() }
             if request.path == "/api/auth/status" { return .init(status: status.withLock { $0 }, body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline.withLock { $0 })\"}".utf8)) }
             if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
             if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
@@ -144,7 +266,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             XCTAssertTrue(publicKey.isCurrentContent)
             XCTAssertNotNil(ImageLoader.shared.cachedImage(for: publicURL, targetPixelSize: 416))
             deadline.withLock { $0 = "2099-01-01T00:00:00Z" }
-            await locked.refreshStatus()
+            try await locked.unlock(pin: "123456")
             for _ in 0..<100 {
                 if (tile.makeZoomReplica() as? UIImageView)?.image != nil { break }
                 try await Task.sleep(for: .milliseconds(10))
@@ -214,6 +336,405 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         locked.lock(); gate.signal()
         do { _ = try await pending.value; XCTFail("A pre-lock authenticated status cannot renew a retired elevation nonce") } catch { }
         XCTAssertFalse(locked.isUnlocked); XCTAssertNil(client.lockedMediaLease); XCTAssertFalse(old.isCurrent)
+    }
+
+    func testNewerFolderStatusDeadlineSurvivesOlderSuccessfulResponseAndRevokesMountedBytes() async throws {
+        try await checkOverlappingStatusDeadline(newerUsesClient: false)
+    }
+
+    func testNewerAccountStatusSynchronizesFolderAndRevokesMountedBytes() async throws {
+        try await checkOverlappingStatusDeadline(newerUsesClient: true)
+    }
+
+    func testOlderStatusRejectionCannotRevokeNewerLeaseButCurrentRejectionCan() async throws {
+        for code in [401, 403, 404] { try await checkLateStatusRejection(code: code) }
+    }
+
+    private func checkLateStatusRejection(code: Int) async throws {
+        let gate = DispatchSemaphore(value: 0), reads = Mutex(0)
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            guard request.path == "/api/auth/status" else { return .init(status: 503) }
+            let number = reads.withLock { $0 += 1; return $0 }
+            if number == 2 { _ = gate.wait(timeout: .now() + 10); return .init(status: code) }
+            if number == 4 { return .init(status: code) }
+            return .init(body: Data(#"{"isElevated":true,"pinCode":true,"password":true,"pinExpiresAt":"2099-01-01T00:00:00Z"}"#.utf8))
+        }
+        try await server.start(); defer { gate.signal(); server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "late-rejection-\(UUID())")
+        client.confirmMediaAccount("late-rejection-\(UUID())"); defer { client.invalidate() }
+        let locked = LockedFolderSession(client: client); defer { locked.shutdown() }
+        await locked.refreshStatus()
+        let first = try XCTUnwrap(client.lockedMediaLease)
+        let older = Task { try await client.authStatus() }
+        for _ in 0..<200 {
+            if reads.withLock({ $0 }) == 2 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(reads.withLock { $0 }, 2)
+        _ = try await client.authStatus()
+        XCTAssertNotNil(client.lockedMediaLease)
+        gate.signal()
+        do { _ = try await older.value; XCTFail("A server rejection must not become a successful status") }
+        catch is CancellationError { }
+        catch { XCTFail("A superseded status rejection must be discarded: \(error)") }
+        XCTAssertNotNil(client.lockedMediaLease); XCTAssertTrue(first.isCurrent); XCTAssertTrue(locked.isUnlocked)
+        do { _ = try await client.authStatus(); XCTFail("A current rejection must revoke private authority") }
+        catch ImoraError.http(let actual, _) { XCTAssertEqual(actual, code) }
+        for _ in 0..<100 {
+            if !locked.isUnlocked { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertNil(client.lockedMediaLease); XCTAssertFalse(first.isCurrent); XCTAssertFalse(locked.isUnlocked)
+    }
+
+    #if DEBUG
+    func testOlderInvalidStatusCannotRevokeNewerMountedLease() async throws {
+        let held = Mutex<CheckedContinuation<Void, Never>?>(nil), reached = Mutex(false)
+        let deadline = Mutex("2099-01-01T00:00:00Z")
+        let userID = "invalid-status-race-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 528).jpegData(compressionQuality: 0.87))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" { return .init(body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline.withLock { $0 })\"}".utf8)) }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "invalid-status-race", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        func releaseStatus() { held.withLock { value in let continuation = value; value = nil; return continuation }?.resume() }
+        defer { releaseStatus(); client.setInvalidStatusFixtureHook(nil) }
+        let host = UIViewController(), tile = TimelineTileView(frame: .init(x: 20, y: 150, width: 132, height: 132))
+        let publicTile = TimelineTileView(frame: .init(x: 170, y: 150, width: 132, height: 132))
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen; host.view.addSubview(tile); host.view.addSubview(publicTile)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        func finish() async {
+            tile.unregister(); publicTile.unregister()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        do {
+            var value = asset(); value.visibility = .locked
+            let publicAsset = Asset(id: "public-id", ownerId: "alice", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "revision-one", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+            ImageLoader.shared.markEphemeral(assetIDs: [value.id])
+            let registry = AssetTileRegistry()
+            tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            publicTile.configure(asset: publicAsset, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            await locked.refreshStatus()
+            let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+            let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            let publicKey = MediaPresentationCoordinator.gridKey(asset: publicAsset, client: client, pixels: 416)
+            for _ in 0..<200 {
+                if tile.checkpointSurface(for: key, client: client) != nil && publicTile.checkpointSurface(for: publicKey, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let oldSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+            let publicSurface = try XCTUnwrap(publicTile.checkpointSurface(for: publicKey, client: client))
+            client.setInvalidStatusFixtureHook {
+                await withCheckedContinuation { continuation in
+                    held.withLock { $0 = continuation }
+                    reached.withLock { $0 = true }
+                }
+            }
+            deadline.withLock { $0 = "not-a-date" }
+            let older = Task { await locked.refreshStatus() }
+            for _ in 0..<200 {
+                if reached.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard reached.withLock({ $0 }) else { XCTFail("The older invalid status must pause before revocation"); throw CocoaError(.fileReadUnknown) }
+            XCTAssertNil(client.lockedMediaLease)
+            client.setInvalidStatusFixtureHook(nil)
+            deadline.withLock { $0 = "2099-01-01T00:00:00Z" }
+            await locked.refreshStatus()
+            XCTAssertNotNil(client.lockedMediaLease); XCTAssertTrue(locked.isUnlocked)
+            releaseStatus(); await older.value
+            XCTAssertNotNil(client.lockedMediaLease, "An older invalid completion cannot revoke the newer confirmed lease")
+            XCTAssertTrue(locked.isUnlocked); XCTAssertTrue(oldSurface.isCurrent())
+            XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertNotNil((publicTile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+        } catch { releaseStatus(); await finish(); throw error }
+        await finish()
+    }
+
+    func testAwakenedOldExpiryCannotRevokeNewLeaseAndCurrentExpiryClearsMountedBytes() async throws {
+        let held = Mutex<CheckedContinuation<Void, Never>?>(nil), woke = Mutex(false)
+        let deadline = Mutex("2099-01-01T00:00:00Z")
+        let userID = "expiry-renewal-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 528).jpegData(compressionQuality: 0.87))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" { return .init(body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline.withLock { $0 })\"}".utf8)) }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "expiry-renewal", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        func releaseExpiry() { held.withLock { value in let continuation = value; value = nil; return continuation }?.resume() }
+        defer { releaseExpiry(); client.setExpiryFixtureHook(nil) }
+        let host = UIViewController(), tile = TimelineTileView(frame: .init(x: 20, y: 150, width: 132, height: 132))
+        let publicTile = TimelineTileView(frame: .init(x: 170, y: 150, width: 132, height: 132))
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen; host.view.addSubview(tile); host.view.addSubview(publicTile)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        func finish() async {
+            tile.unregister(); publicTile.unregister()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        do {
+            _ = try await client.authStatus() // Leave the folder timer unarmed until the gated callback has awakened.
+            var value = asset(); value.visibility = .locked
+            let publicAsset = Asset(id: "public-id", ownerId: "alice", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "revision-one", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+            ImageLoader.shared.markEphemeral(assetIDs: [value.id])
+            let registry = AssetTileRegistry()
+            tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            publicTile.configure(asset: publicAsset, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+            let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            let publicKey = MediaPresentationCoordinator.gridKey(asset: publicAsset, client: client, pixels: 416)
+            for _ in 0..<200 {
+                if tile.checkpointSurface(for: key, client: client) != nil && publicTile.checkpointSurface(for: publicKey, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let oldSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+            let publicSurface = try XCTUnwrap(publicTile.checkpointSurface(for: publicKey, client: client))
+            client.setExpiryFixtureHook {
+                await withCheckedContinuation { continuation in
+                    held.withLock { $0 = continuation }
+                    woke.withLock { $0 = true }
+                }
+            }
+            deadline.withLock { $0 = Date().addingTimeInterval(2.5).ISO8601Format() }
+            _ = try await client.authStatus()
+            for _ in 0..<400 {
+                if woke.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard woke.withLock({ $0 }) else { XCTFail("The old expiry must wake and pause before the newer status"); throw CocoaError(.fileReadUnknown) }
+            client.setExpiryFixtureHook(nil)
+            let newText = Date().addingTimeInterval(4).ISO8601Format()
+            let newDeadline = try XCTUnwrap(APIDate.parse(newText))
+            deadline.withLock { $0 = newText }
+            await locked.refreshStatus()
+            XCTAssertEqual(client.lockedMediaLease?.deadline, newDeadline)
+            XCTAssertEqual(locked.elevatedUntil, newDeadline)
+            releaseExpiry()
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(client.lockedMediaLease?.deadline, newDeadline, "An awakened old expiry cannot revoke the renewed lease")
+            XCTAssertTrue(locked.isUnlocked); XCTAssertTrue(oldSurface.isCurrent())
+            XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+            while Date() < newDeadline.addingTimeInterval(0.6) { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertNil(client.lockedMediaLease); XCTAssertFalse(locked.isUnlocked)
+            XCTAssertNil((tile.makeZoomReplica() as? UIImageView)?.image, "The current expiry still clears the mounted private UIImage")
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertNotNil((publicTile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+        } catch { releaseExpiry(); await finish(); throw error }
+        await finish()
+    }
+    #endif
+
+    func testStatusDuringFailedExplicitLockCannotReopenMountedPrivateImage() async throws {
+        let gate = DispatchSemaphore(value: 0), lockStarted = Mutex(false)
+        let userID = "pending-lock-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 528).jpegData(compressionQuality: 0.87))
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" { return .init(body: Data(#"{"isElevated":true,"pinCode":true,"password":true,"pinExpiresAt":"2099-01-01T00:00:00Z"}"#.utf8)) }
+            if request.path == "/api/auth/session/lock" {
+                lockStarted.withLock { $0 = true }; _ = gate.wait(timeout: .now() + 10)
+                return .init(status: 503)
+            }
+            if request.path == "/api/auth/session/unlock" { return .init() }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { gate.signal(); server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "pending-lock", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        let host = UIViewController(), tile = TimelineTileView(frame: .init(x: 20, y: 150, width: 132, height: 132))
+        let publicTile = TimelineTileView(frame: .init(x: 170, y: 150, width: 132, height: 132))
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen; host.view.addSubview(tile); host.view.addSubview(publicTile)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        func finish() async {
+            tile.unregister(); publicTile.unregister()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        do {
+            var value = asset(); value.visibility = .locked
+            let publicAsset = Asset(id: "public-id", ownerId: "alice", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "revision-one", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+            ImageLoader.shared.markEphemeral(assetIDs: [value.id])
+            let registry = AssetTileRegistry()
+            tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            publicTile.configure(asset: publicAsset, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            await locked.refreshStatus()
+            let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+            let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            let publicKey = MediaPresentationCoordinator.gridKey(asset: publicAsset, client: client, pixels: 416)
+            for _ in 0..<200 {
+                if tile.checkpointSurface(for: key, client: client) != nil && publicTile.checkpointSurface(for: publicKey, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let oldSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+            let publicSurface = try XCTUnwrap(publicTile.checkpointSurface(for: publicKey, client: client))
+            let oldLease = try XCTUnwrap(client.lockedMediaLease)
+            locked.lock()
+            for _ in 0..<200 {
+                if lockStarted.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertTrue(lockStarted.withLock { $0 }, "The status must begin after the lock POST has started")
+            do { _ = try await client.authStatus() } catch { }
+            XCTAssertNil(client.lockedMediaLease, "An independent status cannot grant a lease while explicit lock is pending")
+            XCTAssertFalse(oldLease.isCurrent); XCTAssertFalse(oldSurface.isCurrent())
+            for _ in 0..<100 {
+                if (tile.makeZoomReplica() as? UIImageView)?.image == nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNil((tile.makeZoomReplica() as? UIImageView)?.image)
+            gate.signal()
+            await locked.refreshStatus() // awaits the failed lock POST before trying a fresh status
+            XCTAssertNil(client.lockedMediaLease, "A failed lock POST cannot silently regrant private authority")
+            XCTAssertFalse(locked.isUnlocked)
+            XCTAssertNil((tile.makeZoomReplica() as? UIImageView)?.image)
+            try await locked.unlock(pin: "123456")
+            for _ in 0..<200 {
+                if (tile.makeZoomReplica() as? UIImageView)?.image != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(locked.isUnlocked); XCTAssertNotNil(client.lockedMediaLease)
+            XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image?.cgImage, "A new confirmed explicit unlock may renew the mounted producer")
+            XCTAssertFalse(oldLease.isCurrent); XCTAssertFalse(oldSurface.isCurrent())
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertNotNil((publicTile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+        } catch { gate.signal(); await finish(); throw error }
+        await finish()
+    }
+
+    private func checkOverlappingStatusDeadline(newerUsesClient: Bool) async throws {
+        let gate = DispatchSemaphore(value: 0), reads = Mutex(0), shortText = Mutex("")
+        let userID = "overlapping-status-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let privateBytes = try XCTUnwrap(solidImage(pixels: 528).jpegData(compressionQuality: 0.87))
+        let publicBytes = try XCTUnwrap(solidImage(pixels: 544).jpegData(compressionQuality: 0.87))
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" {
+                let number = reads.withLock { $0 += 1; return $0 }
+                if number == 2 { _ = gate.wait(timeout: .now() + 10) }
+                let deadline = number == 3 ? shortText.withLock { $0 } : "2099-01-01T00:00:00Z"
+                return .init(body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline)\"}".utf8))
+            }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: request.path.contains("public-id") ? publicBytes : privateBytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { gate.signal(); server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "overlap-status", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        let host = UIViewController(), tile = TimelineTileView(frame: .init(x: 20, y: 150, width: 132, height: 132))
+        let publicTile = TimelineTileView(frame: .init(x: 170, y: 150, width: 132, height: 132))
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen; host.view.addSubview(tile); host.view.addSubview(publicTile)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        func finish() async {
+            tile.unregister(); publicTile.unregister()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        do {
+            var value = asset(); value.visibility = .locked
+            let publicAsset = Asset(id: "public-id", ownerId: "alice", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "revision-one", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+            ImageLoader.shared.markEphemeral(assetIDs: [value.id])
+            let registry = AssetTileRegistry()
+            tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            publicTile.configure(asset: publicAsset, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            await locked.refreshStatus()
+            let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+            let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            let publicKey = MediaPresentationCoordinator.gridKey(asset: publicAsset, client: client, pixels: 416)
+            for _ in 0..<200 {
+                if tile.checkpointSurface(for: key, client: client) != nil && publicTile.checkpointSurface(for: publicKey, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let oldSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+            let publicSurface = try XCTUnwrap(publicTile.checkpointSurface(for: publicKey, client: client))
+            XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+            let privateURL = client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash)
+            let diskImage = await ImageLoader.shared.diskImage(for: privateURL, targetPixelSize: 416)
+            XCTAssertNil(diskImage)
+
+            let text = Date().addingTimeInterval(4).ISO8601Format()
+            let deadline = try XCTUnwrap(APIDate.parse(text))
+            shortText.withLock { $0 = text }
+            let older = Task { await locked.refreshStatus() }
+            for _ in 0..<200 {
+                if reads.withLock({ $0 }) >= 2 { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertEqual(reads.withLock { $0 }, 2, "The old request must be held before the newer request starts")
+            if newerUsesClient { _ = try await client.authStatus() } else { await locked.refreshStatus() }
+            for _ in 0..<100 {
+                if locked.elevatedUntil == deadline { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertEqual(client.lockedMediaLease?.deadline, deadline)
+            XCTAssertEqual(locked.elevatedUntil, deadline, "A status from either caller must synchronize the folder timer")
+            gate.signal(); await older.value
+            XCTAssertEqual(client.lockedMediaLease?.deadline, deadline, "An older same-nonce response cannot extend the newer confirmed deadline")
+            XCTAssertEqual(locked.elevatedUntil, deadline)
+            while Date() < deadline.addingTimeInterval(0.6) { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertNil(client.lockedMediaLease)
+            XCTAssertFalse(locked.isUnlocked)
+            XCTAssertNil((tile.makeZoomReplica() as? UIImageView)?.image, "The mounted private UIImage must clear at the newer deadline")
+            XCTAssertFalse(oldSurface.isCurrent())
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertNotNil((publicTile.makeZoomReplica() as? UIImageView)?.image?.cgImage)
+        } catch { gate.signal(); await finish(); throw error }
+        await finish()
     }
 
     private func checkLockedRecovery(rollbackFromLockedPage: Bool) async throws {

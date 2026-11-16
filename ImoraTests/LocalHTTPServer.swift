@@ -17,7 +17,7 @@ final class LocalHTTPServer: @unchecked Sendable {
         var body = Data("{}".utf8)
     }
     private let listener: NWListener
-    private let queue = DispatchQueue(label: "imora.tests.loopback")
+    private let queue: DispatchQueue
     private let handler: @Sendable (Request) -> Response
     private let requests = Mutex<[Request]>([])
     private let connections = Mutex<[NWConnection]>([])
@@ -25,8 +25,9 @@ final class LocalHTTPServer: @unchecked Sendable {
     var received: [Request] { requests.withLock { $0 } }
     var apiURL: URL { URL(string: "http://127.0.0.1:\(listener.port!.rawValue)/api")! }
 
-    init(handler: @escaping @Sendable (Request) -> Response) throws {
+    init(concurrent: Bool = false, handler: @escaping @Sendable (Request) -> Response) throws {
         self.handler = handler
+        queue = DispatchQueue(label: "imora.tests.loopback", attributes: concurrent ? .concurrent : [])
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)

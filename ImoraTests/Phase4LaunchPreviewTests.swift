@@ -468,6 +468,105 @@ final class Phase4LaunchPreviewTests: XCTestCase {
         XCTAssertFalse(restarted.isCurrent(scope: scope, subject: unknown, sourceRevision: "R", generation: restarted.current(scope: scope, subject: unknown)!))
     }
 
+    #if DEBUG
+    func testIsolatedFixtureRestoreRefusesToOverwriteUnrelatedJournalChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-fixture-boundary-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        let owned = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "owned")
+        let other = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "other")
+        let restore = try journal.isolatedFixtureRestorer(scopes: [owned])
+        try journal.retire(scope: owned, subjects: [.remoteAsset("fixture")], retiresSourceRevisions: false, blocksAccess: true)
+        let unrelated = key("unrelated", scope: other)
+        try journal.retire(scope: other, subjects: [unrelated.subject], keys: [unrelated])
+        let file = root.appending(path: "content-generations.json"), before = try Data(contentsOf: file)
+        XCTAssertThrowsError(try restore())
+        XCTAssertEqual(try Data(contentsOf: file), before)
+        XCTAssertTrue(MediaContentGenerations(root: root).isRetired(scope: other, subject: unrelated.subject, sourceRevision: unrelated.sourceRevision))
+    }
+
+    func testIsolatedFixtureRestoresAbsentJournalAndPriorMemory() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-fixture-absence-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        let owned = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "owned")
+        let restore = try journal.isolatedFixtureRestorer(scopes: [owned])
+        try journal.retire(scope: owned, subjects: [.remoteAsset("fixture")], retiresSourceRevisions: false, blocksAccess: true)
+        try restore()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appending(path: "content-generations.json").path))
+        XCTAssertEqual(journal.current(scope: owned, subject: .remoteAsset("fixture")), "")
+    }
+    #endif
+
+    func testRepresentableEditHistoryDoesNotInvalidateAnotherScopesSharedReceipt() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-scope-isolation-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        let history = (0..<150).map { MediaDisplayKeyV1.Subject.remoteAsset("edited-asset-\($0)") }
+        let revisions = (0..<180).map { Data(String(format: "revision-%010d", $0).utf8).base64EncodedString() }
+        let oldKeys = history.flatMap { subject in
+            revisions.map { revision in
+                MediaDisplayKeyV1(scope: scope, subject: subject, sourceRevision: revision, presentationRevision: revision,
+                    variant: .grid, pixelBucket: 64, fitMode: "fill", orientationRevision: "up", colorProfile: "sRGB",
+                    contentGeneration: "synthetic-old-producer")
+            }
+        }
+        try journal.retire(scope: scope, subjects: history, keys: oldKeys)
+        let bytes = try Data(contentsOf: root.appending(path: "content-generations.json")).count
+        print("TASK17_FIX4 isolated journal bytes=\(bytes), synthetic retired revisions=\(oldKeys.count)")
+        XCTAssertGreaterThan(bytes, 768 << 10)
+        XCTAssertLessThan(bytes, (1 << 20) - 16_384)
+
+        let healthy = StableMediaScope.verified(server: "https://healthy.invalid/api", accountID: "bob")
+        let unrelated = MediaDisplayKeyV1.Subject.remoteAsset("already-visible")
+        let unrelatedGeneration = try XCTUnwrap(journal.current(scope: healthy, subject: unrelated))
+        func exercise(_ candidate: MediaContentGenerations, suffix: String) throws {
+            let subjects = (0..<3).map { MediaDisplayKeyV1.Subject.remoteAsset("bucket-\(suffix)-\($0)") }
+            let receipt = candidate.captureAccess(scope: healthy, requiringScopeProof: true)
+            for subject in subjects {
+                XCTAssertTrue(try candidate.authorize(scope: healthy, subject: subject, sourceRevision: "current",
+                    captured: receipt, visibilityPolicy: "locked"), "A single authenticated bucket must grant each item")
+            }
+            for subject in subjects {
+                let current = try XCTUnwrap(candidate.current(scope: healthy, subject: subject))
+                XCTAssertTrue(candidate.isCurrent(scope: healthy, subject: subject, sourceRevision: "current",
+                    generation: current, visibilityPolicy: "locked"), "A later grant must not revoke an earlier item")
+            }
+            let oldProducer = try XCTUnwrap(candidate.current(scope: healthy, subject: subjects[0]))
+            try candidate.retire(scope: healthy, subjects: [subjects[0]], retiresSourceRevisions: false, blocksAccess: true)
+            XCTAssertFalse(candidate.isCurrent(scope: healthy, subject: subjects[0], sourceRevision: "current",
+                generation: oldProducer, visibilityPolicy: "locked"))
+            XCTAssertTrue(candidate.isCurrent(scope: healthy, subject: unrelated, sourceRevision: "public",
+                generation: unrelatedGeneration), "A negative in B cannot rotate unrelated B surfaces")
+            let last = try XCTUnwrap(candidate.current(scope: healthy, subject: subjects[2]))
+            XCTAssertTrue(candidate.isCurrent(scope: healthy, subject: subjects[2], sourceRevision: "current",
+                generation: last, visibilityPolicy: "locked"))
+            XCTAssertTrue(candidate.isRetired(scope: scope, subject: history[0], sourceRevision: revisions[0]))
+            XCTAssertTrue(candidate.isRetired(scope: scope, subject: history[149], sourceRevision: revisions[179]))
+        }
+        try exercise(journal, suffix: "first")
+        try exercise(MediaContentGenerations(root: root), suffix: "restart")
+        let restarted = MediaContentGenerations(root: root)
+        XCTAssertTrue(restarted.isRetired(scope: scope, subject: history[0], sourceRevision: revisions[0]))
+        XCTAssertFalse(restarted.isCurrent(scope: healthy, subject: .remoteAsset("bucket-first-0"), sourceRevision: "current",
+            generation: restarted.current(scope: healthy, subject: .remoteAsset("bucket-first-0")) ?? "missing", visibilityPolicy: "locked"))
+        let many = (0..<2_500).map { MediaDisplayKeyV1.Subject.remoteAsset("real-pressure-\($0)") }
+        try restarted.retire(scope: healthy, subjects: many, retiresSourceRevisions: false, blocksAccess: true)
+        XCTAssertNotEqual(restarted.current(scope: healthy, subject: unrelated), unrelatedGeneration,
+            "Scope B can still fold when its own recoverable records exhaust the actual write budget")
+        let fresh = restarted.captureAccess(scope: healthy, requiringScopeProof: true)
+        for subject in many.prefix(3) {
+            XCTAssertTrue(try restarted.authorize(scope: healthy, subject: subject, sourceRevision: "current",
+                captured: fresh, visibilityPolicy: "locked"))
+        }
+        for subject in many.prefix(3) {
+            XCTAssertTrue(restarted.isCurrent(scope: healthy, subject: subject, sourceRevision: "current",
+                generation: restarted.current(scope: healthy, subject: subject) ?? "missing", visibilityPolicy: "locked"))
+        }
+        XCTAssertTrue(restarted.isRetired(scope: scope, subject: history[0], sourceRevision: revisions[0]))
+    }
+
     func testUnrepresentableEditHistoryKeepsDurableFactsAndDeniesOnlyAffectedScope() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "phase4-negative-capacity-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

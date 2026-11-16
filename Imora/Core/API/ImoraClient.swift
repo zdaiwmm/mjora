@@ -42,14 +42,30 @@ nonisolated final class ImoraClient: Sendable {
     private let mediaStore = ControlledMediaStore()
     private let verifiedMediaScope = Mutex<StableMediaScope?>(nil)
     private let mediaRecoveryHandler = Mutex<(@MainActor @Sendable (MediaCacheRecovery.Outcome, String?) -> Void)?>(nil)
+    private enum ElevationTransition { case revoke, explicitLock, unlock }
+    private enum StatusRevocationFence {
+        case expiry(sequence: UInt64, deadline: Date)
+        case invalid(sequence: UInt64)
+        case rejection(sequence: UInt64)
+    }
     private struct Elevation {
         var nonce = UUID()
         var deadline: Date?
         var scope: StableMediaScope?
         var expiry: Task<Void, Never>?
         var observer: (@MainActor @Sendable () -> Void)?
+        var issuedStatus: UInt64 = 0
+        var acceptedStatus: UInt64 = 0
+        var explicitLock = false
+        var pendingLock: UUID?
+        #if DEBUG
+        var expiryFixtureHook: (@Sendable () async -> Void)?
+        #endif
     }
     private let elevation = Mutex(Elevation())
+    #if DEBUG
+    private let invalidStatusFixtureHook = Mutex<(@Sendable () async -> Void)?>(nil)
+    #endif
 
     var lockedMediaLease: LockedMediaLease? {
         guard context.isActive, mediaDisplayScope.accountID != nil else { return nil }
@@ -69,23 +85,55 @@ nonisolated final class ImoraClient: Sendable {
         elevation.withLock { $0.observer = observer }
     }
 
+    #if DEBUG
+    func setExpiryFixtureHook(_ hook: (@Sendable () async -> Void)?) {
+        elevation.withLock { $0.expiryFixtureHook = hook }
+    }
+
+    func setInvalidStatusFixtureHook(_ hook: (@Sendable () async -> Void)?) {
+        invalidStatusFixtureHook.withLock { $0 = hook }
+    }
+    #endif
+
     func revokeLockedMediaLease() { revokeLockedMediaLease(expected: nil) }
+
+    func beginExplicitLockedMediaLock() { revokeLockedMediaLease(expected: nil, transition: .explicitLock) }
 
     func rejectLockedMediaLease(_ lease: LockedMediaLease) {
         guard lease.client === self else { return }
         revokeLockedMediaLease(expected: lease.nonce)
     }
 
-    private func revokeLockedMediaLease(expected: UUID?) {
-        let result = elevation.withLock { value -> (Bool, (@MainActor @Sendable () -> Void)?) in
-            guard expected == nil || value.nonce == expected else { return (false, nil) }
+    @discardableResult
+    private func revokeLockedMediaLease(expected: UUID?, transition: ElevationTransition = .revoke,
+                                        statusFence: StatusRevocationFence? = nil) -> UUID? {
+        let result = elevation.withLock { value -> (UUID?, (@MainActor @Sendable () -> Void)?) in
+            guard expected == nil || value.nonce == expected else { return (nil, nil) }
+            if let statusFence {
+                switch statusFence {
+                case .expiry(let sequence, let deadline):
+                    guard value.acceptedStatus == sequence, value.deadline == deadline else { return (nil, nil) }
+                case .invalid(let sequence):
+                    guard value.acceptedStatus == sequence, value.deadline == nil else { return (nil, nil) }
+                case .rejection(let sequence):
+                    guard sequence > value.acceptedStatus else { return (nil, nil) }
+                }
+            }
+            if case .unlock = transition, value.pendingLock != nil { return (nil, nil) }
             value.nonce = UUID(); value.deadline = nil; value.scope = nil
             value.expiry?.cancel(); value.expiry = nil
-            return (true, value.observer)
+            value.issuedStatus = 0; value.acceptedStatus = 0
+            switch transition {
+            case .revoke: break
+            case .explicitLock: value.explicitLock = true; value.pendingLock = value.nonce
+            case .unlock: value.explicitLock = true
+            }
+            return (value.nonce, value.observer)
         }
-        guard result.0 else { return }
+        guard let nonce = result.0 else { return nil }
         ImageLoader.shared.revokePrivateImages(client: self)
         if let observer = result.1 { Task { @MainActor in observer() } }
+        return nonce
     }
 
     private static func elevationDeadline(_ status: AuthStatus) -> Date? {
@@ -375,46 +423,76 @@ nonisolated final class ImoraClient: Sendable {
     // MARK: - locked folder session
 
     func authStatus() async throws -> AuthStatus {
-        let nonce = elevation.withLock { $0.nonce }, scope = mediaDisplayScope
+        let attempt = elevation.withLock { value -> (UUID, UInt64)? in
+            guard !value.explicitLock else { return nil }
+            value.issuedStatus &+= 1
+            return (value.nonce, value.issuedStatus)
+        }
+        guard let (nonce, sequence) = attempt else { throw CancellationError() }
+        let scope = mediaDisplayScope
         let status: AuthStatus
         do { status = try await get("auth/status") }
         catch {
             if case ImoraError.http(let code, _) = error, code == 401 || code == 403 || code == 404 {
-                revokeLockedMediaLease(expected: nonce)
+                guard revokeLockedMediaLease(expected: nonce, statusFence: .rejection(sequence: sequence)) != nil else {
+                    throw CancellationError()
+                }
             }
             throw error
         }
         try Task.checkCancellation()
         guard context.isActive, mediaDisplayScope == scope else { throw CancellationError() }
         let deadline = Self.elevationDeadline(status)
-        let accepted = elevation.withLock { value -> Bool in
-            guard value.nonce == nonce else { return false }
+        let accepted = elevation.withLock { value -> (Bool, (@MainActor @Sendable () -> Void)?) in
+            guard value.nonce == nonce, !value.explicitLock, sequence > value.acceptedStatus else { return (false, nil) }
+            value.acceptedStatus = sequence
+            let changed = value.deadline != deadline || value.scope != (deadline == nil ? nil : scope)
             value.expiry?.cancel(); value.expiry = nil
             value.deadline = deadline
             value.scope = deadline == nil ? nil : scope
             if let deadline {
+                #if DEBUG
+                let fixtureHook = value.expiryFixtureHook
+                #endif
                 value.expiry = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) } catch { return }
-                    self?.revokeLockedMediaLease(expected: nonce)
+                    #if DEBUG
+                    await fixtureHook?()
+                    #endif
+                    self?.revokeLockedMediaLease(expected: nonce, statusFence: .expiry(sequence: sequence, deadline: deadline))
                 }
             }
-            return true
+            return (true, deadline != nil && changed ? value.observer : nil)
         }
-        guard accepted else { throw CancellationError() }
-        if deadline == nil { revokeLockedMediaLease(expected: nonce) }
+        guard accepted.0 else { throw CancellationError() }
+        if deadline == nil {
+            #if DEBUG
+            let fixtureHook = invalidStatusFixtureHook.withLock { $0 }
+            await fixtureHook?()
+            #endif
+            guard revokeLockedMediaLease(expected: nonce, statusFence: .invalid(sequence: sequence)) != nil else {
+                throw CancellationError()
+            }
+        }
+        else if let observer = accepted.1 { Task { @MainActor in observer() } }
         return status
     }
 
     /// elevates this session; a wrong pin comes back as a 4xx.
     func unlockSession(pinCode: String) async throws {
-        revokeLockedMediaLease()
-        let nonce = elevation.withLock { $0.nonce }
+        guard let nonce = revokeLockedMediaLease(expected: nil, transition: .unlock), context.isActive else { throw CancellationError() }
         try await mutate("auth/session/unlock", method: "POST", body: ["pinCode": pinCode])
-        guard elevation.withLock({ $0.nonce == nonce }), context.isActive else { throw CancellationError() }
+        try Task.checkCancellation()
+        guard context.isActive, elevation.withLock({ value in
+            guard value.nonce == nonce, value.pendingLock == nil else { return false }
+            value.explicitLock = false
+            return true
+        }) else { throw CancellationError() }
     }
 
     func lockSession() async throws {
-        revokeLockedMediaLease()
+        guard let nonce = revokeLockedMediaLease(expected: nil, transition: .explicitLock) else { throw CancellationError() }
+        defer { elevation.withLock { if $0.pendingLock == nonce { $0.pendingLock = nil } } }
         try await mutate("auth/session/lock", method: "POST", body: Optional<Int>.none)
     }
 
