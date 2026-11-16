@@ -31,7 +31,7 @@ struct BackgroundBackupControls: View {
                 .accessibilityIdentifier("backup-background-status")
             }
 
-            Text("This control applies to whole-library backup. Selected-photo uploads need Imora to remain open. iOS may pause or stop background work; force-closing Imora stops it.")
+            Text("This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers.")
                 .font(.footnote)
                 .foregroundStyle(detailColor)
 
@@ -58,6 +58,9 @@ struct BackgroundBackupControls: View {
     }
 
     private var statusMessage: String? {
+        if continuation.hasSystemHandoff, backup.isRunning {
+            return String(localized: "Prepared uploads are handled by iOS. Remaining files continue when background time is available.")
+        }
         if backup.requiresExplicitResume, !continuation.status.isActive {
             return String(localized: "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.")
         }

@@ -1438,8 +1438,7 @@
             "value": "%lld 个项目"
           }
         }
-      },
-      "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:519\nImora/Features/Albums/AlbumsTab.swift:379\nImora/Features/Albums/AlbumsTab.swift:454\nImora/Features/Spaces/SpacesScreen.swift:132\nImora/Features/Spaces/SpacesScreen.swift:398\nImora/Features/Spaces/SpacesScreen.swift:430\nImora/Features/Timeline/PhotoPeriodsView.swift:215\nImora/Features/Timeline/PhotoPeriodsView.swift:266\nImora/Features/Timeline/PhotoPeriodsView.swift:379\nImora/Features/Timeline/PhotosBrowseMenu.swift:96\nImora/Features/Timeline/PhotosMediaTimeline.swift:137\nImora/Features/Timeline/PhotosMediaTimeline.swift:96"
+      }
     },
     "%lld items loaded": {
       "extractionState": "manual",
@@ -34224,6 +34223,222 @@
           "stringUnit": {
             "state": "translated",
             "value": "关闭实况"
+          }
+        }
+      }
+    },
+    "%lld of %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld of %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %lld 项，共 %lld 项"
+          }
+        }
+      }
+    },
+    "Couldn't load this memory item.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load this memory item."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法载入这段回忆中的项目。"
+          }
+        }
+      }
+    },
+    "Music unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Music unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音乐暂不可用"
+          }
+        }
+      }
+    },
+    "Play Memory": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放回忆"
+          }
+        }
+      }
+    },
+    "Previous": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一项"
+          }
+        }
+      }
+    },
+    "Replay": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新播放"
+          }
+        }
+      }
+    },
+    "Show item %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show item %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看第 %lld 项"
+          }
+        }
+      }
+    },
+    "Slide progress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slide progress"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "幻灯片进度"
+          }
+        }
+      }
+    },
+    "Prepared files are uploading. Check Backup for remaining items.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的文件正在上传。剩余项目可在备份页查看。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepared files are uploading. Check Backup for remaining items."
+          }
+        }
+      }
+    },
+    "Background upload started": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台上传已开始"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background upload started"
+          }
+        }
+      }
+    },
+    "Prepared uploads are handled by iOS. Remaining files continue when background time is available.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已准备的上传由 iOS 接管；获得后台运行机会后，将继续处理剩余文件。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepared uploads are handled by iOS. Remaining files continue when background time is available."
+          }
+        }
+      }
+    },
+    "Device is too warm. Backup will resume when it cools.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备温度过高。降温后将继续备份。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device is too warm. Backup will resume when it cools."
+          }
+        }
+      }
+    },
+    "This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此控制适用于整个图库。已准备的上传由 iOS 接管；后台运行不可用时，请保持 Imora 打开以准备剩余文件。从后台划掉 Imora 会停止后台传输。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers."
           }
         }
       }
