@@ -22,10 +22,13 @@ nonisolated final class ImageLoader: Sendable {
     private let visibleTasks = Mutex<[UUID: ImageTask]>([:])
     private let observedRequests = Mutex<[String: ImageRequest]>([:])
     private let authorization = AuthorizingDelegate()
-    private let prefetcher: ImagePrefetcher
-    /// fills the disk cache only. a fling usually races past what sits far
-    /// ahead, so those tiles are fetched but never decoded until they show.
-    private let diskPrefetcher: ImagePrefetcher
+    private struct PrefetchPair: Sendable {
+        let decoded: ImagePrefetcher
+        let data: ImagePrefetcher
+    }
+    /// Each screen owns its Nuke subscriptions. The pipeline itself still
+    /// coalesces the underlying request across screens and visible consumers.
+    private let prefetchers = Mutex<[UUID: PrefetchPair]>([:])
     /// held directly so storage settings can measure and wipe it.
     private let dataCache: DataCache?
 
@@ -52,8 +55,6 @@ nonisolated final class ImageLoader: Sendable {
             FittingThumbnailDecoder(context: context) ?? ImageDecoderRegistry.shared.decoder(for: context)
         }
         pipeline = ImagePipeline(configuration: configuration, delegate: authorization)
-        prefetcher = ImagePrefetcher(pipeline: pipeline, maxConcurrentRequestCount: 4)
-        diskPrefetcher = ImagePrefetcher(pipeline: pipeline, destination: .diskCache, maxConcurrentRequestCount: 2)
     }
 
     /// call after login so image requests carry the token.
@@ -61,8 +62,7 @@ nonisolated final class ImageLoader: Sendable {
         if client != nil { try? MediaContentGenerations.shared.ensureInitialized() }
         authorization.client.withLock { $0 = nil }
         sweepTask.withLock { current in current?.cancel(); current = nil }
-        prefetcher.stopPrefetching()
-        diskPrefetcher.stopPrefetching()
+        stopAllPrefetching()
         visibleTasks.withLock { tasks in tasks.values.forEach { $0.cancel() }; tasks.removeAll() }
         authorization.networkTasks.withLock { tasks in
             tasks.values.forEach { $0.task.cancel() }; tasks.removeAll()
@@ -255,7 +255,7 @@ nonisolated final class ImageLoader: Sendable {
             for entry in tasks.values where entry.binding?.key.scope == scope
                 && (subjects == nil || entry.binding.map { subjects!.contains($0.key.subject) } == true) { entry.task.cancel() }
         }
-        prefetcher.stopPrefetching(); diskPrefetcher.stopPrefetching()
+        stopAllPrefetching()
         sweepTask.withLock { task in task?.cancel(); task = nil }
         return persistenceFailure
     }
@@ -291,22 +291,31 @@ nonisolated final class ImageLoader: Sendable {
         // a tile on screen beats every prefetch and sweep request queued
         // ahead of it; those run low and very low.
         request.priority = .high
+        let demandKey = Self.demandKey(for: request, client: client)
+        let demand = await ThumbnailDemandScheduler.shared.addDemand(key: demandKey, priority: .visible)
         let id = UUID()
         let task = pipeline.imageTask(with: request)
         visibleTasks.withLock { $0[id] = task }
         defer { visibleTasks.withLock { _ = $0.removeValue(forKey: id) } }
-        return try await withTaskCancellationHandler {
-            let response = try await task.response
-            guard client.context.isActive, authorization.client.withLock({ $0 === client }), Self.isCurrent(request) else { throw ServerTrustError.sessionExpired }
-            if let provenance = response.container.userInfo["imora.local-provenance"] as? LocalSurfaceProvenance {
-                guard response.container.userInfo["imora.local-permission"] as? Int == LocalImageLoader.shared.permissionGeneration,
-                      LocalImageLoader.currentModificationRevision(provenance.localIdentifier) == provenance.modificationRevision else {
-                    pipeline.cache[request] = nil
-                    throw CancellationError()
+        do {
+            let image = try await withTaskCancellationHandler {
+                let response = try await task.response
+                guard client.context.isActive, authorization.client.withLock({ $0 === client }), Self.isCurrent(request) else { throw ServerTrustError.sessionExpired }
+                if let provenance = response.container.userInfo["imora.local-provenance"] as? LocalSurfaceProvenance {
+                    guard response.container.userInfo["imora.local-permission"] as? Int == LocalImageLoader.shared.permissionGeneration,
+                          LocalImageLoader.currentModificationRevision(provenance.localIdentifier) == provenance.modificationRevision else {
+                        pipeline.cache[request] = nil
+                        throw CancellationError()
+                    }
                 }
-            }
-            return response.image
-        } onCancel: { task.cancel() }
+                return response.image
+            } onCancel: { task.cancel() }
+            await ThumbnailDemandScheduler.shared.releaseDemand(key: demandKey, id: demand)
+            return image
+        } catch {
+            await ThumbnailDemandScheduler.shared.releaseDemand(key: demandKey, id: demand)
+            throw error
+        }
     }
 
     /// Bounded grid-only derivative loading. An error is propagated after
@@ -366,21 +375,49 @@ nonisolated final class ImageLoader: Sendable {
     /// warms the caches for tiles about to scroll into view. prefetches run at
     /// a lower priority than visible requests and coalesce with them, so a tile
     /// that appears mid-flight reuses the download already in progress.
-    func startPrefetching(urls: [URL], targetPixelSize: CGFloat) {
-        prefetcher.startPrefetching(with: requests(for: urls, targetPixelSize: targetPixelSize))
+    private func prefetchPair(for ownerID: UUID) -> PrefetchPair {
+        prefetchers.withLock { pairs in
+            if let pair = pairs[ownerID] { return pair }
+            let decoded = ImagePrefetcher(pipeline: pipeline, maxConcurrentRequestCount: 4)
+            let data = ImagePrefetcher(pipeline: pipeline, destination: .diskCache, maxConcurrentRequestCount: 2)
+            data.priority = .veryLow
+            let pair = PrefetchPair(decoded: decoded, data: data)
+            pairs[ownerID] = pair
+            return pair
+        }
     }
 
-    func stopPrefetching(urls: [URL], targetPixelSize: CGFloat) {
-        prefetcher.stopPrefetching(with: requests(for: urls, targetPixelSize: targetPixelSize))
+    private func stopAllPrefetching() {
+        let pairs = prefetchers.withLock { values in
+            let previous = Array(values.values)
+            values.removeAll()
+            return previous
+        }
+        for pair in pairs { pair.decoded.stopPrefetching(); pair.data.stopPrefetching() }
+    }
+
+    func releasePrefetchOwner(_ ownerID: UUID) {
+        guard let pair = prefetchers.withLock({ $0.removeValue(forKey: ownerID) }) else { return }
+        pair.decoded.stopPrefetching(); pair.data.stopPrefetching()
+    }
+
+    func startPrefetching(urls: [URL], targetPixelSize: CGFloat, ownerID: UUID) {
+        prefetchPair(for: ownerID).decoded.startPrefetching(with: requests(for: urls, targetPixelSize: targetPixelSize))
+    }
+
+    func stopPrefetching(urls: [URL], targetPixelSize: CGFloat, ownerID: UUID) {
+        guard let pair = prefetchers.withLock({ $0[ownerID] }) else { return }
+        pair.decoded.stopPrefetching(with: requests(for: urls, targetPixelSize: targetPixelSize))
     }
 
     /// downloads to the disk cache without decoding, for tiles further out.
-    func startPrefetchingData(urls: [URL]) {
-        diskPrefetcher.startPrefetching(with: requests(for: urls, targetPixelSize: 512))
+    func startPrefetchingData(urls: [URL], ownerID: UUID) {
+        prefetchPair(for: ownerID).data.startPrefetching(with: requests(for: urls, targetPixelSize: 512))
     }
 
-    func stopPrefetchingData(urls: [URL]) {
-        diskPrefetcher.stopPrefetching(with: requests(for: urls, targetPixelSize: 512))
+    func stopPrefetchingData(urls: [URL], ownerID: UUID) {
+        guard let pair = prefetchers.withLock({ $0[ownerID] }) else { return }
+        pair.data.stopPrefetching(with: requests(for: urls, targetPixelSize: 512))
     }
 
     // MARK: - offline sweep
@@ -493,6 +530,12 @@ nonisolated final class ImageLoader: Sendable {
 
     private static func isCurrent(_ request: ImageRequest) -> Bool {
         (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent ?? true
+    }
+
+    fileprivate static func demandKey(for request: ImageRequest, client: ImoraClient) -> String {
+        // The content ID includes the content generation and private lease;
+        // the runtime context keeps a retired session from sharing admission.
+        "\(client.context.id.uuidString)|\(request.imageID ?? request.url?.absoluteString ?? "")"
     }
 
     private func binding(for url: URL, pixels: CGFloat) -> MediaRequestBinding? {
@@ -615,8 +658,12 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
     let networkTasks = Mutex<[UUID: Transfer]>([:])
 
     nonisolated func dataLoader(for request: ImageRequest, pipeline: ImagePipeline) -> any DataLoading {
-        AccountImageDataLoader(client: client.withLock { $0 }, owner: self,
-            binding: request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)
+        let current = client.withLock { $0 }
+        let priority: ThumbnailDemandPriority = request.priority >= .high ? .visible
+            : (request.priority == .veryLow ? .background : .adjacent)
+        return AccountImageDataLoader(client: current, owner: self,
+            binding: request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding,
+            demandKey: current.map { ImageLoader.demandKey(for: request, client: $0) }, priority: priority)
     }
 
     /// nuke asks before every disk read and write; nil keeps a locked asset
@@ -677,13 +724,17 @@ private nonisolated final class AccountImageDataLoader: DataLoading {
     let client: ImoraClient?
     let owner: AuthorizingDelegate
     let binding: MediaRequestBinding?
-    init(client: ImoraClient?, owner: AuthorizingDelegate, binding: MediaRequestBinding?) {
+    let demandKey: String?
+    let priority: ThumbnailDemandPriority
+    init(client: ImoraClient?, owner: AuthorizingDelegate, binding: MediaRequestBinding?,
+         demandKey: String?, priority: ThumbnailDemandPriority) {
         self.client = client; self.owner = owner; self.binding = binding
+        self.demandKey = demandKey; self.priority = priority
     }
 
     func loadData(with request: URLRequest, didReceiveData: @escaping @Sendable (Data, URLResponse) -> Void,
                   completion: @escaping @Sendable (Error?) -> Void) -> any Cancellable {
-        let id = UUID(), owner = owner, client = client, binding = binding
+        let id = UUID(), owner = owner, client = client, binding = binding, demandKey = demandKey, priority = priority
         let task = owner.networkTasks.withLock { values in
             let task = Task {
                 defer { owner.networkTasks.withLock { _ = $0.removeValue(forKey: id) } }
@@ -694,7 +745,7 @@ private nonisolated final class AccountImageDataLoader: DataLoading {
                           request.value(forHTTPHeaderField: "Authorization") == "Bearer \(client.accessToken)" else {
                         throw ServerTrustError.sessionExpired
                     }
-                    let permit = try await ThumbnailLoadLimiter.shared.acquire()
+                    let permit = try await ThumbnailDemandScheduler.shared.acquire(priority: priority, key: demandKey)
                     defer { Task { await ThumbnailLoadLimiter.shared.release(permit) } }
                     try Task.checkCancellation()
                     let (data, response) = try await client.imageData(for: request)

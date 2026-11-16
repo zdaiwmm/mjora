@@ -173,6 +173,7 @@ final class ThumbnailPrefetcher {
         decodedRange = nil
         warmed = []
         send(start: [], stop: stop)
+        ImageLoader.shared.releasePrefetchOwner(ownerID)
     }
 
     private func updateTargetPixelSize(_ value: CGFloat) {
@@ -225,16 +226,16 @@ final class ThumbnailPrefetcher {
             }
         }
         if !decoded.stop.isEmpty {
-            ImageLoader.shared.stopPrefetching(urls: decoded.stop, targetPixelSize: targetPixelSize)
+            ImageLoader.shared.stopPrefetching(urls: decoded.stop, targetPixelSize: targetPixelSize, ownerID: ownerID)
         }
         if !data.stop.isEmpty {
-            ImageLoader.shared.stopPrefetchingData(urls: data.stop)
+            ImageLoader.shared.stopPrefetchingData(urls: data.stop, ownerID: ownerID)
         }
         if !decoded.start.isEmpty {
-            ImageLoader.shared.startPrefetching(urls: decoded.start, targetPixelSize: targetPixelSize)
+            ImageLoader.shared.startPrefetching(urls: decoded.start, targetPixelSize: targetPixelSize, ownerID: ownerID)
         }
         if !data.start.isEmpty {
-            ImageLoader.shared.startPrefetchingData(urls: data.start)
+            ImageLoader.shared.startPrefetchingData(urls: data.start, ownerID: ownerID)
         }
         syncLocal(start: local.start, stop: local.stop, allowsNetwork: false)
         syncLocal(start: paired.start, stop: paired.stop, allowsNetwork: false)
