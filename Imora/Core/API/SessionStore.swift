@@ -477,6 +477,11 @@ final class SessionStore {
             } else { ErrorToastCenter.shared.show(notice) }
         }
         self.user = user
+        if MediaContentGenerations.shared.isScopeUnavailable(client.mediaDisplayScope) {
+            let notice = String(localized: "Photos are temporarily unavailable. Your edits are preserved. Reopen the app and try again.")
+            loginNotice = notice
+            ErrorToastCenter.shared.show(notice)
+        }
         lockedFolder = LockedFolderSession(client: client)
         ImageLoader.shared.configure(client: client)
         let backup = BackupManager(client: client)
@@ -551,8 +556,14 @@ final class SessionStore {
         case .unavailable: return false
         case .value(let fence):
             do {
-                try MediaContentGenerations.shared.rollover()
-                _ = KeychainStore.removeIfMatching(fence, for: KeychainStore.mediaRecoveryFenceKey)
+                let resolution = MediaRecoveryFence.resolution(fence)
+                for failedScope in resolution.scopes {
+                    try MediaContentGenerations.shared.recoverDurability(scope: failedScope)
+                }
+                guard !resolution.unresolved, !resolution.scopes.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+                guard KeychainStore.removeIfMatching(fence, for: KeychainStore.mediaRecoveryFenceKey) == .removed else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
                 return true
             } catch {
                 let notice = String(localized: "Photos are temporarily unavailable. Your edits are preserved. Reopen the app and try again.")

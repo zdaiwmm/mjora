@@ -395,4 +395,185 @@ final class Phase4LaunchPreviewTests: XCTestCase {
         XCTAssertFalse(MediaContentGenerations(root: root).isCurrent(scope: scope, subject: subject,
             sourceRevision: "R", generation: generation, visibilityPolicy: "timeline"))
     }
+
+    func test513ProtectedSubjectsPreserveAvailabilityAndNegativeHistoryAcrossRestart() throws {
+        try checkCapacityBoundary(count: 513, separateScopes: false)
+    }
+
+    func test65ProtectedScopesPreserveAvailabilityAndNegativeHistoryAcrossRestart() throws {
+        try checkCapacityBoundary(count: 65, separateScopes: true)
+    }
+
+    func testActualByteHighWaterFoldsToDefaultDenyAndFreshProofRestoresOnlyCurrentSubject() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-byte-fold-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        let edited = MediaDisplayKeyV1.Subject.remoteAsset("edited")
+        let old = key("edited")
+        try journal.retire(scope: scope, subjects: [edited], keys: [old])
+        let oldProof = journal.captureAccess(scope: scope)
+        let unknown = MediaDisplayKeyV1.Subject.remoteAsset("not-in-any-prior-response")
+        let oldUnknown = try XCTUnwrap(journal.current(scope: scope, subject: unknown))
+        let blocked = (0..<6_000).map { MediaDisplayKeyV1.Subject.remoteAsset("subject-\($0)") }
+        try journal.retire(scope: scope, subjects: blocked, retiresSourceRevisions: false, blocksAccess: true)
+        let file = root.appending(path: "content-generations.json")
+        let bytes = try Data(contentsOf: file).count
+        XCTAssertLessThan(bytes, 768 << 10, "Real byte pressure folds recoverable records rather than retaining an oversized journal")
+        let restart = MediaContentGenerations(root: root)
+        for candidate in [journal, restart] {
+            XCTAssertTrue(candidate.isRetired(scope: scope, subject: edited, sourceRevision: old.sourceRevision))
+            XCTAssertFalse(candidate.isCurrent(scope: scope, subject: unknown, sourceRevision: "R", generation: oldUnknown))
+            let current = try XCTUnwrap(candidate.current(scope: scope, subject: unknown))
+            XCTAssertFalse(candidate.isCurrent(scope: scope, subject: unknown, sourceRevision: "R", generation: current))
+            XCTAssertFalse(candidate.canMigrateLegacy(scope: scope, subject: unknown))
+            let proof = candidate.captureAccess(scope: scope)
+            XCTAssertFalse(proof.isEmpty, "A default-deny scope is proof-requiring even without explicit subject records")
+            XCTAssertTrue(proof.needsConfirmation(subject: unknown, visibilityPolicy: "timeline"))
+            XCTAssertFalse(try candidate.authorize(scope: scope, subject: edited, sourceRevision: "new-R", captured: oldProof, visibilityPolicy: "timeline"))
+        }
+        XCTAssertTrue(try restart.authorize(scope: scope, subject: unknown, sourceRevision: "R",
+            captured: restart.captureAccess(scope: scope), visibilityPolicy: "timeline"))
+        let after = MediaContentGenerations(root: root)
+        XCTAssertTrue(after.isCurrent(scope: scope, subject: unknown, sourceRevision: "R",
+            generation: after.current(scope: scope, subject: unknown)!, visibilityPolicy: "timeline"))
+        let stillDenied = blocked[0]
+        XCTAssertFalse(after.isCurrent(scope: scope, subject: stillDenied, sourceRevision: "R",
+            generation: after.current(scope: scope, subject: stillDenied)!, visibilityPolicy: "timeline"))
+        let other = StableMediaScope.verified(server: "https://other.invalid", accountID: "other")
+        XCTAssertTrue(after.isCurrent(scope: other, subject: unknown, sourceRevision: "R", generation: after.current(scope: other, subject: unknown)!))
+    }
+
+    func testPositivePolicyGrowthAlsoFoldsAtActualByteHighWater() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-positive-fold-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        let subjects = (0..<4_600).map { MediaDisplayKeyV1.Subject.remoteAsset("subject-\($0)") }
+        try journal.retire(scope: scope, subjects: subjects, retiresSourceRevisions: false, blocksAccess: true)
+        let unknown = MediaDisplayKeyV1.Subject.remoteAsset("unlisted")
+        let old = try XCTUnwrap(journal.current(scope: scope, subject: unknown))
+        var last: MediaDisplayKeyV1.Subject?
+        for subject in subjects.prefix(1_000) {
+            XCTAssertTrue(try journal.authorize(scope: scope, subject: subject, sourceRevision: "R",
+                captured: journal.captureAccess(scope: scope), visibilityPolicy: "timeline"))
+            last = subject
+            if journal.current(scope: scope, subject: unknown) != old { break }
+        }
+        XCTAssertNotEqual(journal.current(scope: scope, subject: unknown), old, "Positive canonical policy growth must use the same bounded scope folding path")
+        let bytes = try Data(contentsOf: root.appending(path: "content-generations.json")).count
+        XCTAssertLessThan(bytes, 768 << 10)
+        let restarted = MediaContentGenerations(root: root), lastSubject = try XCTUnwrap(last)
+        XCTAssertTrue(restarted.isCurrent(scope: scope, subject: lastSubject, sourceRevision: "R", generation: restarted.current(scope: scope, subject: lastSubject)!, visibilityPolicy: "timeline"))
+        XCTAssertFalse(restarted.isCurrent(scope: scope, subject: unknown, sourceRevision: "R", generation: restarted.current(scope: scope, subject: unknown)!))
+    }
+
+    func testUnrepresentableEditHistoryKeepsDurableFactsAndDeniesOnlyAffectedScope() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-negative-capacity-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        let subject = MediaDisplayKeyV1.Subject.remoteAsset("edited")
+        func revision(_ text: String) -> MediaDisplayKeyV1 {
+            MediaDisplayKeyV1(scope: scope, subject: subject, sourceRevision: text, presentationRevision: text,
+                variant: .grid, pixelBucket: 64, fitMode: "fill", orientationRevision: "up", colorProfile: "sRGB")
+        }
+        let old = String(repeating: "a", count: 600_000)
+        try journal.retire(scope: scope, subjects: [subject], keys: [revision(old)])
+        XCTAssertThrowsError(try journal.retire(scope: scope, subjects: [subject], keys: [revision(String(repeating: "b", count: 600_000))]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appending(path: "content-generations.json").path))
+        for candidate in [journal, MediaContentGenerations(root: root)] {
+            XCTAssertTrue(candidate.isRetired(scope: scope, subject: subject, sourceRevision: old))
+            let unknown = MediaDisplayKeyV1.Subject.remoteAsset("unknown")
+            XCTAssertFalse(candidate.isCurrent(scope: scope, subject: unknown, sourceRevision: "R", generation: candidate.current(scope: scope, subject: unknown) ?? "missing"))
+            XCTAssertFalse(try candidate.authorize(scope: scope, subject: unknown, sourceRevision: "R", captured: candidate.captureAccess(scope: scope), visibilityPolicy: "timeline"))
+            let other = StableMediaScope.verified(server: "https://other.invalid", accountID: "other")
+            XCTAssertTrue(candidate.isCurrent(scope: other, subject: unknown, sourceRevision: "R", generation: candidate.current(scope: other, subject: unknown) ?? "missing"))
+        }
+    }
+
+    func testRetirementIOFailurePreservesOldJournalAndRequiresCheckedCredentialRecovery() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-negative-io-\(UUID())")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let journal = MediaContentGenerations(root: root), subject = MediaDisplayKeyV1.Subject.remoteAsset("edited")
+        try journal.ensureInitialized()
+        try journal.retire(scope: scope, subjects: [subject], keys: [key("edited")])
+        let file = root.appending(path: "content-generations.json"), durable = try Data(contentsOf: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+        XCTAssertThrowsError(try journal.retire(scope: scope, subjects: [.remoteAsset("new-block")], retiresSourceRevisions: false, blocksAccess: true)) { error in
+            XCTAssertEqual((error as? MediaContentGenerations.RetirementFailure)?.journalRemovalSucceeded, false)
+        }
+        XCTAssertEqual(try Data(contentsOf: file), durable)
+        XCTAssertNil(journal.current(scope: scope, subject: subject), "Until checked credential recovery, an unpersisted deny cannot publish")
+        XCTAssertTrue(MediaContentGenerations(root: root).isRetired(scope: scope, subject: subject, sourceRevision: key("edited").sourceRevision))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        try journal.ensureInitialized()
+        let pendingSubject = MediaDisplayKeyV1.Subject.remoteAsset("new-block")
+        XCTAssertFalse(journal.isCurrent(scope: scope, subject: pendingSubject, sourceRevision: "R",
+            generation: journal.current(scope: scope, subject: pendingSubject) ?? "missing"), "Protected-data reinitialization must persist the pending scope deny, never restore pre-failure authority")
+        try journal.recoverDurability(scope: scope)
+        let recovered = MediaContentGenerations(root: root), unknown = MediaDisplayKeyV1.Subject.remoteAsset("new-block")
+        XCTAssertTrue(recovered.isRetired(scope: scope, subject: subject, sourceRevision: key("edited").sourceRevision))
+        XCTAssertFalse(recovered.isCurrent(scope: scope, subject: unknown, sourceRevision: "R", generation: recovered.current(scope: scope, subject: unknown)!))
+        XCTAssertFalse(try recovered.authorize(scope: scope, subject: unknown, sourceRevision: "R", captured: recovered.captureAccess(scope: scope)))
+        let other = StableMediaScope.verified(server: "https://other.invalid", accountID: "other")
+        XCTAssertTrue(recovered.isCurrent(scope: other, subject: unknown, sourceRevision: "R", generation: recovered.current(scope: other, subject: unknown)!))
+    }
+
+    private func checkCapacityBoundary(count: Int, separateScopes: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-capacity-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = MediaContentGenerations(root: root)
+        try journal.ensureInitialized()
+        var denied: [(StableMediaScope, MediaDisplayKeyV1.Subject)] = []
+        var firstFailure: Int?
+        let allowedScope = StableMediaScope.verified(server: "https://capacity.invalid/api", accountID: "capacity-0")
+        let allowed = MediaDisplayKeyV1.Subject.remoteAsset("subject-0")
+        for index in 0..<count {
+            let account = separateScopes ? "capacity-\(index)" : "capacity-0"
+            let scope = StableMediaScope.verified(server: "https://capacity.invalid/api", accountID: account)
+            let subject = MediaDisplayKeyV1.Subject.remoteAsset("subject-\(index)")
+            do {
+                try journal.retire(scope: scope, subjects: [subject], retiresSourceRevisions: false, blocksAccess: true)
+                if index == 0 {
+                    XCTAssertTrue(try journal.authorize(scope: scope, subject: subject, sourceRevision: "current-R",
+                        captured: journal.captureAccess(scope: scope), visibilityPolicy: "timeline"))
+                } else {
+                    denied.append((scope, subject))
+                    if index == 1 {
+                        let generation = try XCTUnwrap(journal.current(scope: scope, subject: subject))
+                        let old = MediaDisplayKeyV1(scope: scope, subject: subject, sourceRevision: "old-R",
+                            presentationRevision: "committed:old-R", variant: .grid, pixelBucket: 64,
+                            fitMode: "fill", orientationRevision: "up", colorProfile: "sRGB", contentGeneration: generation)
+                        try journal.retire(scope: scope, subjects: [subject], keys: [old])
+                    }
+                }
+            } catch { firstFailure = index; break }
+        }
+        XCTAssertNil(firstFailure, "Ordinary retained records fit the byte budget; arbitrary count saturation must not poison the global journal")
+        func assertState(_ candidate: MediaContentGenerations, _ stage: String) {
+            let available = candidate.current(scope: allowedScope, subject: allowed)
+            XCTAssertNotNil(available, stage + ": unrelated allowed namespace remains available")
+            XCTAssertTrue(candidate.isCurrent(scope: allowedScope, subject: allowed, sourceRevision: "current-R",
+                generation: available ?? "unavailable", visibilityPolicy: "timeline"), stage)
+            XCTAssertTrue(denied.allSatisfy { scope, subject in
+                !candidate.isCurrent(scope: scope, subject: subject, sourceRevision: "R",
+                    generation: candidate.current(scope: scope, subject: subject) ?? "unavailable", visibilityPolicy: "timeline")
+            }, stage + ": prior access denials remain enforced")
+            XCTAssertTrue(denied.allSatisfy { !candidate.canMigrateLegacy(scope: $0.0, subject: $0.1) }, stage + ": epoch0 imports remain excluded")
+            if let first = denied.first {
+                XCTAssertTrue(candidate.isRetired(scope: first.0, subject: first.1, sourceRevision: "old-R"), stage + ": true edit history survives")
+            }
+        }
+        assertState(journal, "after boundary")
+        XCTAssertNoThrow(try journal.ensureInitialized())
+        XCTAssertNoThrow(try journal.rollover())
+        assertState(journal, "after recovery/rollover")
+        let restart = MediaContentGenerations(root: root)
+        XCTAssertNoThrow(try restart.ensureInitialized())
+        assertState(restart, "after restart")
+    }
 }

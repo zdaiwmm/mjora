@@ -347,6 +347,13 @@ final class TimelineTileView: UIView {
         let key: MediaDisplayKeyV1
         let access: MediaAccessGeneration
         let client: ImoraClient
+        let privateLease: LockedMediaLease?
+        let requiresElevation: Bool
+        var isCurrent: Bool {
+            client.context.isActive && key.isCurrentContent
+                && access == MediaPresentationCoordinator.access(for: client)
+                && (!requiresElevation || privateLease?.isCurrent == true)
+        }
     }
     private var requestBinding: SurfaceBinding?
     private var boundSurface: CommittedGridSurface?
@@ -484,6 +491,7 @@ final class TimelineTileView: UIView {
         super.updateProperties()
         guard let asset, let session else { return }
         let generation = ImageLoadRecovery.shared.generation
+        if asset.visibility == .locked { _ = session.lockedFolder?.publicationGeneration }
         let backup = session.backup
         // the device copy is free, already decoded by photokit and needs no
         // network, so it wins whenever the backup index pairs one with this
@@ -509,7 +517,7 @@ final class TimelineTileView: UIView {
         self.targetPixelSize = targetPixelSize
         if let client {
             let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: targetPixelSize)
-            if !key.isCurrentContent {
+            if !key.isCurrentContent || (asset.visibility == .locked && client.lockedMediaLease == nil) {
                 cancelLoads()
                 imageView.image = nil; showsPicture = false; shownDisplayKey = nil
                 boundSurface = nil; boundSurfaceID = nil
@@ -535,12 +543,13 @@ final class TimelineTileView: UIView {
             let localIsUnavailable = previous.localProvenance.map {
                 currentRevision($0.localIdentifier) != $0.modificationRevision
             } ?? false
-            if previous.key != expected || localIsUnavailable || projectionClient !== client {
+            if previous.key != expected || localIsUnavailable || projectionClient !== client || requestBinding?.isCurrent != true {
                 imageView.image = nil
                 showsPicture = false
                 shownDisplayKey = nil
                 boundSurface = nil
                 boundSurfaceID = nil
+                loadKey = nil; loadedKey = nil
             }
         }
         projectionClient = client
@@ -660,7 +669,9 @@ final class TimelineTileView: UIView {
         loadGeneration = generation
         retryButton.isHidden = true
         if let client = projectionClient, let key = activeDisplayKey {
-            requestBinding = .init(key: key, access: MediaPresentationCoordinator.access(for: client), client: client)
+            requestBinding = .init(key: key, access: MediaPresentationCoordinator.access(for: client), client: client,
+                privateLease: asset?.visibility == .locked ? client.lockedMediaLease : nil,
+                requiresElevation: asset?.visibility == .locked)
         } else { requestBinding = nil }
     }
 
@@ -700,6 +711,7 @@ final class TimelineTileView: UIView {
         }
         guard let binding, binding.client.context.isActive, projectionClient === binding.client,
               binding.access == MediaPresentationCoordinator.access(for: binding.client), binding.key.isCurrentContent,
+              (asset?.visibility != .locked || binding.privateLease?.isCurrent == true),
               let asset, binding.key == MediaPresentationCoordinator.gridKey(asset: asset, client: binding.client, pixels: targetPixelSize),
               loadKey == key else { return }
         if let localProvenance {
@@ -726,6 +738,7 @@ final class TimelineTileView: UIView {
             isCurrent: { [weak self, weak client = binding.client] in
                 guard let self, let client, client.context.isActive, self.projectionClient === client,
                       self.boundSurfaceID == id, binding.key.isCurrentContent,
+                      (self.asset?.visibility != .locked || binding.privateLease?.isCurrent == true),
                       binding.access == MediaPresentationCoordinator.access(for: client),
                       let current = self.asset,
                       binding.key == MediaPresentationCoordinator.gridKey(asset: current, client: client, pixels: self.targetPixelSize)
@@ -809,11 +822,12 @@ final class TimelineTileView: UIView {
         if placeholder != nil { shownDisplayKey = activeDisplayKey }
         startRemote(url, previewURL: previewURL, key: key)
         guard motion?.isFast != true, let thumbhash, placeholder == nil else { return }
+        let binding = requestBinding
         placeholderTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(50))
-            guard !Task.isCancelled, let self, self.loadKey == key, self.loadedKey != key else { return }
+            guard !Task.isCancelled, binding?.isCurrent == true, let self, self.loadKey == key, self.loadedKey != key else { return }
             let decoded = await Task.detached(priority: .utility) { Thumbhash.image(fromBase64: thumbhash) }.value
-            guard !Task.isCancelled, self.loadKey == key, self.loadedKey != key, let decoded else { return }
+            guard !Task.isCancelled, binding?.isCurrent == true, self.loadKey == key, self.loadedKey != key, let decoded else { return }
             self.imageView.image = decoded
         }
     }
@@ -831,7 +845,7 @@ final class TimelineTileView: UIView {
                 let loaded = try await ImageLoader.shared.gridThumbnail(
                     thumbnailURL: url, previewURL: previewURL, targetPixelSize: size, aspectRatio: ratio
                 ) { [weak self] image in
-                    guard let self, self.loadKey == key, self.loadedKey != key else { return }
+                    guard binding?.isCurrent == true, let self, self.loadKey == key, self.loadedKey != key else { return }
                     self.imageView.image = image
                     self.showsPicture = true
                     self.shownDisplayKey = binding?.key
@@ -894,7 +908,7 @@ final class TimelineTileView: UIView {
         if let placeholder { show(placeholder.image, key: key, fading: false, binding: binding, localProvenance: placeholder.localProvenance) }
         deadlineTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, let self, self.loadKey == key else { return }
+            guard !Task.isCancelled, binding?.isCurrent == true, let self, self.loadKey == key else { return }
             let action = self.thumbnailState.localDeadline()
             self.updateThumbnailStatus()
             if action == .thumbnail, let remoteURL, let previewURL {
@@ -949,7 +963,7 @@ final class TimelineTileView: UIView {
                 allowsNetwork: allowsNetwork, cacheScope: cacheScope
             )
             for await delivery in deliveries {
-                guard !Task.isCancelled, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
+                guard !Task.isCancelled, binding.isCurrent, self.loadKey == key, self.thumbnailState.phase != .ready else { return }
                 switch delivery {
                 case .terminal(let outcome):
                     guard outcome.shouldTryAlternateSource else { continue }

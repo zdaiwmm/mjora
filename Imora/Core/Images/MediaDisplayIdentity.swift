@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import Synchronization
 import Darwin
+import os
 
 nonisolated struct LocalSurfaceProvenance: Codable, Equatable, Sendable {
     let localIdentifier: String
@@ -99,6 +100,7 @@ nonisolated struct MediaDisplayKeyV1: Codable, Hashable, Sendable {
 nonisolated final class MediaContentGenerations: Sendable {
     struct RetirementFailure: Error, Sendable {
         let journalRemovalSucceeded: Bool
+        var durableScopeDenied = false
     }
     static let shared = MediaContentGenerations(root: LaunchPreviewStore.rootDirectory)
     private struct Subject: Codable {
@@ -106,8 +108,15 @@ nonisolated final class MediaContentGenerations: Sendable {
         var retiredSources: Set<String> = []
         var accessBlocked: Bool?
         var canonicalVisibility: String?
+        var authorizedEpoch: String?
     }
-    private struct Scope: Codable { var generation = ""; var subjects: [String: Subject] = [:] }
+    private struct Scope: Codable {
+        var generation = ""
+        var subjects: [String: Subject] = [:]
+        var requiresCanonicalProof: Bool?
+        // An unrepresentable negative cannot be reconstructed by positive reads.
+        var historyUnavailable: Bool?
+    }
     private struct State: Codable {
         var generation = UUID().uuidString
         var scopes: [String: Scope] = [:]
@@ -123,9 +132,14 @@ nonisolated final class MediaContentGenerations: Sendable {
         fileprivate struct Entry: Sendable { let generation: String; let policy: String?; let blocked: Bool }
         let scope: StableMediaScope
         fileprivate let generations: [String: Entry]
-        var isEmpty: Bool { generations.isEmpty }
+        fileprivate var defaultDenyGeneration: String? = nil
+        var isEmpty: Bool { generations.isEmpty && defaultDenyGeneration == nil }
+        fileprivate func entry(_ subject: MediaDisplayKeyV1.Subject) -> Entry? {
+            generations[MediaContentGenerations.identifier(subject)]
+                ?? defaultDenyGeneration.map { Entry(generation: $0, policy: nil, blocked: true) }
+        }
         func needsConfirmation(subject: MediaDisplayKeyV1.Subject, visibilityPolicy: String) -> Bool {
-            guard let entry = generations[MediaContentGenerations.identifier(subject)] else { return false }
+            guard let entry = entry(subject) else { return false }
             return entry.blocked || entry.policy != visibilityPolicy
         }
     }
@@ -143,33 +157,40 @@ nonisolated final class MediaContentGenerations: Sendable {
             let account = value.state?.scopes[Self.identifier(scope)]
             let stored = account?.subjects[Self.identifier(subject)]
             return Self.generation(value.state, account: account, subject: stored) == generation
+                && account?.historyUnavailable != true
+                && (account?.requiresCanonicalProof != true || stored?.authorizedEpoch == account?.generation)
                 && stored?.accessBlocked != true && stored?.retiredSources.contains(sourceRevision) != true
                 && (stored?.canonicalVisibility == nil || stored?.canonicalVisibility == visibilityPolicy)
         }
     }
 
     /// One immutable capture per authenticated response, never a library scan.
-    func captureAccess(scope: StableMediaScope) -> CapturedAccess {
+    func captureAccess(scope: StableMediaScope, requiringScopeProof: Bool = false) -> CapturedAccess {
         memory.withLock { value in
             load(&value)
-            guard !value.unavailable, let state = value.state, let account = state.scopes[Self.identifier(scope)] else {
-                return .init(scope: scope, generations: [:])
-            }
-            return .init(scope: scope, generations: account.subjects.compactMapValues { subject -> CapturedAccess.Entry? in
-                guard subject.accessBlocked == true || subject.canonicalVisibility != nil else { return nil }
+            guard !value.unavailable, let state = value.state else { return .init(scope: scope, generations: [:]) }
+            let account = state.scopes[Self.identifier(scope)]
+            let entries = (account?.subjects ?? [:]).compactMapValues { subject -> CapturedAccess.Entry? in
+                let blocked = subject.accessBlocked == true
+                    || (account?.requiresCanonicalProof == true && subject.authorizedEpoch != account?.generation)
+                guard blocked || subject.canonicalVisibility != nil else { return nil }
                 return .init(generation: Self.generation(state, account: account, subject: subject),
-                    policy: subject.canonicalVisibility, blocked: subject.accessBlocked == true)
-            })
+                    policy: subject.canonicalVisibility, blocked: blocked)
+            }
+            return .init(scope: scope, generations: entries,
+                defaultDenyGeneration: account?.requiresCanonicalProof == true || requiringScopeProof
+                    ? Self.generation(state, account: account, subject: nil) : nil)
         }
     }
 
     func matchesAccess(scope: StableMediaScope, subject: MediaDisplayKeyV1.Subject, captured: CapturedAccess) -> Bool {
-        guard captured.scope == scope, let expected = captured.generations[Self.identifier(subject)] else { return false }
+        guard captured.scope == scope, let expected = captured.entry(subject) else { return false }
         return memory.withLock { value in
             load(&value)
             guard !value.unavailable else { return false }
             let account = value.state?.scopes[Self.identifier(scope)], stored = account?.subjects[Self.identifier(subject)]
-            return (stored?.accessBlocked == true || stored?.canonicalVisibility != nil)
+            return account?.historyUnavailable != true
+                && (captured.defaultDenyGeneration != nil || stored?.accessBlocked == true || stored?.canonicalVisibility != nil)
                 && Self.generation(value.state, account: account, subject: stored) == expected.generation
         }
     }
@@ -179,17 +200,30 @@ nonisolated final class MediaContentGenerations: Sendable {
     @discardableResult
     func authorize(scope: StableMediaScope, subject: MediaDisplayKeyV1.Subject, sourceRevision: String,
                    captured: CapturedAccess, visibilityPolicy: String? = nil) throws -> Bool {
-        guard captured.scope == scope, let expected = captured.generations[Self.identifier(subject)] else { return false }
+        guard captured.scope == scope, let expected = captured.entry(subject) else { return false }
         return try memory.withLock { value in
             load(&value)
             let scopeID = Self.identifier(scope), subjectID = Self.identifier(subject)
-            guard !value.unavailable, var state = value.state, var account = state.scopes[scopeID],
-                  var stored = account.subjects[subjectID], stored.accessBlocked == true || stored.canonicalVisibility != visibilityPolicy,
-                  Self.generation(state, account: account, subject: stored) == expected.generation,
-                  !stored.retiredSources.contains(sourceRevision) else { return false }
+            guard !value.unavailable, var state = value.state else { return false }
+            var account = state.scopes[scopeID] ?? Scope()
+            guard account.historyUnavailable != true,
+                  captured.defaultDenyGeneration != nil || account.subjects[subjectID]?.accessBlocked == true
+                    || account.subjects[subjectID]?.canonicalVisibility != visibilityPolicy,
+                  Self.generation(state, account: account, subject: account.subjects[subjectID]) == expected.generation,
+                  account.subjects[subjectID]?.retiredSources.contains(sourceRevision) != true else { return false }
+            var stored = account.subjects[subjectID] ?? Subject()
             stored.accessBlocked = false; stored.generation = UUID().uuidString
             stored.canonicalVisibility = visibilityPolicy
+            stored.authorizedEpoch = account.generation
             account.subjects[subjectID] = stored; state.scopes[scopeID] = account
+            if try JSONEncoder().encode(state).count > 768 << 10 {
+                account.generation = UUID().uuidString
+                account.requiresCanonicalProof = true
+                account.subjects = account.subjects.filter { !$0.value.retiredSources.isEmpty }
+                stored.generation = UUID().uuidString; stored.authorizedEpoch = account.generation
+                account.subjects[subjectID] = stored
+                state.scopes[scopeID] = account
+            }
             // Failure leaves the previous persisted/memory block intact.
             try persist(state)
             value = Memory(state: state, loaded: true, unavailable: false)
@@ -239,7 +273,8 @@ nonisolated final class MediaContentGenerations: Sendable {
             load(&value)
             guard !value.unavailable, value.state?.legacyMigrationAllowed != false else { return false }
             let account = value.state?.scopes[Self.identifier(scope)]
-            return account?.generation.isEmpty != false && account?.subjects[Self.identifier(subject)] == nil
+            return account?.requiresCanonicalProof != true && account?.historyUnavailable != true
+                && account?.generation.isEmpty != false && account?.subjects[Self.identifier(subject)] == nil
         }
     }
 
@@ -263,12 +298,37 @@ nonisolated final class MediaContentGenerations: Sendable {
         }
     }
 
+    func isScopeUnavailable(_ scope: StableMediaScope) -> Bool {
+        memory.withLock { value in
+            load(&value)
+            return value.unavailable || value.state?.scopes[Self.identifier(scope)]?.historyUnavailable == true
+        }
+    }
+
+    func recoverDurability(scope: StableMediaScope) throws {
+        try memory.withLock { value in
+            load(&value)
+            var state = value.state ?? State()
+            let id = Self.identifier(scope)
+            var account = state.scopes[id] ?? Scope()
+            account.generation = UUID().uuidString
+            account.requiresCanonicalProof = true
+            account.historyUnavailable = true
+            state.scopes[id] = account
+            state.legacyMigrationAllowed = false
+            try persist(state, emergency: true)
+            value = Memory(state: state, loaded: true, unavailable: false)
+        }
+    }
+
+    @discardableResult
     func retire(scope: StableMediaScope, subjects: [MediaDisplayKeyV1.Subject]?, keys: [MediaDisplayKeyV1] = [],
-                retiresSourceRevisions: Bool = true, blocksAccess: Bool = false) throws {
+                retiresSourceRevisions: Bool = true, blocksAccess: Bool = false) throws -> Bool {
         try memory.withLock { value in
             load(&value)
             var state = value.state ?? State()
             let scopeID = Self.identifier(scope)
+            let previousScopeEpoch = value.state?.scopes[scopeID]?.generation ?? ""
             var account = state.scopes[scopeID] ?? Scope()
             let savedKeys = (try? Data(contentsOf: root.appending(path: scopeID).appending(path: "latest.json")))
                 .flatMap { try? JSONDecoder().decode(LaunchViewportSnapshot.self, from: $0) }?.visibleKeys ?? []
@@ -292,44 +352,59 @@ nonisolated final class MediaContentGenerations: Sendable {
                     account.subjects[id] = stored
                 }
             } else { account.generation = UUID().uuidString }
-            if account.subjects.count > 512 {
-                account.generation = UUID().uuidString
-                account.subjects = account.subjects.filter { !$0.value.retiredSources.isEmpty || $0.value.accessBlocked == true || $0.value.canonicalVisibility != nil }
-            }
             state.scopes[scopeID] = account
-            if state.scopes.count > 64 {
-                // A global rollover retires every evicted scope; never return
-                // an evicted account to an earlier empty generation.
-                state.generation = UUID().uuidString; state.legacyMigrationAllowed = false
-                state.scopes = state.scopes.filter { key, value in
-                    key == scopeID || value.subjects.values.contains { !$0.retiredSources.isEmpty || $0.accessBlocked == true || $0.canonicalVisibility != nil }
-                }
+            // Fold only recoverable policy/access records, at actual byte pressure.
+            // The scope epoch denies even subjects not represented in this map.
+            if try JSONEncoder().encode(state).count > 768 << 10 {
+                account.generation = UUID().uuidString
+                account.requiresCanonicalProof = true
+                account.subjects = account.subjects.filter { !$0.value.retiredSources.isEmpty }
+                state.scopes[scopeID] = account
             }
-            do { try persist(state); value = Memory(state: state, loaded: true, unavailable: false) }
+            do {
+                try persist(state)
+                value = Memory(state: state, loaded: true, unavailable: false)
+                return account.generation != previousScopeEpoch
+            }
             catch {
-                value.state = state
-                value.unavailable = true
-                // Removing a stale commit pointer is fail-closed: on restart a
-                // fresh namespace is required, never the failed old journal.
-                let removed = PreviewDiskBudget.withLock {
-                    do {
-                        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-                        return !FileManager.default.fileExists(atPath: file.path)
-                    } catch { return false }
+                // Preserve the old durable negative history. Reserve the remaining
+                // journal space for a tiny deny-all marker for this scope only.
+                var fallback = value.state ?? State()
+                var denied = fallback.scopes[scopeID] ?? Scope()
+                denied.generation = UUID().uuidString
+                denied.requiresCanonicalProof = true
+                denied.historyUnavailable = true
+                fallback.scopes[scopeID] = denied
+                do {
+                    try persist(fallback, emergency: true)
+                    value = Memory(state: fallback, loaded: true, unavailable: false)
+                    #if DEBUG || PHASE4_PERFORMANCE
+                    Logger(subsystem: "com.vexcited.imora", category: "LaunchPreview").error("Retirement capacity denied; scopes=\(state.scopes.count), subjects=\(account.subjects.count), bytes=\((try? JSONEncoder().encode(state).count) ?? -1), persistedScopeDenial=true")
+                    #endif
+                    throw RetirementFailure(journalRemovalSucceeded: false, durableScopeDenied: true)
+                } catch let failure as RetirementFailure { throw failure }
+                catch {
+                    // The checked credential recovery fence is required. Never
+                    // unlink the only durable record of prior negative facts.
+                    value.state = fallback
+                    value.unavailable = true
+                    #if DEBUG || PHASE4_PERFORMANCE
+                    Logger(subsystem: "com.vexcited.imora", category: "LaunchPreview").error("Retirement durability failed; scopes=\(state.scopes.count), subjects=\(account.subjects.count), bytes=\((try? JSONEncoder().encode(state).count) ?? -1), persistedScopeDenial=false")
+                    #endif
+                    throw RetirementFailure(journalRemovalSucceeded: false)
                 }
-                throw RetirementFailure(journalRemovalSucceeded: removed)
             }
         }
     }
 
-    private func persist(_ state: State) throws {
-        try PreviewDiskBudget.withLock { try write(state) }
+    private func persist(_ state: State, emergency: Bool = false) throws {
+        try PreviewDiskBudget.withLock { try write(state, emergency: emergency) }
     }
 
-    private func write(_ state: State) throws {
+    private func write(_ state: State, emergency: Bool) throws {
         PreviewDiskBudget.recoverAbandonedGenerations(root: root)
         let data = try JSONEncoder().encode(state)
-        guard state.scopes.count <= 64, state.scopes.values.allSatisfy({ $0.subjects.count <= 512 }), data.count <= 1 << 20,
+        guard data.count <= (emergency ? 1 << 20 : (1 << 20) - 16_384),
               PreviewDiskBudget.diskUsage(root: root) + PreviewDiskBudget.allocatedBytes(for: data.count) + 4096
                 <= Int64(LaunchPreviewStore.budget) else { throw CocoaError(.fileWriteOutOfSpace) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

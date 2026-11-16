@@ -975,7 +975,6 @@ final class TimelineModel {
             else { return }
             guard let resolution = mutationOverlay.resolve(assets, for: fetch) else { return }
             staleBucketIDs.remove(id)
-            markEphemeralIfLocked(resolution.assets)
             let days = Self.groupByDay(
                 resolution.assets.map(assetProjection),
                 byUploadDate: filter.groupsByUploadDate
@@ -987,6 +986,7 @@ final class TimelineModel {
             if resolution.isAuthoritative {
                 response.authorizePresented(resolution.assets, visibility: filter.visibility, using: client)
             }
+            markEphemeralIfLocked(resolution.assets)
             if resolution.isAuthoritative {
                 cacheBucket(id, payload: payload)
             }
@@ -1786,8 +1786,7 @@ final class TimelineModel {
                    let resolution = mutationOverlay.resolve(fetched.assets, for: fetch),
                    let index = sections.firstIndex(where: { $0.id == id }) {
                     staleBucketIDs.remove(id)
-                    markEphemeralIfLocked(resolution.assets)
-                    let days = Self.groupByDay(
+                            let days = Self.groupByDay(
                         resolution.assets,
                         byUploadDate: filter.groupsByUploadDate
                     )
@@ -1799,6 +1798,7 @@ final class TimelineModel {
                     if resolution.isAuthoritative {
                         fetched.authorizePresented(resolution.assets, visibility: filter.visibility, using: client)
                     }
+                    markEphemeralIfLocked(resolution.assets)
                     if resolution.isAuthoritative {
                         cacheBucket(id, payload: fetched.payload)
                     }
@@ -2031,6 +2031,13 @@ final class TimelineModel {
 
     /// applies metadata without rebuilding row geometry or the viewer index.
     func updateAssets(ids: Set<String>, _ transform: (inout Asset) -> Void) {
+        _ = updateAssetsRecordingRetirements(ids: ids, transform)
+    }
+
+    /// Returned generations belong only to retirements performed synchronously
+    /// by this update, captured before callbacks can start another operation.
+    private func updateAssetsRecordingRetirements(ids: Set<String>, _ transform: (inout Asset) -> Void) -> [String: String] {
+        var ownedRetirements: [String: String] = [:]
         let targetBucketIDs = bucketIDs(containing: ids)
         var changedBucketIDs = Set<String>()
         var changedAssets: [String: Asset] = [:]
@@ -2052,6 +2059,10 @@ final class TimelineModel {
                                 || before.localImageVersion != assets[a].localImageVersion || before.isEdited != assets[a].isEdited
                             ImageLoader.shared.invalidate(asset: before, client: client,
                                 retiresSourceRevisions: contentChanged, blocksAccess: !contentChanged)
+                            if contentChanged, let generation = MediaContentGenerations.shared.current(
+                                scope: client.mediaDisplayScope, subject: .remoteAsset(before.id)) {
+                                ownedRetirements[before.id] = generation
+                            }
                             MediaPresentationCoordinator.shared.cancelCheckpoint()
                         }
                         changedAssets[assets[a].id] = assets[a]
@@ -2068,7 +2079,7 @@ final class TimelineModel {
                 changedBucketIDs.insert(sections[s].id)
             }
         }
-        guard !changedBucketIDs.isEmpty else { return }
+        guard !changedBucketIDs.isEmpty else { return [:] }
         noteProjectionInputsChanged()
         mutationOverlay.rejectFetchesStartedBeforeNextRequest(bucketIDs: changedBucketIDs)
         TimelineAssetProjection.patchRows(
@@ -2083,6 +2094,7 @@ final class TimelineModel {
             indicesByID: flatAssetIndexByID
         )
         onAssetsChanged?(.updated(Array(changedAssets.values)))
+        return ownedRetirements
     }
 
     func setFavoriteForOptimisticAction(
@@ -2444,18 +2456,37 @@ final class TimelineModel {
                     } else if changed { ImageLoadRecovery.shared.contentChanged() }
                     continue
                 }
-                guard let response = try? await client.authenticatedAsset(id: asset.id), let self,
-                      !Task.isCancelled, self.client === client, response.explicitVisibility,
-                      let canonical = response.assets.first, response.matches(client, asset: canonical),
-                      self.containsAsset(asset.id) else { continue }
-                if canonical.isTrashed || canonical.visibility != self.filter.visibility
-                    || canonical.visibility == .locked || canonical.visibility == .hidden {
-                    self.removeAssets(ids: [asset.id])
-                    continue
+                let originalFilter = self?.filter
+                let access = MediaPresentationCoordinator.access(for: client)
+                var expectedOwnGeneration: String?
+                var expectedRevision = asset.thumbhash
+                for attempt in 0..<2 {
+                    guard let self, !Task.isCancelled, self.client === client, self.filter == originalFilter,
+                          self.containsAsset(asset.id), access == MediaPresentationCoordinator.access(for: client) else { break }
+                    if let expectedOwnGeneration {
+                        guard MediaContentGenerations.shared.current(scope: client.mediaDisplayScope,
+                            subject: .remoteAsset(asset.id)) == expectedOwnGeneration,
+                              self.flatAssets.first(where: { $0.id == asset.id })?.thumbhash == expectedRevision else { break }
+                    }
+                    guard let response = try? await client.authenticatedAsset(id: asset.id),
+                          !Task.isCancelled, self.client === client, self.filter == originalFilter,
+                          access == MediaPresentationCoordinator.access(for: client), response.explicitVisibility,
+                          let canonical = response.assets.first, response.matches(client, asset: canonical),
+                          self.containsAsset(asset.id) else { break }
+                    if canonical.isTrashed || canonical.visibility != self.filter.visibility
+                        || (canonical.visibility == .locked && client.lockedMediaLease == nil) || canonical.visibility == .hidden {
+                        self.removeAssets(ids: [asset.id]); break
+                    }
+                    let owned = self.updateAssetsRecordingRetirements(ids: [asset.id]) { $0 = canonical }
+                    response.authorizePresented([canonical], visibility: self.filter.visibility, using: client)
+                    // Only our own synchronous R1→R2 transition permits one
+                    // new HTTP read. Never edit/recapture an old receipt.
+                    guard attempt == 0, canonical.thumbhash != expectedRevision,
+                          let generation = owned[asset.id],
+                          MediaContentGenerations.shared.current(scope: client.mediaDisplayScope,
+                            subject: .remoteAsset(asset.id)) == generation else { break }
+                    expectedOwnGeneration = generation; expectedRevision = canonical.thumbhash
                 }
-                // Metadata/policy is canonical before the positive grant.
-                self.updateAssets(ids: [asset.id]) { $0 = canonical }
-                response.authorizePresented([canonical], visibility: self.filter.visibility, using: client)
             }
         }
     }

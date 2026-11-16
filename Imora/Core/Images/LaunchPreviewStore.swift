@@ -36,7 +36,8 @@ nonisolated struct PreparedImageRecord: Codable, Equatable, Sendable {
     var localProvenance: LocalSurfaceProvenance? = nil
 
     var isQualified: Bool {
-        guard content == .photograph && !bytes.isEmpty
+        guard key.visibilityPolicy != "locked", key.visibilityPolicy != "hidden",
+              content == .photograph && !bytes.isEmpty
             && (min(pixelWidth, pixelHeight) >= key.pixelBucket
                 || nativeResolution?.accepts(width: pixelWidth, height: pixelHeight, key: key) == true)
             && !key.presentationRevision.hasPrefix("draft:")

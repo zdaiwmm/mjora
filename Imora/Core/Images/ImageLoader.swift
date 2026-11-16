@@ -6,7 +6,9 @@ import UIKit
 private nonisolated struct MediaRequestBinding: Sendable {
     static let userInfoKey = ImageRequest.UserInfoKey("imora.contentBinding")
     let key: MediaDisplayKeyV1
-    var isCurrent: Bool { key.isCurrentContent }
+    let requiresElevation: Bool
+    let privateLease: LockedMediaLease?
+    var isCurrent: Bool { key.isCurrentContent && (!requiresElevation || privateLease?.isCurrent == true) }
 }
 
 /// downloads and caches asset thumbnails on top of a nuke pipeline. beyond the
@@ -80,15 +82,45 @@ nonisolated final class ImageLoader: Sendable {
             let added = Set(assetIDs).subtracting(ids); ids.formUnion(assetIDs); return added
         }
         if !newlyLocked.isEmpty, let client = authorization.client.withLock({ $0 }) {
-            if let failure = invalidateSubjects(client: client, subjects: newlyLocked.map { .remoteAsset($0) }, retiresSourceRevisions: false) {
+            let unconfirmed = newlyLocked.filter {
+                MediaContentGenerations.shared.presentationNamespace(scope: client.mediaDisplayScope,
+                    subject: .remoteAsset($0)).visibilityPolicy != "locked"
+            }
+            if !unconfirmed.isEmpty, let failure = invalidateSubjects(client: client,
+                subjects: unconfirmed.map { .remoteAsset($0) }, retiresSourceRevisions: false, blocksAccess: true) {
                 MediaCacheRecovery.handle(client: client, failure: failure)
             }
         }
     }
 
+    func revokePrivateImages(client: ImoraClient) {
+        let requests = observedRequests.withLock { values in
+            let privateRequests = values.filter { _, request in
+                guard let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding else { return false }
+                return binding.key.scope == client.mediaDisplayScope && binding.requiresElevation
+            }
+            for key in privateRequests.keys { values[key] = nil }
+            return Array(privateRequests.values)
+        }
+        for request in requests { pipeline.cache.removeCachedImage(for: request) }
+        visibleTasks.withLock { values in
+            for task in values.values {
+                guard let binding = task.request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding,
+                      binding.key.scope == client.mediaDisplayScope, binding.requiresElevation else { continue }
+                task.cancel()
+            }
+        }
+        authorization.networkTasks.withLock { values in
+            for transfer in values.values where transfer.binding?.key.scope == client.mediaDisplayScope
+                && transfer.binding?.requiresElevation == true { transfer.task.cancel() }
+        }
+    }
+
     func requestKey(for url: URL, targetPixelSize: CGFloat) -> String {
-        let generation = binding(for: url, pixels: targetPixelSize)?.key.contentGeneration ?? ""
-        return "\(url.absoluteString)#\(Self.normalizedPixelSize(targetPixelSize, for: url))#\(generation)"
+        let binding = binding(for: url, pixels: targetPixelSize)
+        let generation = binding?.key.contentGeneration ?? ""
+        let privateSuffix = binding?.requiresElevation == true ? "#elevation:\(binding?.privateLease?.identity ?? "denied")" : ""
+        return "\(url.absoluteString)#\(Self.normalizedPixelSize(targetPixelSize, for: url))#\(generation)\(privateSuffix)"
     }
 
     func cachedImage(for url: URL, targetPixelSize: CGFloat) -> UIImage? {
@@ -175,6 +207,7 @@ nonisolated final class ImageLoader: Sendable {
     func invalidateSubjects(client: ImoraClient, subjects: [MediaDisplayKeyV1.Subject]?, keys: [MediaDisplayKeyV1] = [],
                             retiresSourceRevisions: Bool = true, blocksAccess: Bool = false) -> MediaContentGenerations.RetirementFailure? {
         var persistenceFailure: MediaContentGenerations.RetirementFailure?
+        var scopeTransition = false
         let scope = client.mediaDisplayScope
         let observed = observedRequests.withLock { requests in
             let matching = requests.filter { _, request in
@@ -185,16 +218,26 @@ nonisolated final class ImageLoader: Sendable {
             return Array(matching.values)
         }
         let knownKeys = observed.compactMap { ($0.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.key }
-        do { try MediaContentGenerations.shared.retire(scope: scope, subjects: subjects,
+        do { scopeTransition = try MediaContentGenerations.shared.retire(scope: scope, subjects: subjects,
             keys: retiresSourceRevisions ? keys + knownKeys : [], retiresSourceRevisions: retiresSourceRevisions, blocksAccess: blocksAccess) }
         catch {
             // A failed retirement cannot leave the previous namespace usable.
             // Purge derivative layers only, and retire this runtime authorization.
             pipeline.cache.removeAll(); dataCache?.flush()
             persistenceFailure = error as? MediaContentGenerations.RetirementFailure ?? .init(journalRemovalSucceeded: false)
+            scopeTransition = persistenceFailure?.durableScopeDenied == true
             let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
             if let bytes = try? encoder.encode(scope) {
                 try? FileManager.default.removeItem(at: LaunchPreviewStore.rootDirectory.appending(path: MediaDisplayKeyV1.digest(bytes)))
+            }
+        }
+        if scopeTransition {
+            // Only a scope-wide epoch transition invalidates otherwise stable
+            // mounted subjects. Ordinary subject retirement adds no global churn.
+            Task { @MainActor [weak self, weak client] in
+                guard let self, let client, client.context.isActive,
+                      self.authorization.client.withLock({ $0 === client }) else { return }
+                ImageLoadRecovery.shared.contentChanged()
             }
         }
         for request in observed { pipeline.cache.removeCachedImage(for: request) }
@@ -219,8 +262,14 @@ nonisolated final class ImageLoader: Sendable {
         guard client.context.isActive, authorization.client.withLock({ $0 === client }),
               client.mediaDisplayScope == captured.scope else { return false }
         let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 1)
-        do { return try MediaContentGenerations.shared.authorize(scope: key.scope, subject: key.subject,
-            sourceRevision: key.sourceRevision, captured: captured, visibilityPolicy: asset.visibility.rawValue) }
+        do {
+            let changed = try MediaContentGenerations.shared.authorize(scope: key.scope, subject: key.subject,
+                sourceRevision: key.sourceRevision, captured: captured, visibilityPolicy: asset.visibility.rawValue)
+            if changed, asset.visibility == .timeline || asset.visibility == .archive {
+                _ = authorization.ephemeralAssetIDs.withLock { $0.remove(asset.id) }
+            }
+            return changed
+        }
         catch { return false } // Failed positive publication leaves access blocked.
     }
 
@@ -450,10 +499,13 @@ nonisolated final class ImageLoader: Sendable {
         let revision = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "c" }?.value ?? ""
         let scope = client.mediaDisplayScope, subject = MediaDisplayKeyV1.Subject.remoteAsset(url.pathComponents[index + 1])
         let namespace = MediaContentGenerations.shared.presentationNamespace(scope: scope, subject: subject)
+        let requiresElevation = namespace.visibilityPolicy == "locked"
+            || authorization.ephemeralAssetIDs.withLock { $0.contains(url.pathComponents[index + 1]) }
         return .init(key: .init(scope: scope, subject: subject,
             sourceRevision: revision, presentationRevision: "committed:\(revision)", variant: .grid,
             pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover", orientationRevision: "source", colorProfile: "source",
-            contentGeneration: namespace.generation, visibilityPolicy: namespace.visibilityPolicy))
+            contentGeneration: namespace.generation, visibilityPolicy: namespace.visibilityPolicy),
+            requiresElevation: requiresElevation, privateLease: requiresElevation ? client.lockedMediaLease : nil)
     }
 
     /// decoding straight to a thumbnail keeps memory flat while scrolling -
@@ -467,7 +519,8 @@ nonisolated final class ImageLoader: Sendable {
                 // Trust policy validates host/context first. Only then may a LAN/WAN
                 // route share content; query preserves edited/size/revision semantics.
                 if let key = Self.contentID(scope: client.mediaDisplayScope, components: components) {
-                    request.imageID = key + "|generation:\(binding?.key.contentGeneration ?? "")"
+                    let privateSuffix = binding?.requiresElevation == true ? "|elevation:\(binding?.privateLease?.identity ?? "denied")" : ""
+                    request.imageID = key + "|generation:\(binding?.key.contentGeneration ?? "")" + privateSuffix
                 }
             }
         }
@@ -569,6 +622,7 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
         guard let url = request.url, let client = client.withLock({ $0 }),
               (try? client.authorizedRequest(url: url)) != nil,
               (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { return nil }
+        if (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.requiresElevation == true { return nil }
         if let id = Self.assetID(in: request.url), ephemeralAssetIDs.withLock({ $0.contains(id) }) {
             return nil
         }
@@ -644,7 +698,11 @@ private nonisolated final class AccountImageDataLoader: DataLoading {
                     guard owner.client.withLock({ $0 === client }), binding?.isCurrent != false else { throw ServerTrustError.sessionExpired }
                     didReceiveData(data, response)
                     completion(nil)
-                } catch { completion(error) }
+                } catch {
+                    if case ImoraError.http(let code, _) = error, code == 401 || code == 403,
+                       let client, let lease = binding?.privateLease { client.rejectLockedMediaLease(lease) }
+                    completion(error)
+                }
             }
             values[id] = .init(task: task, binding: binding)
             return task

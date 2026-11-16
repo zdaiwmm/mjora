@@ -22,6 +22,16 @@ nonisolated enum ImoraError: LocalizedError {
     }
 }
 
+/// Runtime-only proof; content identity and persisted visibility are not PIN authorization.
+nonisolated struct LockedMediaLease: Sendable {
+    fileprivate let client: ImoraClient
+    fileprivate let nonce: UUID
+    fileprivate let scope: StableMediaScope
+    let deadline: Date
+    var identity: String { nonce.uuidString }
+    var isCurrent: Bool { client.lockedLeaseMatches(self) }
+}
+
 /// thin async client over the immich http api.
 nonisolated final class ImoraClient: Sendable {
     /// resolved api base, e.g. https://photos.example.com/api
@@ -32,6 +42,59 @@ nonisolated final class ImoraClient: Sendable {
     private let mediaStore = ControlledMediaStore()
     private let verifiedMediaScope = Mutex<StableMediaScope?>(nil)
     private let mediaRecoveryHandler = Mutex<(@MainActor @Sendable (MediaCacheRecovery.Outcome, String?) -> Void)?>(nil)
+    private struct Elevation {
+        var nonce = UUID()
+        var deadline: Date?
+        var scope: StableMediaScope?
+        var expiry: Task<Void, Never>?
+        var observer: (@MainActor @Sendable () -> Void)?
+    }
+    private let elevation = Mutex(Elevation())
+
+    var lockedMediaLease: LockedMediaLease? {
+        guard context.isActive, mediaDisplayScope.accountID != nil else { return nil }
+        let scope = mediaDisplayScope
+        return elevation.withLock { value in
+            guard value.scope == scope, let deadline = value.deadline, deadline > Date() else { return nil }
+            return .init(client: self, nonce: value.nonce, scope: scope, deadline: deadline)
+        }
+    }
+
+    fileprivate func lockedLeaseMatches(_ lease: LockedMediaLease) -> Bool {
+        guard context.isActive, lease.client === self, lease.scope == mediaDisplayScope, lease.deadline > Date() else { return false }
+        return elevation.withLock { $0.nonce == lease.nonce && $0.deadline.map { $0 > Date() } == true }
+    }
+
+    func setLockedMediaObserver(_ observer: (@MainActor @Sendable () -> Void)?) {
+        elevation.withLock { $0.observer = observer }
+    }
+
+    func revokeLockedMediaLease() { revokeLockedMediaLease(expected: nil) }
+
+    func rejectLockedMediaLease(_ lease: LockedMediaLease) {
+        guard lease.client === self else { return }
+        revokeLockedMediaLease(expected: lease.nonce)
+    }
+
+    private func revokeLockedMediaLease(expected: UUID?) {
+        let result = elevation.withLock { value -> (Bool, (@MainActor @Sendable () -> Void)?) in
+            guard expected == nil || value.nonce == expected else { return (false, nil) }
+            value.nonce = UUID(); value.deadline = nil; value.scope = nil
+            value.expiry?.cancel(); value.expiry = nil
+            return (true, value.observer)
+        }
+        guard result.0 else { return }
+        ImageLoader.shared.revokePrivateImages(client: self)
+        if let observer = result.1 { Task { @MainActor in observer() } }
+    }
+
+    private static func elevationDeadline(_ status: AuthStatus) -> Date? {
+        guard status.isElevated, let pin = status.pinExpiresAt.flatMap(APIDate.parse), pin > Date() else { return nil }
+        guard let text = status.expiresAt else { return pin }
+        guard let session = APIDate.parse(text), session > Date() else { return nil }
+        return min(pin, session)
+    }
+
 
     func setMediaRecoveryHandler(_ handler: @escaping @MainActor @Sendable (MediaCacheRecovery.Outcome, String?) -> Void) {
         mediaRecoveryHandler.withLock { $0 = handler }
@@ -145,6 +208,7 @@ nonisolated final class ImoraClient: Sendable {
     }
 
     func invalidate() {
+        revokeLockedMediaLease()
         context.invalidate()
         sessions.withLock { values in values.values.forEach { $0.invalidateAndCancel() }; values.removeAll() }
         Task { await mediaStore.removeAll() }
@@ -310,14 +374,47 @@ nonisolated final class ImoraClient: Sendable {
 
     // MARK: - locked folder session
 
-    func authStatus() async throws -> AuthStatus { try await get("auth/status") }
+    func authStatus() async throws -> AuthStatus {
+        let nonce = elevation.withLock { $0.nonce }, scope = mediaDisplayScope
+        let status: AuthStatus
+        do { status = try await get("auth/status") }
+        catch {
+            if case ImoraError.http(let code, _) = error, code == 401 || code == 403 || code == 404 {
+                revokeLockedMediaLease(expected: nonce)
+            }
+            throw error
+        }
+        try Task.checkCancellation()
+        guard context.isActive, mediaDisplayScope == scope else { throw CancellationError() }
+        let deadline = Self.elevationDeadline(status)
+        let accepted = elevation.withLock { value -> Bool in
+            guard value.nonce == nonce else { return false }
+            value.expiry?.cancel(); value.expiry = nil
+            value.deadline = deadline
+            value.scope = deadline == nil ? nil : scope
+            if let deadline {
+                value.expiry = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) } catch { return }
+                    self?.revokeLockedMediaLease(expected: nonce)
+                }
+            }
+            return true
+        }
+        guard accepted else { throw CancellationError() }
+        if deadline == nil { revokeLockedMediaLease(expected: nonce) }
+        return status
+    }
 
     /// elevates this session; a wrong pin comes back as a 4xx.
     func unlockSession(pinCode: String) async throws {
+        revokeLockedMediaLease()
+        let nonce = elevation.withLock { $0.nonce }
         try await mutate("auth/session/unlock", method: "POST", body: ["pinCode": pinCode])
+        guard elevation.withLock({ $0.nonce == nonce }), context.isActive else { throw CancellationError() }
     }
 
     func lockSession() async throws {
+        revokeLockedMediaLease()
         try await mutate("auth/session/lock", method: "POST", body: Optional<Int>.none)
     }
 
@@ -860,7 +957,8 @@ nonisolated final class ImoraClient: Sendable {
     @concurrent
     func timeBucket(_ bucket: String, filter: TimelineFilter) async throws -> AuthenticatedMediaRead {
         let scope = mediaDisplayScope, session = context.id
-        let captured = MediaContentGenerations.shared.captureAccess(scope: scope)
+        let privateLease = lockedMediaLease
+        let captured = MediaContentGenerations.shared.captureAccess(scope: scope, requiringScopeProof: filter.visibility == .locked)
         var query = filter.queryItems
         query.append(URLQueryItem(name: "timeBucket", value: bucket))
         let data = try await send(path: "timeline/bucket", query: query)
@@ -872,7 +970,7 @@ nonisolated final class ImoraClient: Sendable {
         }
         try Task.checkCancellation()
         return .init(assets: columnar.assets(), payload: data, explicitVisibility: columnar.visibility != nil,
-            client: self, scope: scope, session: session, captured: captured)
+            client: self, scope: scope, session: session, captured: captured, privateLease: privateLease)
     }
 
     // MARK: - assets
@@ -881,12 +979,13 @@ nonisolated final class ImoraClient: Sendable {
 
     func authenticatedAsset(id: String) async throws -> AuthenticatedMediaRead {
         let scope = mediaDisplayScope, session = context.id
-        let captured = MediaContentGenerations.shared.captureAccess(scope: scope)
+        let privateLease = lockedMediaLease
+        let captured = MediaContentGenerations.shared.captureAccess(scope: scope, requiringScopeProof: privateLease != nil)
         let detail = try await assetDetail(id: id)
         try Task.checkCancellation()
         guard detail.id == id else { throw ImoraError.decoding("Asset readback identity mismatch") }
         return .init(assets: [detail.asAsset()], payload: Data(), explicitVisibility: detail.visibility != nil,
-            client: self, scope: scope, session: session, captured: captured)
+            client: self, scope: scope, session: session, captured: captured, privateLease: privateLease)
     }
 
     /// the spatial scene depth map, a grey png where white is nearest.
@@ -2194,16 +2293,19 @@ nonisolated struct AuthenticatedMediaRead: Sendable {
     private let scope: StableMediaScope
     private let session: UUID
     private let captured: MediaContentGenerations.CapturedAccess
+    private let privateLease: LockedMediaLease?
 
     fileprivate init(assets: [Asset], payload: Data, explicitVisibility: Bool, client: ImoraClient,
-                     scope: StableMediaScope, session: UUID, captured: MediaContentGenerations.CapturedAccess) {
+                     scope: StableMediaScope, session: UUID, captured: MediaContentGenerations.CapturedAccess, privateLease: LockedMediaLease?) {
         self.assets = assets; self.payload = payload; self.explicitVisibility = explicitVisibility
         self.client = client; self.scope = scope; self.session = session; self.captured = captured
+        self.privateLease = privateLease
     }
 
     func matches(_ candidate: ImoraClient, asset: Asset) -> Bool {
         candidate === client && client.context.isActive && client.context.id == session
             && client.mediaDisplayScope == scope && scope.accountID != nil && !captured.isEmpty
+            && (asset.visibility != .locked || privateLease?.isCurrent == true)
             && MediaContentGenerations.shared.matchesAccess(scope: scope, subject: .remoteAsset(asset.id), captured: captured)
     }
 
@@ -2211,7 +2313,8 @@ nonisolated struct AuthenticatedMediaRead: Sendable {
     /// visibility. A timeline rollback cannot borrow an archive page's proof.
     @MainActor
     func authorizePresented(_ presented: [Asset], visibility: AssetVisibility?, using candidate: ImoraClient) {
-        guard !captured.isEmpty, explicitVisibility, visibility == .timeline || visibility == .archive else { return }
+        guard !captured.isEmpty, explicitVisibility,
+              visibility == .timeline || visibility == .archive || (visibility == .locked && privateLease?.isCurrent == true) else { return }
         var changed = false
         let canonicalByID = Dictionary(assets.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         for asset in presented where asset.localIdentifier == nil {

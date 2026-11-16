@@ -25,6 +25,7 @@ final class LockedFolderSession {
     }
 
     private(set) var phase: Phase = .unknown
+    private(set) var publicationGeneration = 0
     private(set) var hasPin = false
     private(set) var hasPassword = false
     private(set) var elevatedUntil: Date?
@@ -59,6 +60,11 @@ final class LockedFolderSession {
         let account = client.offlineAccountKey ?? client.apiURL.absoluteString
         self.account = account
         biometricsEnabled = LockedPinStore.exists(account: account)
+        client.setLockedMediaObserver { [weak self] in
+            guard let self else { return }
+            self.publicationGeneration &+= 1
+            if self.client.lockedMediaLease == nil, self.phase == .unlocked { self.enterLockedState() }
+        }
     }
 
     // MARK: - status
@@ -84,10 +90,11 @@ final class LockedFolderSession {
     }
 
     private func apply(_ status: AuthStatus) {
+        publicationGeneration &+= 1
         hasPin = status.pinCode
         hasPassword = status.password
-        elevatedUntil = status.pinExpiresAt.flatMap { APIDate.parse($0) }
-        phase = status.isElevated ? .unlocked : (hasPin ? .locked : .needsSetup)
+        elevatedUntil = client.lockedMediaLease?.deadline
+        phase = client.lockedMediaLease != nil ? .unlocked : (hasPin ? .locked : .needsSetup)
         scheduleExpiry()
     }
 
@@ -111,15 +118,16 @@ final class LockedFolderSession {
 
     func unlock(pin: String) async throws {
         await lockTask?.value
-        try await client.unlockSession(pinCode: pin)
         statusRevision &+= 1
         let revision = statusRevision
-        hasPin = true
-        phase = .unlocked
-        // the unlock answers with nothing; the expiry comes from the status,
-        // and a status that cannot be fetched leaves the elevation as is.
-        if let status = try? await client.authStatus(), revision == statusRevision {
+        do {
+            try await client.unlockSession(pinCode: pin)
+            let status = try await client.authStatus()
+            guard revision == statusRevision, client.lockedMediaLease != nil else { throw CancellationError() }
             apply(status)
+        } catch {
+            if revision == statusRevision { enterLockedState() }
+            throw error
         }
     }
 
@@ -168,6 +176,8 @@ final class LockedFolderSession {
     }
 
     private func enterLockedState() {
+        client.revokeLockedMediaLease()
+        publicationGeneration &+= 1
         statusRevision &+= 1
         expiryTask?.cancel()
         expiryTask = nil
@@ -227,6 +237,9 @@ final class LockedFolderSession {
     }
 
     func shutdown() {
+        client.setLockedMediaObserver(nil)
+        client.revokeLockedMediaLease()
+        publicationGeneration &+= 1
         expiryTask?.cancel()
         lockTask?.cancel()
         disableBiometrics()
