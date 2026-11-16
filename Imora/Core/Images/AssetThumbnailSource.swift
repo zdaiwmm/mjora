@@ -25,9 +25,12 @@ nonisolated struct AssetThumbnailSource {
         localIdentifier: String?,
         pairedLocalIdentifier: String?,
         pairedRemoteIdentifier: String?,
-        unavailableLocalIdentifier: String?
+        unavailableLocalIdentifier: String?,
+        isEdited: Bool = false
     ) {
-        self.localIdentifier = localIdentifier ?? pairedLocalIdentifier
+        // A remote edit's current render is not the paired device original.
+        // A device-owned asset still uses its own current PhotoKit rendering.
+        self.localIdentifier = localIdentifier ?? (isEdited ? nil : pairedLocalIdentifier)
         remoteIdentifier = localIdentifier == nil ? assetID : pairedRemoteIdentifier
         // a local-only tile has no alternate source. keep its image view alive
         // so its preview remains visible and a later recovery can retry it.

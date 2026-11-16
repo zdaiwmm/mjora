@@ -1086,6 +1086,74 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         await finish()
     }
 
+    func testEditedPairedSwiftUITileShowsCurrentRemotePixels() async throws {
+        let (localID, original) = try await createSurfaceFixture()
+        let localRevision = try XCTUnwrap(LocalImageLoader.currentModificationRevision(localID))
+        let userID = "edited-pair-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let blue = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 640), format: format).image { context in
+            UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 640, height: 640))
+        }
+        let blueBytes = try XCTUnwrap(blue.jpegData(compressionQuality: 0.9))
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: blueBytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "edited-pair", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), backup = try XCTUnwrap(session.backup)
+        var value = asset(); value.isEdited = true
+        // Model a still-mounted pairing map racing a remote edit; this does not
+        // create or modify a backup proof or any external asset.
+        backup.adoptLaunchSelections([.init(localIdentifier: localID, modificationRevision: localRevision, remoteIdentifier: value.id)])
+        let scope = AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: value.thumbhash, pixels: 416)
+        LocalImageLoader.shared.installPrepared(original, localIdentifier: localID, targetPixelSize: 416,
+            cacheScope: scope, permission: LocalImageLoader.shared.permissionGeneration)
+        let root = AssetTile(asset: value, targetPixelSize: 416).frame(width: 132, height: 132).environment(session)
+        let host = UIHostingController(rootView: root)
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        host.view.layoutIfNeeded()
+        func pixel() throws -> [UInt8] {
+            let image = UIGraphicsImageRenderer(bounds: host.view.bounds, format: format).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: false)
+            }
+            let cg = try XCTUnwrap(image.cgImage)
+            let point = CGRect(x: host.view.bounds.midX.rounded(.down), y: host.view.bounds.midY.rounded(.down), width: 1, height: 1)
+            let crop = try XCTUnwrap(cg.cropping(to: point))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(crop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return pixel
+        }
+        do {
+            for _ in 0..<200 {
+                let color = try pixel()
+                if color[2] > 180 && color[0] < 80 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let displayed = try pixel()
+            XCTAssertGreaterThan(displayed[2], 180, "A current remote edit must display its blue endpoint render")
+            XCTAssertLessThan(displayed[0], 80, "The old red paired local original must not replace the committed remote edit")
+            XCTAssertTrue(server.received.contains { $0.path.contains("/thumbnail") })
+        } catch {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false); throw error
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+        await session.logOut(reportRemoteFailure: false)
+    }
+
     func testNewerStatusIssuedBeforeInvalidAcceptanceGrantsNewProducer() async throws {
         let invalidGate = DispatchSemaphore(value: 0), newerGate = DispatchSemaphore(value: 0)
         let reads = Mutex(0), held = Mutex<CheckedContinuation<Void, Never>?>(nil), reached = Mutex(false)

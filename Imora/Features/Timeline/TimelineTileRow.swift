@@ -503,7 +503,8 @@ final class TimelineTileView: UIView {
             pairedRemoteIdentifier: asset.localIdentifier.flatMap {
                 backup?.remoteIdentifierByLocalId[$0]
             },
-            unavailableLocalIdentifier: unavailableGeneration == generation ? unavailableLocalIdentifier : nil
+            unavailableLocalIdentifier: unavailableGeneration == generation ? unavailableLocalIdentifier : nil,
+            isEdited: asset.isEdited == true
         )
         projectImage(asset: asset, source: source, client: session.client, generation: generation, targetPixelSize: targetPixelSize)
         updateBackupState(asset: asset, backup: showsBackupBadge ? backup : nil)

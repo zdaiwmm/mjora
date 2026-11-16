@@ -191,7 +191,7 @@ final class ThumbnailPrefetcher {
         if let localIdentifier = asset.localIdentifier {
             return .local(localIdentifier, scope)
         }
-        if let localIdentifier = backup?.localIdentifierByRemoteId[asset.id] {
+        if asset.isEdited != true, let localIdentifier = backup?.localIdentifierByRemoteId[asset.id] {
             return .paired(localIdentifier, scope)
         }
         return .remote(client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash))

@@ -1998,7 +1998,8 @@ struct AssetViewerScreen: View {
         var remote: Set<URL> = []
         var local: Set<String> = []
         for asset in assets[lower...upper] {
-            if let localIdentifier = asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id] {
+            let paired = asset.isEdited == true ? nil : session.backup?.localIdentifierByRemoteId[asset.id]
+            if let localIdentifier = asset.localIdentifier ?? paired {
                 if !asset.isVideo { local.insert(localIdentifier) }
             } else if let client = session.client {
                 remote.insert(
@@ -4269,7 +4270,9 @@ private struct AssetPage: View {
     /// photo. the index only pairs assets whose server copy still matches.
     private var deviceIdentifier: String? {
         guard !localUnavailable else { return nil }
-        return asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id]
+        if let localIdentifier = asset.localIdentifier { return localIdentifier }
+        guard asset.isEdited != true else { return nil }
+        return session.backup?.localIdentifierByRemoteId[asset.id]
     }
 
     var body: some View {

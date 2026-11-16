@@ -508,7 +508,8 @@ struct AssetTile: View {
                 session.backup?.remoteIdentifierByLocalId[$0]
             },
             unavailableLocalIdentifier: unavailableGeneration == ImageLoadRecovery.shared.generation
-                ? unavailableLocalIdentifier : nil
+                ? unavailableLocalIdentifier : nil,
+            isEdited: asset.isEdited == true
         )
     }
 
