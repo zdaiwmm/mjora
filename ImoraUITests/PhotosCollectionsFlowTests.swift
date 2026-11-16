@@ -187,6 +187,14 @@ final class PhotosCollectionsFlowTests: XCTestCase {
     func testNativePhotosMenusSelectionAndSourceSwitch() throws {
         let app = try launch()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
+        if !app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 20) {
+            let probe = app.scrollViews["phase4-launch-grid-probe"].value as? String ?? ""
+            let tiles = app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex
+                .compactMap { $0.value as? String }.filter { !$0.isEmpty }.joined(separator: "\n")
+            let trace = XCTAttachment(string: probe + "\n" + tiles)
+            trace.name = "initial-photo-readiness"; trace.lifetime = .keepAlways; add(trace)
+            XCTFail("The initial gallery must finish preparing its visible photos")
+        }
         XCTAssertFalse(app.segmentedControls["photos-source-picker"].exists)
         XCTAssertFalse(app.tabBars.buttons["图库"].exists)
         snapshot(app, "native-photos-home")
@@ -198,6 +206,13 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
         app.buttons["timeline-select"].tap()
+        let share = app.buttons["selection-share"]
+        let trash = app.buttons["selection-trash"]
+        let selectionPrompt = app.staticTexts["选择照片和视频"]
+        XCTAssertTrue(selectionPrompt.waitForExistence(timeout: 5))
+        XCTAssertEqual(share.frame.height, trash.frame.height, accuracy: 1)
+        XCTAssertEqual(share.frame.height, 46, accuracy: 1)
+        XCTAssertEqual(selectionPrompt.frame.midY, share.frame.midY, accuracy: 1)
         let visible = tiles.allElementsBoundByIndex.first {
             $0.isHittable && $0.frame.midY > 150 && $0.frame.midY < app.frame.height - 120
         }
@@ -223,6 +238,60 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         snapshot(app, "native-device-photos")
         app.buttons["photos-source-menu"].tap(); app.buttons["云端照片"].tap()
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
+    }
+
+    func testSortPaletteShowsTitlesAndSelectionForBothOrders() throws {
+        let app = try launch()
+        app.buttons["photos-sort-filter"].tap()
+        let added = app.buttons["添加日期"]
+        let captured = app.buttons["拍摄日期"]
+        XCTAssertTrue(added.waitForExistence(timeout: 5))
+        XCTAssertTrue(captured.exists)
+        snapshot(app, "feedback-sort-captured-selected")
+        added.tap()
+        app.buttons["photos-sort-filter"].tap()
+        snapshot(app, "feedback-sort-added-selected")
+        captured.tap()
+    }
+
+    func testCloudFavoritesScreenshotsAndTrashConfirmation() throws {
+        let app = try launch()
+        app.buttons["photos-sort-filter"].tap()
+        app.buttons["个人收藏"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 20))
+        XCTAssertFalse(app.staticTexts["无法加载"].exists, "Favorites must load without an unsupported partner predicate")
+        snapshot(app, "feedback-cloud-favorites")
+        app.buttons["photos-sort-filter"].tap()
+        app.buttons["截屏"].tap()
+        XCTAssertTrue(app.staticTexts["photos-filter-count"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.descendants(matching: .any)["photos-screenshot-loading"].firstMatch.waitForNonExistence(timeout: 20))
+        XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["无法加载照片"].exists)
+        XCTAssertFalse(app.staticTexts["无法完成此筛选"].exists)
+        XCTAssertFalse(app.staticTexts["可在本机照片中使用"].exists)
+        snapshot(app, "feedback-cloud-screenshots")
+        app.buttons["photos-sort-filter"].tap()
+        app.buttons["所有项目"].tap()
+        app.buttons["shell-albums"].tap()
+        let collections = app.scrollViews["collections-home"]
+        XCTAssertTrue(collections.waitForExistence(timeout: 10))
+        let trash = app.buttons["collections-trash"]
+        for _ in 0..<6 where !trash.exists || !trash.isHittable {
+            collections.swipeUp()
+        }
+        collections.swipeUp()
+        XCTAssertTrue(trash.isHittable)
+        XCTAssertLessThanOrEqual(trash.frame.maxY, app.buttons["shell-albums"].frame.minY,
+                                 "The bottom collection must remain above the floating navigation")
+        snapshot(app, "feedback-collections-bottom-clearance")
+        tap(app, "collections-trash")
+        let more = app.navigationBars.buttons["更多"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
+        let deleteAll = app.buttons["全部删除"].firstMatch
+        XCTAssertTrue(deleteAll.waitForExistence(timeout: 5)); deleteAll.tap()
+        XCTAssertTrue(app.buttons["全部删除"].firstMatch.waitForExistence(timeout: 5))
+        snapshot(app, "feedback-trash-delete-all-confirmation")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.75)).tap()
     }
 
     func testCollectionsPreservesUtilitiesAndAlbumCreation() throws {
@@ -299,7 +368,83 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(app.scrollViews["collections-home"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "The native tab bar must not duplicate the compact glass navigation")
         XCTAssertFalse(app.searchFields.firstMatch.exists, "Global photo search belongs to its dedicated tab")
+        let avatar = app.buttons["profile-avatar"]
+        XCTAssertEqual(avatar.frame.width, avatar.frame.height, accuracy: 1,
+                       "The avatar's glass background must remain circular")
         snapshot(app, "feedback-collections-single-navigation")
+    }
+
+    func testPolishedViewerSearchMenuPeriodsAndFullScreenMap() throws {
+        let app = try launch()
+        defer { app.terminate() }
+        app.buttons["photos-source-menu"].tap()
+        chooseSourceItem(app, "云端照片")
+        XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 25))
+        let tiles = app.buttons.matching(identifier: "asset-tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 20))
+        let tile = try XCTUnwrap(tiles.allElementsBoundByIndex.first {
+            $0.isHittable && $0.frame.midY > 200 && $0.frame.midY < 600
+        })
+        tile.tap()
+        let close = app.buttons["viewer-close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 1))
+        let viewer = app.descendants(matching: .any)["asset-viewer"].firstMatch
+        let first = try XCTUnwrap(viewer.value as? String)
+        let strip = app.descendants(matching: .any)["viewer-carousel"].firstMatch
+        XCTAssertTrue(strip.waitForExistence(timeout: 1))
+        XCTAssertGreaterThanOrEqual(strip.frame.height, 50)
+        app.swipeLeft()
+        XCTAssertNotEqual(viewer.value as? String, first, "Paging must work as soon as the viewer opens")
+        let paged = viewer.value as? String
+        strip.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.85))
+            .press(forDuration: 0.1, thenDragTo: strip.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.85)))
+        XCTAssertNotEqual(viewer.value as? String, paged, "The strip's lower hit area must scrub the pager")
+        snapshot(app, "polish-viewer-after-filmstrip-scrub")
+        app.swipeUp()
+        snapshot(app, "polish-viewer-information")
+        app.buttons["viewer-info"].firstMatch.tap()
+        close.tap()
+
+        let visible = try XCTUnwrap(tiles.allElementsBoundByIndex.first {
+            $0.isHittable && $0.frame.midY > 200 && $0.frame.midY < 600
+        })
+        visible.press(forDuration: 0.6)
+        let share = app.buttons["共享"].firstMatch
+        XCTAssertTrue(share.waitForExistence(timeout: 5))
+        let more = app.buttons["更多"].firstMatch
+        XCTAssertTrue(more.exists)
+        XCTAssertTrue(app.frame.contains(more.frame), "The complete context menu must fit on screen")
+        snapshot(app, "polish-complete-thumbnail-menu")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.1)).tap()
+        app.buttons["photos-search"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 1))
+        XCTAssertFalse(app.segmentedControls["photos-source-picker"].exists)
+        XCTAssertFalse(app.buttons["photos-source-menu"].exists)
+        snapshot(app, "polish-search-immediate-keyboard")
+        app.terminate()
+
+        let reopened = try launch()
+        let grid = reopened.scrollViews.firstMatch
+        grid.swipeDown()
+        let periods = reopened.segmentedControls["photos-period-picker"]
+        if !periods.exists { grid.swipeDown() }
+        XCTAssertTrue(periods.waitForExistence(timeout: 5))
+        for title in ["年", "月", "全部"] {
+            periods.buttons[title].tap()
+            snapshot(reopened, "polish-period-" + title)
+        }
+        let homeButton = reopened.buttons["photos-show-navigation"]
+        if homeButton.exists { homeButton.tap() }
+        reopened.buttons["shell-albums"].tap()
+        let home = reopened.scrollViews["collections-home"]
+        let map = reopened.buttons["collections-places-map"]
+        for _ in 0..<8 where !map.isHittable { home.swipeUp() }
+        XCTAssertTrue(map.isHittable); map.tap()
+        XCTAssertFalse(reopened.buttons["shell-albums"].isHittable)
+        XCTAssertTrue(reopened.buttons["apple-maps-enable"].exists || reopened.buttons["map-settings"].exists,
+                      "Map preview must navigate directly to the map, including its existing consent gate")
+        snapshot(reopened, "polish-collections-full-screen-map")
+        reopened.terminate()
     }
 
     func testCollectionTimelineSelectionOwnsBottomControls() throws {
@@ -358,7 +503,8 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertFalse(picker.exists)
         snapshot(app, "feedback-newest-navigation-restored")
         app.buttons["photos-search"].tap()
-        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2), "Entering search must focus the field immediately")
         snapshot(app, "feedback-search-transition")
     }
 
@@ -397,7 +543,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(year.waitForExistence(timeout: 10))
         snapshot(app, "native-years")
         year.tap()
-        let months = app.buttons.matching(NSPredicate(format: "identifier MATCHES '^photos-period-[0-9]{4}-[0-9]{2}$'"))
+        let months = app.buttons.matching(NSPredicate(format: "identifier MATCHES '^photos-period-(photo-|day-)?[0-9]{4}-[0-9]{2}.*$'"))
         let monthReady = NSPredicate { _, _ in months.allElementsBoundByIndex.contains(where: \.isHittable) }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: monthReady, object: nil)], timeout: 5), .completed)
         snapshot(app, "native-months")

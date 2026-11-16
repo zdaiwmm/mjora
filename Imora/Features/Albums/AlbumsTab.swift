@@ -67,9 +67,20 @@ struct AlbumsTab: View {
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(.hidden, for: .navigationBar)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(.ultraThinMaterial)
+                        .mask(LinearGradient(stops: [.init(color: .black, location: 0),
+                                                     .init(color: .black, location: 0.25),
+                                                     .init(color: .clear, location: 1)],
+                                             startPoint: .top, endPoint: .bottom))
+                        .frame(height: 130)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Text("Albums").font(.largeTitle.bold()).fixedSize()
+                        Text("Collections").font(.largeTitle.bold()).fixedSize()
                             .dynamicTypeSize(...DynamicTypeSize.large)
                     }
                     .sharedBackgroundVisibility(.hidden)
@@ -84,8 +95,12 @@ struct AlbumsTab: View {
                     }
                     ToolbarSpacer(.fixed, placement: .topBarTrailing)
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { showSettings = true } label: { ProfileAvatar(size: 36) }
-                            .accessibilityIdentifier("profile-avatar")
+                        Button { showSettings = true } label: {
+                            ProfileAvatar(size: 30).frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular.interactive(), in: .circle)
+                        .accessibilityIdentifier("profile-avatar")
                     }
                     .sharedBackgroundVisibility(.hidden)
                 }
@@ -99,6 +114,7 @@ struct AlbumsTab: View {
                 .navigationDestination(for: CollectionsRoute.self) { route in
                     switch route {
                     case .albums: allAlbumsPage
+                    case .map: MapScreen()
                     case .recent:
                         TimelineScreen(title: String(localized: "Recently Added"),
                                        filter: TimelineFilter(orderBy: "createdAt"), showsLargeTitle: false)

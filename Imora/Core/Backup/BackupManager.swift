@@ -1023,9 +1023,9 @@ final class BackupManager {
     private func updateChangeObserver() {
         if PhotoLibraryService.hasFullAccess {
             guard changeObserver == nil else { return }
-            let observer = LibraryChangeObserver { [weak self] in
+            let observer = LibraryChangeObserver { [weak self] change in
                 guard let self else { return }
-                Task { @MainActor in self.libraryChanged() }
+                Task { @MainActor in self.libraryChanged(change) }
             }
             PHPhotoLibrary.shared().register(observer)
             changeObserver = observer
@@ -1035,8 +1035,8 @@ final class BackupManager {
         }
     }
 
-    private func libraryChanged() {
-        LocalImageLoader.shared.noteLibraryChange()
+    private func libraryChanged(_ change: PHChange) {
+        LocalImageLoader.shared.noteLibraryChange(change)
         localChanged()
         request(.localChange)
         if runTask != nil { requestRecentBackup() }
@@ -3006,14 +3006,14 @@ extension BackupManager: ContinuedWorkload {
 
 /// forwards photokit change notifications; registration is managed by backupmanager.
 private final class LibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserver, Sendable {
-    private let onChange: @Sendable () -> Void
+    private let onChange: @Sendable (PHChange) -> Void
 
-    init(onChange: @escaping @Sendable () -> Void) {
+    init(onChange: @escaping @Sendable (PHChange) -> Void) {
         self.onChange = onChange
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
-        onChange()
+        onChange(changeInstance)
     }
 }
 

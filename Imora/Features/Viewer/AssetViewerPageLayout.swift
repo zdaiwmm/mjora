@@ -24,7 +24,7 @@ nonisolated struct AssetViewerMediaGeometry: Equatable, Sendable {
 /// Resolves viewer chrome from semantic state in one place. The transport bar
 /// has a separate reservation flag so loading, hiding chrome, or opening
 /// information never changes a playable asset's vertical viewport mid-
-/// transition. Videos and live photos both reserve it.
+/// transition. Live controls live above the media instead.
 nonisolated struct AssetViewerChromePresentation: Equatable, Sendable {
     let mountsTopToolbarItems: Bool
     let showsNavigationBar: Bool
@@ -56,7 +56,7 @@ nonisolated struct AssetViewerChromePresentation: Equatable, Sendable {
         mountsTopToolbarItems = isChromeVisible && !isContextPreview && mediaIsUnobstructed
         showsNavigationBar = !isContextPreview && (isCompact || !isInformationPresented)
         showsViewerBottomBar = canShowChrome && (isCompact || !isInformationPresented)
-        reservesTransportControls = isPlayable && !isContextPreview
+        reservesTransportControls = isPlayable && !isLivePhoto && !isContextPreview
         showsTransportControls = reservesTransportControls
             && canShowChrome
             && mediaIsUnobstructed

@@ -214,10 +214,12 @@ struct SelectionControlBar: View {
     let onTrash: () async -> Void
     /// only owners may trash, see `SelectionMoreMenu.ownerActionsDisabled`.
     var trashDisabled = false
+    var allowsAllTrashActions = false
 
     @State private var confirmsTrash = false
 
-    private var actionsDisabled: Bool { isWorking || count == 0 }
+    private var operatesOnAllTrash: Bool { allowsAllTrashActions && filter.isTrashed == true && count == 0 }
+    private var actionsDisabled: Bool { isWorking || (count == 0 && !operatesOnAllTrash) }
 
     /// trash grids and the locked folder delete for good: neither has a
     /// trash to move to.
@@ -230,7 +232,7 @@ struct SelectionControlBar: View {
             ZStack {
                 HStack(spacing: 12) {
                     if let onRestore {
-                        circleButton("arrow.uturn.backward", String(localized: "Restore")) {
+                        circleButton("arrow.uturn.backward", operatesOnAllTrash ? String(localized: "Restore All") : String(localized: "Restore")) {
                             Task { await onRestore() }
                         }
                     } else {
@@ -250,6 +252,7 @@ struct SelectionControlBar: View {
     }
 
     private var trashConfirmationTitle: String {
+        if operatesOnAllTrash { return String(localized: "Permanently delete everything in the trash?") }
         let noun = mediaCounts.text
         return deletesPermanently
             ? String(localized: "Permanently Delete \(noun)?")
@@ -271,7 +274,7 @@ struct SelectionControlBar: View {
             titleVisibility: .visible
         ) {
             Button(
-                deletesPermanently ? "Delete Permanently" : "Move to Trash",
+                operatesOnAllTrash ? "Delete All" : (deletesPermanently ? "Delete Permanently" : "Move to Trash"),
                 role: .destructive
             ) {
                 Task { await onTrash() }
@@ -286,7 +289,7 @@ struct SelectionControlBar: View {
         .glassEffect(.regular, in: .circle)
         .opacity(actionsDisabled || trashDisabled ? 0.5 : 1)
         .disabled(actionsDisabled || trashDisabled)
-        .accessibilityLabel(deletesPermanently ? "Delete Permanently" : "Move to Trash")
+        .accessibilityLabel(operatesOnAllTrash ? "Delete All" : (deletesPermanently ? "Delete Permanently" : "Move to Trash"))
         .accessibilityIdentifier("selection-trash")
     }
 
@@ -298,7 +301,7 @@ struct SelectionControlBar: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
-                    .frame(height: 40)
+                    .frame(height: 46)
                     .glassEffect(.regular, in: .capsule)
             } else {
                 Button(action: onShowSelected) {
@@ -310,7 +313,7 @@ struct SelectionControlBar: View {
                         .monospacedDigit()
                         .contentTransition(.numericText())
                         .padding(.horizontal, 16)
-                        .frame(height: 40)
+                        .frame(height: 46)
                         .contentShape(.capsule)
                 }
                 .buttonStyle(.plain)
@@ -332,6 +335,7 @@ struct SelectionControlBar: View {
         Button(role: role, action: action) {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .medium))
+                .frame(width: 24, height: 24)
                 .frame(width: 46, height: 46)
                 .contentShape(.circle)
         }
@@ -408,14 +412,14 @@ struct SelectedAssetsSheet: View {
     private func tile(_ asset: Asset) -> some View {
         let isSelected = selection.contains(asset.id)
         return AssetTile(asset: asset)
-            .overlay(alignment: .topLeading) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, isSelected ? Color.accentColor : .black.opacity(0.25))
-                    .contentTransition(.symbolEffect(.replace))
-                    .animation(.snappy(duration: 0.22), value: isSelected)
-                    .padding(6)
+            .overlay(alignment: .bottomTrailing) {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .blue)
+                        .padding(6)
+                }
             }
             .contentShape(.rect)
             .onTapGesture {

@@ -187,7 +187,7 @@ struct CleanupScreen: View {
             if minutes >= 1 { parts.append(String(localized: "About \(CleanupText.count(minutes, unit: .minute)).")) }
         }
         if let busiest = peek.busiestYear {
-            parts.append(peek.city.map { String(localized: "\(busiest) in \($0) has the most.") } ?? String(localized: "\(busiest) has the most."))
+            parts.append(peek.city.map { String(localized: "\(busiest) in \(PhotoPlaceName.localized($0)) has the most.") } ?? String(localized: "\(busiest) has the most."))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }

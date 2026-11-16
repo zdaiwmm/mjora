@@ -13,22 +13,27 @@ final class MapMarkerCache {
         let fetchedAt: Date
     }
 
-    private var entries: [MapMarkerOptions: Entry] = [:]
-    private var inFlight: [MapMarkerOptions: Task<[MapMarker], Error>] = [:]
+    private struct Key: Hashable {
+        let session: UUID
+        let options: MapMarkerOptions
+    }
+    private var entries: [Key: Entry] = [:]
+    private var inFlight: [Key: Task<[MapMarker], Error>] = [:]
     private let lifetime: TimeInterval = 300
     /// a full marker set can be tens of megabytes; combos beyond these are
     /// dead weight from a settings sheet exploration.
     private let entryLimit = 2
 
     func markers(client: ImoraClient, options: MapMarkerOptions) async throws -> [MapMarker] {
-        if let entry = entries[options], Date().timeIntervalSince(entry.fetchedAt) < lifetime {
+        let key = Key(session: client.context.id, options: options)
+        if let entry = entries[key], Date().timeIntervalSince(entry.fetchedAt) < lifetime {
             return entry.markers
         }
-        if let task = inFlight[options] { return try await task.value }
+        if let task = inFlight[key] { return try await task.value }
 
         let task = Task { try await client.mapMarkers(options) }
-        inFlight[options] = task
-        defer { inFlight[options] = nil }
+        inFlight[key] = task
+        defer { inFlight[key] = nil }
         let markers = try await task.value
         // evict on write: expired entries and all but the freshest combos.
         entries = entries.filter { Date().timeIntervalSince($0.value.fetchedAt) < lifetime }
@@ -36,7 +41,8 @@ final class MapMarkerCache {
               let oldest = entries.min(by: { $0.value.fetchedAt < $1.value.fetchedAt }) {
             entries[oldest.key] = nil
         }
-        entries[options] = Entry(markers: markers, fetchedAt: Date())
+        guard client.context.isActive else { throw CancellationError() }
+        entries[key] = Entry(markers: markers, fetchedAt: Date())
         return markers
     }
 
