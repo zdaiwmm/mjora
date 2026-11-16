@@ -2333,7 +2333,45 @@ nonisolated final class ImoraClient: Sendable {
     }
 
     func acceptsChunkedUploads() async -> Bool {
-        ServerCapabilities(identity: await serverIdentity()).supportsChunkedUploads
+        let identity = await serverIdentity()
+        return identity?.serverFeatures?.backgroundUploadsV1 == true || ServerCapabilities(identity: identity).supportsChunkedUploads
+    }
+
+    func acceptsBackgroundUploads() async -> Bool {
+        await serverIdentity()?.serverFeatures?.backgroundUploadsV1 == true
+    }
+
+    @concurrent
+    func openBackgroundUpload(_ upload: AssetUploadRequest, filename: String, size: Int64) async throws -> BackgroundUploadState {
+        var body = Dictionary(uniqueKeysWithValues: upload.form.fields.map { ($0.name, AnyEncodable($0.value)) })
+        body["filename"] = AnyEncodable(filename)
+        body["size"] = AnyEncodable(size)
+        body["checksum"] = AnyEncodable(upload.checksum)
+        let data = try await send(path: "assets/background-uploads", method: "POST", body: JSONEncoder().encode(body))
+        return try JSONDecoder().decode(BackgroundUploadState.self, from: data)
+    }
+
+    @concurrent
+    func backgroundUploadStatus(_ id: String) async throws -> BackgroundUploadState {
+        let data = try await send(path: "assets/background-uploads/\(id)/status", method: "POST")
+        return try JSONDecoder().decode(BackgroundUploadState.self, from: data)
+    }
+
+    @concurrent
+    func uploadBackgroundPart(id: String, capability: String, offset: Int64, bodyURL: URL,
+                              upload: AssetUploadRequest, account: String, source: BackupEntry,
+                              lifetime: BackgroundUploader.RunLifetime?,
+                              onByteProgress: (@Sendable (UploadByteProgress) -> Void)?,
+                              onProgress: (@Sendable (Double) -> Void)?) async throws {
+        var request = URLRequest(url: ServerRoute.resolve(apiURL.appending(path: "assets/background-uploads/\(id)/parts/\(offset)")))
+        request.httpMethod = "PUT"
+        request.allowsCellularAccess = await MainActor.run { BackupManager.allowsDaemonCellular }
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(capability, forHTTPHeaderField: "X-Upload-Capability")
+        let ticket = BackgroundUploader.Ticket(account: account, localId: upload.deviceAssetId,
+            isMotion: upload.isMotion, bodyPath: bodyURL.path, source: source, isChunk: true, isSealed: true)
+        _ = try await BackgroundUploader.shared.upload(request, fromFile: bodyURL, ticket: ticket,
+            context: context, lifetime: lifetime, onByteProgress: onByteProgress, onProgress: onProgress)
     }
 
     /// imora's resumable upload. the server finds an open session by

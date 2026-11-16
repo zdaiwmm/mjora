@@ -4,6 +4,7 @@ import SwiftUI
 /// horizontal "on this day" and birthday carousel above the main timeline.
 struct MemoryLane: View {
     @Environment(SessionStore.self) private var session
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var showsHeading = true
     var cardWidth: CGFloat = 148
     var cardHeight: CGFloat = 196
@@ -15,12 +16,25 @@ struct MemoryLane: View {
     @State private var memories: [Memory] = []
     @State private var hasLoaded = false
     @State private var loadFailed = false
-    @State private var viewer = ViewerPresentation()
+    @State private var slideshow: MemorySlideshowRoute?
     @Namespace private var zoomNamespace
 
     var body: some View {
-        @Bindable var viewer = viewer
+        content
+            .task(id: session.client?.offlineAccountKey) {
+                memories = []
+                hasLoaded = false
+                await load()
+            }
+            // Keep the presentation host alive while loading/empty states change.
+            .fullScreenCover(item: $slideshow) { route in
+                MemorySlideshowScreen(memory: route.memory)
+                    .modifier(MemoryMovieTransition(sourceID: "movie-\(route.memory.id)",
+                                                    namespace: zoomNamespace, reduced: reduceMotion))
+            }
+    }
 
+    @ViewBuilder private var content: some View {
         if session.preferences?.memoriesEnabled == false {
             Color.clear.frame(height: 0)
         } else if !memories.isEmpty {
@@ -32,31 +46,49 @@ struct MemoryLane: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(memories) { memory in
-                            if let first = memory.assets.first {
-                                Button {
-                                    openMemory(memory)
-                                } label: {
-                                    memoryCard(memory, cover: first)
-                                        .matchedTransitionSource(id: first.id, in: zoomNamespace)
-                                }
-                                .buttonStyle(PressableCardStyle())
-                                .contextMenu {
-                                    Button {
+                            if let first = memory.playableAssets.first {
+                                ZStack(alignment: .bottomTrailing) {
+                                    NavigationLink {
+                                        MemoryCollectionScreen(memory: memory)
+                                            .modifier(MemoryMovieTransition(sourceID: memory.id,
+                                                                            namespace: zoomNamespace, reduced: reduceMotion))
+                                    } label: {
+                                        memoryCard(memory, cover: first)
+                                            .contentShape(.rect)
+                                            .matchedTransitionSource(id: memory.id, in: zoomNamespace)
+                                    }
+                                    .buttonStyle(PressableCardStyle())
+                                    .contentShape(.rect)
+                                    .accessibilityLabel(memory.displayTitle)
+                                    .accessibilityIdentifier("memory-card-\(memory.id)")
+                                    .contextMenu {
+                                        Button {
+                                            Task { await toggleSaved(memory) }
+                                        } label: {
+                                            memory.isSaved == true
+                                                ? Label("Remove from Saved", systemImage: "bookmark.slash")
+                                                : Label("Save Memory", systemImage: "bookmark")
+                                        }
+                                        Button(role: .destructive) {
+                                            Task { await delete(memory) }
+                                        } label: {
+                                            Label("Remove Memory", systemImage: "trash")
+                                        }
+                                    }
+                                    .accessibilityAction(named: memory.isSaved == true ? "Remove from Saved" : "Save Memory") {
                                         Task { await toggleSaved(memory) }
-                                    } label: {
-                                        memory.isSaved == true
-                                            ? Label("Remove from Saved", systemImage: "bookmark.slash")
-                                            : Label("Save Memory", systemImage: "bookmark")
                                     }
-                                    Button(role: .destructive) {
-                                        Task { await delete(memory) }
-                                    } label: {
-                                        Label("Remove Memory", systemImage: "trash")
+                                    Button { slideshow = MemorySlideshowRoute(memory: memory) } label: {
+                                        Image(systemName: "play.fill")
+                                            .font(.body.weight(.semibold)).foregroundStyle(.white)
+                                            .frame(width: 44, height: 44)
+                                            .background(.black.opacity(0.3), in: .circle)
                                     }
+                                    .buttonStyle(.plain).padding(8)
+                                    .accessibilityLabel("Play Memory")
+                                    .accessibilityIdentifier("memory-play-\(memory.id)")
                                 }
-                                .accessibilityAction(named: memory.isSaved == true ? "Remove from Saved" : "Save Memory") {
-                                    Task { await toggleSaved(memory) }
-                                }
+                                .matchedTransitionSource(id: "movie-\(memory.id)", in: zoomNamespace)
                             }
                         }
                     }
@@ -64,19 +96,9 @@ struct MemoryLane: View {
                 }
                 .contentMargins(.horizontal, contentInset, for: .scrollContent)
                 .scrollTargetBehavior(.viewAligned)
+                .accessibilityIdentifier("memory-lane")
             }
             .padding(.top, showsHeading ? 4 : 0)
-            .fullScreenCover(item: $viewer.route) { route in
-                AssetViewerScreen(
-                    assets: route.assets,
-                    indexByAssetID: route.indexByAssetID,
-                    initialIndex: route.initialIndex,
-                    presentationID: route.id,
-                    zoomNamespace: zoomNamespace,
-                    onRequestDismissal: { viewer.complete(route.id) },
-                    onDismissed: { viewer.complete(route.id) }
-                ) { _ in }
-            }
         } else if showsEmptyPlaceholder {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: "clock.arrow.circlepath").font(.title2).foregroundStyle(.tertiary)
@@ -91,15 +113,13 @@ struct MemoryLane: View {
             .padding(20)
             .frame(maxWidth: .infinity, minHeight: cardHeight, maxHeight: cardHeight, alignment: .leading)
             .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: cornerRadius))
-            .task { await load() }
         } else {
             Color.clear
                 .frame(height: 0)
-                .task { await load() }
         }
     }
 
-    @ViewBuilder private func memoryCard(_ memory: Memory, cover: AssetDetail) -> some View {
+    @ViewBuilder private func memoryCard(_ memory: Memory, cover: Asset) -> some View {
         ZStack(alignment: .bottomLeading) {
             if let client = session.client {
                 RemoteImage(
@@ -109,20 +129,22 @@ struct MemoryLane: View {
                 )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipped()
+                .allowsHitTesting(false)
             }
             LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .center, endPoint: .bottom)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(title(memory))
+                Text(memory.displayTitle)
                     .font(.subheadline.weight(.bold))
                     .lineLimit(2)
-                Text(memory.subtitle ?? String(localized: "\(memory.assets.count) photos"))
+                Text(memory.subtitle ?? String(localized: "\(memory.playableAssets.count) items"))
                     .lineLimit(2)
                     .font(.caption2)
                     .opacity(0.85)
             }
             .foregroundStyle(.white)
             .padding(10)
+            .padding(.trailing, 42)
         }
         .overlay(alignment: .topLeading) {
             if memory.isBirthday {
@@ -149,24 +171,6 @@ struct MemoryLane: View {
         }
         .frame(width: cardWidth, height: cardHeight)
         .clipShape(.rect(cornerRadius: cornerRadius))
-    }
-
-    private func title(_ memory: Memory) -> String {
-        if let title = memory.title, !title.isEmpty { return title }
-        if let title = memory.ruleTitle { return title }
-        if memory.isBirthday {
-            let name = memory.data.personName ?? ""
-            return name.isEmpty ? String(localized: "Birthday") : String(localized: "\(name)'s Birthday")
-        }
-        guard let year = memory.data.year else { return String(localized: "Memory") }
-        let years = Calendar.current.component(.year, from: Date()) - year
-        return years <= 1 ? String(localized: "1 year ago") : String(localized: "\(years) years ago")
-    }
-
-    private func openMemory(_ memory: Memory) {
-        let assets = memory.assets.map { $0.asAsset() }
-        guard !assets.isEmpty else { return }
-        viewer.present(assets: assets, initialIndex: 0)
     }
 
     /// saved memories outlive the server's 30 day cleanup. flipped locally
@@ -213,8 +217,8 @@ struct MemoryLane: View {
             guard session.client === client else { return }
             loadFailed = false
             // birthdays lead, like the official clients.
-            let shown = fetched.filter { !$0.assets.isEmpty }
+            let shown = fetched.filter { !$0.playableAssets.isEmpty }
             memories = shown.filter(\.isBirthday) + shown.filter { !$0.isBirthday }
-        } else { loadFailed = true }
+        } else if !Task.isCancelled { loadFailed = true }
     }
 }

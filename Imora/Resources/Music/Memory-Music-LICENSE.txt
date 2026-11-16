@@ -1,0 +1,16 @@
+Vaporware (Calm Piano 1)
+Music by The Cynic Project / cynicmusic.com / pixelsphere.org
+
+License: Creative Commons CC0 1.0 Universal
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Author release: https://opengameart.org/content/calm-piano-1-vaporware
+Original download: https://opengameart.org/sites/default/files/003_Vaporware_2.mp3
+Retrieved: 2026-11-17
+
+The author explicitly dedicates this recording under CC0 and permits use in
+other creative projects. The bundled MP3 is the unmodified original download.
+Attribution is retained voluntarily. This asset is separate from the app source
+code license.
+
+SHA-256: 1697fa1b7ed6f3fe1eca4daa4f9d1a2eb3db8fe40a0f3c283529ab47e57b5b38
