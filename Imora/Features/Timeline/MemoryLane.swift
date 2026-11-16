@@ -101,7 +101,7 @@ struct MemoryLane: View {
         ZStack(alignment: .bottomLeading) {
             if let client = session.client {
                 RemoteImage(
-                    url: client.thumbnailURL(assetID: cover.id, size: "preview"),
+                    url: client.thumbnailURL(assetID: cover.id, size: "preview", cacheKey: cover.thumbhash),
                     targetPixelSize: 640,
                     thumbhash: cover.thumbhash
                 )

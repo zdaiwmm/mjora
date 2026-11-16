@@ -351,7 +351,7 @@ private struct CollectionsPreview: View {
             .frame(width: side, height: side)
             .overlay {
                 if let assetID, let client = session.client {
-                    RemoteImage(url: client.thumbnailURL(assetID: assetID), targetPixelSize: 400,
+                    RemoteImage(url: client.thumbnailURL(assetID: assetID, cacheKey: cover?.id == assetID ? cover?.thumbhash : nil), targetPixelSize: 400,
                                 thumbhash: cover?.thumbhash)
                 } else if let portraitURL {
                     RemoteImage(url: portraitURL, targetPixelSize: 400)
@@ -376,7 +376,7 @@ private struct CollectionsPreview: View {
         guard previewSize != .none, albumCoverID == nil, let client = session.client else { return }
         if id == "places" {
             guard let asset = try? await client.cities().first, !Task.isCancelled, session.client === client else { return }
-            portraitURL = client.thumbnailURL(assetID: asset.id)
+            portraitURL = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
             return
         }
         if id == "people" {

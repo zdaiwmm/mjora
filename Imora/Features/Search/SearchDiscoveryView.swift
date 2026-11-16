@@ -404,7 +404,7 @@ struct SearchDiscoveryView: View {
             .frame(width: 140, height: 140)
             .overlay {
                 if let client = session.client {
-                    RemoteImage(url: client.thumbnailURL(assetID: place.data.id), targetPixelSize: 400,
+                    RemoteImage(url: client.thumbnailURL(assetID: place.data.id, cacheKey: place.data.thumbhash), targetPixelSize: 400,
                                 thumbhash: place.data.thumbhash)
                 }
             }

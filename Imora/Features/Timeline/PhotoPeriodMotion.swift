@@ -161,22 +161,24 @@ final class PeriodPhotoImageView: UIImageView {
         self.motion = motion
         let client = session.client
         let key = "\(client?.offlineAccountKey ?? "device")|\(asset.id)|\(asset.localImageVersion ?? asset.thumbhash ?? "")"
+        let localScope = AssetThumbnailSource.localCacheScope(accountKey: client?.offlineAccountKey,
+            version: asset.localImageVersion ?? asset.thumbhash, pixels: 900)
         defer { if image != nil { motion.register(self, assetID: asset.id, mode: mode) } }
         guard self.key != key else { return }
         cancelLoad()
         self.key = key
         image = nil
         if let localID = asset.localIdentifier {
-            image = LocalImageLoader.shared.cachedPreview(localIdentifier: localID)
+            image = LocalImageLoader.shared.cachedPreview(localIdentifier: localID, cacheScope: localScope)
         } else if let client {
-            image = ImageLoader.shared.cachedImage(for: client.thumbnailURL(assetID: asset.id, size: "preview"), targetPixelSize: 900)
+            image = ImageLoader.shared.cachedImage(for: client.thumbnailURL(assetID: asset.id, size: "preview", cacheKey: asset.thumbhash), targetPixelSize: 900)
         }
         load = Task { [weak self] in
             let loaded: UIImage?
             if let localID = asset.localIdentifier {
-                loaded = await LocalImageLoader.shared.image(localIdentifier: localID, targetPixelSize: 900)
+                loaded = await LocalImageLoader.shared.image(localIdentifier: localID, targetPixelSize: 900, cacheScope: localScope)
             } else if let client {
-                loaded = try? await ImageLoader.shared.image(for: client.thumbnailURL(assetID: asset.id, size: "preview"), targetPixelSize: 900)
+                loaded = try? await ImageLoader.shared.image(for: client.thumbnailURL(assetID: asset.id, size: "preview", cacheKey: asset.thumbhash), targetPixelSize: 900)
             } else { loaded = nil }
             guard !Task.isCancelled, let self, self.key == key, session.client === client else { return }
             if let loaded { self.image = loaded }

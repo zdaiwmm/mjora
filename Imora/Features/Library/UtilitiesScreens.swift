@@ -152,7 +152,7 @@ private struct DuplicateCandidate: View {
             VStack(alignment: .leading, spacing: 4) {
                 Group {
                     if let client = session.client {
-                        RemoteImage(url: client.thumbnailURL(assetID: asset.id), targetPixelSize: 360,
+                        RemoteImage(url: client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash), targetPixelSize: 360,
                                     thumbhash: asset.thumbhash)
                     }
                 }
@@ -204,7 +204,7 @@ struct LargeFilesScreen: View {
                 } label: {
                     HStack(spacing: 12) {
                         if let client = session.client {
-                            RemoteImage(url: client.thumbnailURL(assetID: asset.id), targetPixelSize: 180,
+                            RemoteImage(url: client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash), targetPixelSize: 180,
                                         thumbhash: asset.thumbhash)
                                 .frame(width: 56, height: 56)
                                 .clipShape(.rect(cornerRadius: 8))

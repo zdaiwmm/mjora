@@ -55,7 +55,7 @@ struct AssetStackSection: View {
     private func thumbnail(_ item: AssetDetail, isPrimary: Bool) -> some View {
         Group {
             if let client = session.client {
-                RemoteImage(url: client.thumbnailURL(assetID: item.id), targetPixelSize: 220, thumbhash: item.thumbhash)
+                RemoteImage(url: client.thumbnailURL(assetID: item.id, cacheKey: item.thumbhash), targetPixelSize: 220, thumbhash: item.thumbhash)
             }
         }
         .frame(width: 72, height: 72)

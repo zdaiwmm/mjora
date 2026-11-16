@@ -397,7 +397,7 @@ struct PlacesScreen: View {
                         HStack(spacing: 14) {
                             if let client = session.client {
                                 RemoteImage(
-                                    url: client.thumbnailURL(assetID: place.asset.id),
+                                    url: client.thumbnailURL(assetID: place.asset.id, cacheKey: place.asset.thumbhash),
                                     targetPixelSize: 240,
                                     thumbhash: place.asset.thumbhash
                                 )
