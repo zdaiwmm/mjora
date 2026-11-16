@@ -382,8 +382,18 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 25))
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 20))
+        // A retry control consumes the tap instead of presenting a photo.
+        // Keep the one-second opening requirement, starting from ready pixels.
+        let readyTile = NSPredicate { _, _ in
+            tiles.allElementsBoundByIndex.contains {
+                $0.isHittable && $0.frame.midY > 200 && $0.frame.midY < 600
+                    && !$0.buttons["thumbnail-retry"].isHittable
+            }
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: readyTile, object: nil)], timeout: 10), .completed)
         let tile = try XCTUnwrap(tiles.allElementsBoundByIndex.first {
             $0.isHittable && $0.frame.midY > 200 && $0.frame.midY < 600
+                && !$0.buttons["thumbnail-retry"].isHittable
         })
         tile.tap()
         let close = app.buttons["viewer-close"].firstMatch
@@ -458,6 +468,11 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(previous.textFields["auth-server"].waitForExistence(timeout: 20))
         previous.terminate()
         let app = try launch()
+        // This flow exercises the owned cloud collection; the source preference
+        // can persist as On Device after another UI acceptance flow.
+        app.buttons["photos-source-menu"].tap()
+        chooseSourceItem(app, "云端照片")
+        XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 25))
         XCTAssertTrue(app.buttons["shell-albums"].waitForExistence(timeout: 20))
         app.buttons["shell-albums"].tap()
         tap(app, "collections-media-photos")
