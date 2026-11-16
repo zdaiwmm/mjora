@@ -784,7 +784,7 @@ final class TimelineTileView: UIView {
                 }
                 return true
             })
-        MediaPresentationCoordinator.shared.imageArrived()
+        MediaPresentationCoordinator.shared.imageArrived(binding.key)
         guard fading else {
             imageView.image = image
             return

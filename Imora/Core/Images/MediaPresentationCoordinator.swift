@@ -52,6 +52,7 @@ final class MediaPresentationCoordinator {
     private var viewportID: UUID?
     private var pendingViewport: (snapshot: LaunchViewportSnapshot, assets: [Asset], client: ImoraClient,
         surfaceProvider: GridSurfaceProvider?, validateLocalSurface: LocalSurfaceValidator)?
+    private var startupObservation: (snapshot: LaunchViewportSnapshot, session: UUID, missing: Set<MediaDisplayKeyV1>)?
     private var completedViewport: LaunchViewportSnapshot?
     private var anchorTask: Task<Void, Never>?
     private nonisolated let log = Logger(subsystem: "com.vexcited.imora", category: "LaunchPreview")
@@ -321,6 +322,8 @@ final class MediaPresentationCoordinator {
     func checkpoint(snapshot: LaunchViewportSnapshot, assets: [Asset], client: ImoraClient,
                     surfaceProvider: GridSurfaceProvider? = nil,
                     validateLocalSurface: @escaping LocalSurfaceValidator = { $0.remoteIdentifier == nil }) {
+        ImageLoader.shared.noteVisibleViewport(snapshot.visibleKeys, client: client)
+        observeStartupViewport(snapshot: snapshot, client: client, surfaceProvider: surfaceProvider)
         if completedViewport == snapshot { return }
         if pendingViewport?.snapshot == snapshot, checkpointTask != nil { return }
         pendingViewport = (snapshot, assets, client, surfaceProvider, validateLocalSurface)
@@ -329,13 +332,48 @@ final class MediaPresentationCoordinator {
     }
 
     /// Real image delivery can complete after the viewport has become stationary.
-    func imageArrived() {
-        guard let pending = pendingViewport, completedViewport != pending.snapshot else { return }
+    func imageArrived(_ key: MediaDisplayKeyV1) {
+        guard let pending = pendingViewport else { return }
+        if var observation = startupObservation, observation.snapshot == pending.snapshot,
+           observation.session == pending.client.context.id, observation.missing.contains(key),
+           qualifiedSurface(key, provider: pending.surfaceProvider) {
+            observation.missing.remove(key); startupObservation = observation
+            if observation.missing.isEmpty {
+                releaseSweepIfVisible(snapshot: pending.snapshot, client: pending.client, surfaceProvider: pending.surfaceProvider)
+            }
+        }
+        guard completedViewport != pending.snapshot else { return }
         scheduleCheckpoint(snapshot: pending.snapshot, assets: pending.assets, client: pending.client,
             surfaceProvider: pending.surfaceProvider, validateLocalSurface: pending.validateLocalSurface)
     }
 
+    private func qualifiedSurface(_ key: MediaDisplayKeyV1, provider: GridSurfaceProvider?) -> Bool {
+        guard let surface = provider?(key), surface.key == key, surface.isCurrent() else { return false }
+        return surface.image.cgImage != nil
+    }
+
+    private func observeStartupViewport(snapshot: LaunchViewportSnapshot, client: ImoraClient,
+                                        surfaceProvider: GridSurfaceProvider?) {
+        guard ImageLoader.shared.isFirstViewportPending(client: client), surfaceProvider != nil,
+              !snapshot.visibleKeys.isEmpty else { return }
+        if startupObservation?.snapshot != snapshot || startupObservation?.session != client.context.id {
+            let missing = Set(snapshot.visibleKeys.filter { !qualifiedSurface($0, provider: surfaceProvider) })
+            startupObservation = (snapshot, client.context.id, missing)
+        }
+        if startupObservation?.missing.isEmpty == true {
+            releaseSweepIfVisible(snapshot: snapshot, client: client, surfaceProvider: surfaceProvider)
+        }
+    }
+
+    private func releaseSweepIfVisible(snapshot: LaunchViewportSnapshot, client: ImoraClient,
+                                       surfaceProvider: GridSurfaceProvider?) {
+        guard let surfaceProvider, !snapshot.visibleKeys.isEmpty,
+              snapshot.visibleKeys.allSatisfy({ qualifiedSurface($0, provider: surfaceProvider) }) else { return }
+        ImageLoader.shared.firstViewportPresented(client: client)
+    }
+
     func noteViewport(snapshot: LaunchViewportSnapshot, client: ImoraClient) {
+        ImageLoader.shared.noteVisibleViewport(snapshot.visibleKeys, client: client)
         let store = store
         anchorTask?.cancel()
         anchorTask = Task {
@@ -479,6 +517,7 @@ final class MediaPresentationCoordinator {
 
     func cancelCheckpoint() {
         checkpointTask?.cancel(); checkpointTask = nil; viewportID = nil; pendingViewport = nil
+        startupObservation = nil
         completedViewport = nil
         anchorTask?.cancel(); anchorTask = nil
     }

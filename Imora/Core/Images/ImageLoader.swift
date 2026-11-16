@@ -35,6 +35,7 @@ nonisolated final class ImageLoader: Sendable {
     private let pipeline: ImagePipeline
     private let visibleTasks = Mutex<[UUID: ImageTask]>([:])
     private let observedRequests = Mutex<[String: ImageRequest]>([:])
+    private let visibleViewport = Mutex<[MediaDisplayKeyV1]>([])
     private let authorization = AuthorizingDelegate()
     private struct PrefetchPair: Sendable {
         let decoded: ImagePrefetcher
@@ -69,12 +70,17 @@ nonisolated final class ImageLoader: Sendable {
             FittingThumbnailDecoder(context: context) ?? ImageDecoderRegistry.shared.decoder(for: context)
         }
         pipeline = ImagePipeline(configuration: configuration, delegate: authorization)
+        _ = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.releaseOffscreenImagesForMemoryPressure()
+        }
     }
 
     /// call after login so image requests carry the token.
     func configure(client: ImoraClient?) {
         if client != nil { try? MediaContentGenerations.shared.ensureInitialized() }
         authorization.client.withLock { $0 = nil }
+        visibleViewport.withLock { $0.removeAll() }
+        sweepNeedsFirstViewport.withLock { $0 = client != nil }
         sweepTask.withLock { current in current?.cancel(); current = nil }
         stopAllPrefetching()
         visibleTasks.withLock { tasks in tasks.values.forEach { $0.cancel() }; tasks.removeAll() }
@@ -509,6 +515,8 @@ nonisolated final class ImageLoader: Sendable {
                 // two lanes are slow enough to never crowd out visible tiles
                 // and still cover a large library over a session.
                 for _ in 0..<2 {
+                    await self.waitWhileSweepPaused()
+                    guard !Task.isCancelled else { break }
                     guard let request = nextRequest() else { break }
                     group.addTask { _ = try? await pipeline.data(for: request) }
                 }
@@ -530,6 +538,45 @@ nonisolated final class ImageLoader: Sendable {
 
     private let sweepTask = Mutex<Task<Void, Never>?>(nil)
     private let sweepPaused = Mutex<Bool>(false)
+    private let sweepNeedsFirstViewport = Mutex<Bool>(false)
+
+    func firstViewportPresented(client: ImoraClient) {
+        guard client.context.isActive else { return }
+        authorization.client.withLock { current in
+            if current === client { sweepNeedsFirstViewport.withLock { $0 = false } }
+        }
+    }
+
+    func isFirstViewportPending(client: ImoraClient) -> Bool {
+        authorization.client.withLock { current in
+            current === client && sweepNeedsFirstViewport.withLock { $0 }
+        }
+    }
+
+    func noteVisibleViewport(_ keys: [MediaDisplayKeyV1], client: ImoraClient) {
+        authorization.client.withLock { current in
+            guard current === client, client.context.isActive else { return }
+            visibleViewport.withLock { $0 = keys }
+        }
+    }
+
+    private func releaseOffscreenImagesForMemoryPressure() {
+        stopAllPrefetching()
+        sweepTask.withLock { task in task?.cancel(); task = nil }
+        let visible = visibleViewport.withLock { $0 }
+        let requests = observedRequests.withLock { Array($0.values) }
+        for request in requests {
+            guard let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding else { continue }
+            let keep = visible.contains { key in
+                key.scope == binding.key.scope && key.subject == binding.key.subject
+                    && key.sourceRevision == binding.key.sourceRevision && key.contentGeneration == binding.key.contentGeneration
+                    && Self.normalizedPixelSize(CGFloat(key.pixelBucket), for: binding.endpointURL)
+                        == Self.normalizedPixelSize(CGFloat(binding.key.pixelBucket), for: binding.endpointURL)
+            }
+            if !keep { pipeline.cache.removeCachedImage(for: request, caches: [.memory]) }
+        }
+        LocalImageLoader.shared.releaseOffscreenImagesForMemoryPressure()
+    }
 
     /// grids pause the sweep for the length of a scroll, so its lanes never
     /// compete with tiles the user is about to look at.
@@ -538,7 +585,7 @@ nonisolated final class ImageLoader: Sendable {
     }
 
     private func waitWhileSweepPaused() async {
-        while sweepPaused.withLock({ $0 }), !Task.isCancelled {
+        while (sweepPaused.withLock({ $0 }) || sweepNeedsFirstViewport.withLock({ $0 })), !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(250))
         }
     }

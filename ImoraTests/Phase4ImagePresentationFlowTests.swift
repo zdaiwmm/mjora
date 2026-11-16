@@ -1110,6 +1110,122 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         await finish()
     }
 
+    func testStartupSweepWaitsForActualVisibleSurfaces() async throws {
+        let bytes = try XCTUnwrap(solidImage(pixels: 640).jpegData(compressionQuality: 0.9))
+        let gate = DispatchSemaphore(value: 0), secondStarted = Mutex(false), paths = Mutex<[String]>([])
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            guard request.path.contains("/thumbnail") else { return .init(status: 503) }
+            paths.withLock { $0.append(request.path) }
+            if request.path.contains("visible-second") {
+                secondStarted.withLock { $0 = true }; _ = gate.wait(timeout: .now() + 15)
+            }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+        }
+        try await server.start(); defer { gate.signal(); server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "startup-sweep")
+        client.confirmMediaAccount("startup-sweep-\(UUID())"); ImageLoader.shared.configure(client: client)
+        let coordinator = MediaPresentationCoordinator.shared
+        defer { coordinator.cancelCheckpoint(); ImageLoader.shared.configure(client: nil); client.invalidate() }
+        func value(_ id: String) -> Asset {
+            Asset(id: id, ownerId: "fixture", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "r1", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+        }
+        let assets = [value("visible-first"), value("visible-second")]
+        let keys = assets.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: 416) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        window.rootViewController = controller; window.makeKeyAndVisible()
+        let host = try XCTUnwrap(controller.view)
+        defer { window.isHidden = true }
+        let tiles = [TimelineTileView(frame: .init(x: 20, y: 100, width: 132, height: 132)),
+                     TimelineTileView(frame: .init(x: 160, y: 100, width: 132, height: 132))]
+        for tile in tiles { host.addSubview(tile) }
+        defer { for tile in tiles { tile.removeFromSuperview() } }
+        host.layoutIfNeeded() // Initial fixture layout only.
+        let snapshot = LaunchViewportSnapshot(scope: client.mediaDisplayScope, source: "cloud", filter: "startup-sweep",
+            sort: "desc", anchor: assets[0].id, layout: .init(width: 390, height: 700, scale: 3, columns: 3),
+            visibleKeys: keys, metadata: try JSONEncoder().encode(assets))
+        coordinator.checkpoint(snapshot: snapshot, assets: assets, client: client, surfaceProvider: { key in
+            guard let index = keys.firstIndex(of: key) else { return nil }
+            return tiles[index].checkpointSurface(for: key, client: client)
+        })
+        ImageLoader.shared.sweepThumbnails(urls: [client.thumbnailURL(assetID: "background-sweep", cacheKey: "r1")])
+        for (index, asset) in assets.enumerated() {
+            tiles[index].projectImage(asset: asset, source: .init(assetID: asset.id, localIdentifier: nil,
+                pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+                client: client, generation: 0, targetPixelSize: 416)
+        }
+        for _ in 0..<200 {
+            if secondStarted.withLock({ $0 }), tiles[0].checkpointSurface(for: keys[0], client: client) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(secondStarted.withLock { $0 }); XCTAssertNotNil(tiles[0].checkpointSurface(for: keys[0], client: client))
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(paths.withLock { $0.contains { $0.contains("background-sweep") } },
+            "The sweep must not start while a real visible image is still held")
+        gate.signal()
+        for _ in 0..<300 {
+            if paths.withLock({ $0.contains { $0.contains("background-sweep") } }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(tiles[1].checkpointSurface(for: keys[1], client: client))
+        XCTAssertTrue(paths.withLock { $0.contains { $0.contains("background-sweep") } },
+            "The sweep must resume after both actual visible images bind")
+    }
+
+    func testMemoryPressureKeepsW0BeforeOffscreenHighRes() async throws {
+        let client = client("memory-\(UUID())")
+        client.confirmMediaAccount("memory-\(UUID())"); ImageLoader.shared.configure(client: client)
+        let coordinator = MediaPresentationCoordinator.shared
+        defer { coordinator.cancelCheckpoint(); ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let value = asset(), key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        let url = client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash)
+        let high = client.thumbnailURL(assetID: "offscreen-\(UUID())", size: "preview", cacheKey: "r1")
+        ImageLoader.shared.installPrepared(solidImage(pixels: 416), url: url, targetPixelSize: 416, client: client)
+        ImageLoader.shared.installPrepared(solidImage(pixels: 1400), url: high, targetPixelSize: 1400, client: client)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        window.rootViewController = controller; window.makeKeyAndVisible()
+        let host = try XCTUnwrap(controller.view)
+        defer { window.isHidden = true }
+        let tile = TimelineTileView(frame: .init(x: 20, y: 100, width: 132, height: 132)); host.addSubview(tile)
+        defer { tile.removeFromSuperview() }
+        tile.projectImage(asset: value, source: .init(assetID: value.id, localIdentifier: nil,
+            pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+            client: client, generation: 0, targetPixelSize: 416)
+        host.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let snapshot = LaunchViewportSnapshot(scope: client.mediaDisplayScope, source: "cloud", filter: "memory-\(UUID())",
+            sort: "desc", anchor: value.id, layout: .init(width: 390, height: 700, scale: 3, columns: 3),
+            visibleKeys: [key], metadata: try JSONEncoder().encode([value]))
+        coordinator.checkpoint(snapshot: snapshot, assets: [value], client: client,
+            surfaceProvider: { tile.checkpointSurface(for: $0, client: client) })
+        XCTAssertNotNil(tile.checkpointSurface(for: key, client: client))
+        XCTAssertNotNil(ImageLoader.shared.cachedImage(for: high, targetPixelSize: 1400))
+        NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        XCTAssertNil(ImageLoader.shared.cachedImage(for: high, targetPixelSize: 1400), "Offscreen high-resolution memory should be released")
+        XCTAssertNotNil(ImageLoader.shared.cachedImage(for: url, targetPixelSize: 416)?.cgImage, "W0 must remain in the bounded cache")
+        XCTAssertNotNil(tile.checkpointSurface(for: key, client: client)?.image.cgImage, "Mounted W0 must retain its real image")
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+        }
+        if let data = frame.pngData() {
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            attachment.name = "memory-pressure-mounted-W0"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let point = tile.convert(CGPoint(x: 66, y: 66), to: window)
+        let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        XCTAssertGreaterThan(pixel[0], 180); XCTAssertLessThan(pixel[2], 80)
+    }
+
     func testGridAndViewerReusePreparedLocalImage() async throws {
         let (localID, _) = try await createSurfaceFixture()
         let revision = try XCTUnwrap(LocalImageLoader.currentModificationRevision(localID))

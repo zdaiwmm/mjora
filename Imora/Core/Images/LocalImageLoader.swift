@@ -73,6 +73,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         }
     }
     private let cache: NSCache<NSString, CachedImage>
+    private let cachedSizes = OSAllocatedUnfairLock(initialState: [String: CGFloat]())
     /// photokit's stored previews, one per asset whatever size was asked. the
     /// opening transition needs an uncropped picture for a tile that only has
     /// its preview yet - a snapshot of the square tile is a crop the viewer
@@ -160,6 +161,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         }
         assets.removeAllObjects()
         cache.removeAllObjects()
+        cachedSizes.withLock { $0.removeAll() }
         previews.removeAllObjects()
         manager.stopCachingImagesForAllAssets()
     }
@@ -259,11 +261,31 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         cacheScope: String = "",
         modificationRevision: String? = nil
     ) {
+        let cacheKey = key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope)
+        let cacheKeyString = cacheKey as String
+        cachedSizes.withLock { sizes in
+            if sizes.count >= 4096, let oldest = sizes.keys.first { sizes[oldest] = nil }
+            sizes[cacheKeyString] = targetPixelSize
+        }
         cache.setObject(
             CachedImage(image, modificationRevision: modificationRevision),
-            forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope),
+            forKey: cacheKey,
             cost: Self.cost(of: image)
         )
+    }
+
+    func releaseOffscreenImagesForMemoryPressure() {
+        cachingQueue.async { [self] in
+            prefetchTasks.values.forEach { $0.cancel() }
+            prefetchTasks.removeAll()
+        }
+        let oversized = cachedSizes.withLock { sizes -> [String] in
+            let keys = sizes.compactMap { $0.value > 1280 ? $0.key : nil }
+            keys.forEach { sizes[$0] = nil }
+            return keys
+        }
+        for key in oversized { cache.removeObject(forKey: key as NSString) }
+        previews.removeAllObjects()
     }
 
     private func storePreview(_ image: UIImage, localIdentifier: String, cacheScope: String = "") {
