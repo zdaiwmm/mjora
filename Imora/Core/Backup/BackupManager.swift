@@ -98,6 +98,9 @@ final class BackupManager {
     static let mediaPriorityKey = "imora.backupMediaPriority"
     static let hashWorkersKey = "imora.backupHashWorkers"
     static let maxUploadSizeMBKey = "imora.backupMaxUploadSizeMB"
+    static var allowsDaemonCellular: Bool {
+        UserDefaults.standard.bool(forKey: cellularBackupKey) || UserDefaults.standard.bool(forKey: cellularOverrideKey)
+    }
     static let dismissedRepeatedFailuresKey = "imora.backupRepeatedFailuresDismissed"
     static let hashWorkerOptions = [1, 3, 5, 8, 16, 32]
     static let defaultHashWorkers = 8
@@ -574,6 +577,9 @@ final class BackupManager {
         // unknown counts may still represent an initial backup waiting to scan.
         guard PhotoAccess.shared.status == .authorized,
               libraryStatus.map({ $0.pending > 0 }) ?? true else { return nil }
+        if ProcessInfo.processInfo.thermalState == .critical {
+            return String(localized: "Device is too warm. Backup will resume when it cools.")
+        }
         return switch (isHeldForMeteredConnection, isHeldForLowBattery) {
         case (true, true): String(localized: "\(meteredHoldMessage) Battery is at \(batteryThreshold)% or less.")
         case (true, false): meteredHoldMessage
@@ -619,7 +625,7 @@ final class BackupManager {
     }
 
     private var conditionsAllowWork: Bool {
-        conditions.allowsWork(allowCellular: backUpOnCellular,
+        ProcessInfo.processInfo.thermalState != .critical && conditions.allowsWork(allowCellular: backUpOnCellular,
             pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
     }
 
@@ -654,6 +660,7 @@ final class BackupManager {
     private var changeObserver: LibraryChangeObserver?
     private var networkWatcher: NetworkPathWatcher?
     private var batteryWatcher: BatteryLevelWatcher?
+    @ObservationIgnored private var thermalObserver: (any NSObjectProtocol)?
     private var isStopping = false
     private var isShutDown = false
     private var remoteReconciliationTask: Task<Void, Never>?
@@ -737,10 +744,19 @@ final class BackupManager {
             self?.networkChanged(connected: path.connected, metered: path.expensive,
                 wifi: path.wifi, cellular: path.cellular)
         }
+        thermalObserver = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isShutDown else { return }
+                    self.conditionsChanged(recovered: self.conditionsAllowWork)
+                }
+            }
     }
 
     /// called by sessionstore on logout. the manager must not outlive its client.
     func shutdown() {
+        if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
+        thermalObserver = nil
         isShutDown = true
         reconcileCoordinator.shutdown()
         cloudSyncReady = false
@@ -764,6 +780,7 @@ final class BackupManager {
         localChangedTask?.cancel()
         localChangedTask = nil
         BackgroundUploader.shared.setOrphanHandler(nil)
+        BackgroundUploader.shared.setSystemHandoffHandler(nil)
         // transfers outlive the process, so signing out has to stop them
         // explicitly or they would keep filling a stranger's library.
         BackgroundUploader.shared.cancelAll(contextID: client.context.id)
@@ -1433,6 +1450,13 @@ final class BackupManager {
     /// still around. anything that landed while it was not has to reach the
     /// index here, or the next run would send the same bytes again.
     private func adoptBackgroundUploads() {
+        if userId != nil { BackgroundUploader.shared.adopt(account: accountKey, context: client.context) }
+        BackgroundUploader.shared.setSystemHandoffHandler { [weak self] account in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isShutDown, self.accountKey == account else { return }
+                self.onContinuedProgress?()
+            }
+        }
         BackgroundUploader.shared.setOrphanHandler { [weak self] completions in
             guard let self else { return [] }
             return await self.applyBackgroundUploads(completions)
@@ -1845,12 +1869,14 @@ final class BackupManager {
         await withTaskGroup(of: HashOutcome.self) { group in
             var next = 0
             var done = 0
+            var active = 0
 
             @MainActor func addNext() {
                 guard next < toHash.count, !cancelled, !Task.isCancelled,
-                      conditionsAllowWork else { return }
+                      conditionsAllowWork, active < BackupRuntimePolicy.currentWorkers(workerLimit) else { return }
                 let asset = toHash[next]
                 next += 1
+                active += 1
                 let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
                 attempts[asset.localIdentifier] = transfer.attempt
                 let preparation = transfer.reporter.component()
@@ -1873,6 +1899,7 @@ final class BackupManager {
 
             for _ in 0..<workerLimit { addNext() }
             while let outcome = await group.next() {
+                active -= 1
                 let localId = outcome.asset.localIdentifier
                 if let attempt = attempts.removeValue(forKey: localId) {
                     activeTransfers.finish(localIdentifier: localId, attempt: attempt)
@@ -1908,7 +1935,7 @@ final class BackupManager {
                 }
                 done += 1
                 phase = .hashing(done: done, total: toHash.count)
-                addNext()
+                for _ in 0..<workerLimit { addNext() }
             }
         }
         if !conditionsAllowWork, !isStopping { policyInterruptedRun = true }
@@ -1990,10 +2017,13 @@ final class BackupManager {
         var barrierFailure: (any Error)?
         await withTaskGroup(of: (DeviceAsset, BackupEntry, (any Error)?).self) { group in
             var next = 0
+            var active = 0
             @MainActor func addNext() {
-                guard next < verify.count, barrierFailure == nil, !Task.isCancelled else { return }
+                guard next < verify.count, barrierFailure == nil, !Task.isCancelled,
+                      active < BackupRuntimePolicy.currentWorkers(Self.verificationWorkers) else { return }
                 let (asset, entry) = verify[next]
                 next += 1
+                active += 1
                 let transfer = updatesPhase ? beginActiveTransfer(localIdentifier: asset.localIdentifier) : nil
                 if let transfer { attempts[asset.localIdentifier] = transfer.attempt }
                 group.addTask {
@@ -2009,7 +2039,11 @@ final class BackupManager {
             }
             for _ in 0..<min(Self.verificationWorkers, verify.count) { addNext() }
             while let (asset, source, error) = await group.next() {
-                defer { noteCheckedWork(); addNext() }
+                active -= 1
+                defer {
+                    noteCheckedWork()
+                    for _ in 0..<min(Self.verificationWorkers, verify.count) { addNext() }
+                }
                 if let attempt = attempts.removeValue(forKey: asset.localIdentifier) {
                     activeTransfers.finish(localIdentifier: asset.localIdentifier, attempt: attempt)
                 }
@@ -2123,6 +2157,7 @@ final class BackupManager {
         var authorityPause: BackupUploadAuthorityPause?
         var done = 0
         await BackupUploadScheduler.run(queue, workers: Self.uploadWorkers,
+            workerLimit: { BackupRuntimePolicy.currentWorkers(Self.uploadWorkers) },
             canSchedule: { self.conditionsAllowWork && self.uploadAuthorityPause == nil },
             operation: { asset in
                 uploadStates[asset.localIdentifier] = .uploading(0)
@@ -2442,7 +2477,15 @@ final class BackupManager {
             transfer?.uploadProgress(fraction)
             onProgress(fraction)
         }
-        if let chunking {
+        if await client.acceptsBackgroundUploads() {
+            do {
+                return try await BackgroundAssetUpload.send(upload, motion: motion, client: client, account: account,
+                    source: source, lifetime: lifetime, onResourceProgress: resourceProgress, onByteProgress: byteProgress,
+                    beforeUpload: validate, onProgress: uploadProgress)
+            } catch is ChunkedAssetUpload.Unavailable {
+                // An unknown PhotoKit size retains the existing guarded multipart path.
+            }
+        } else if let chunking {
             do {
                 return try await ChunkedAssetUpload.send(
                     upload, motion: motion, policy: chunking, client: client, account: account,
@@ -2681,7 +2724,8 @@ final class BackupManager {
 
         var authorityPause: BackupUploadAuthorityPause?
         await BackupUploadScheduler.run(queue, workers: Self.uploadWorkers,
-            canSchedule: { self.uploadAuthorityPause == nil },
+            workerLimit: { BackupRuntimePolicy.currentWorkers(Self.uploadWorkers) },
+            canSchedule: { self.uploadAuthorityPause == nil && self.conditionsAllowWork },
             operation: { asset in
                 uploadStates[asset.localIdentifier] = .uploading(0)
                 let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
@@ -2944,6 +2988,10 @@ final class BackupManager {
 // MARK: - continued processing
 
 extension BackupManager: ContinuedWorkload {
+    var continuedSystemHandoffReady: Bool {
+        guard isRunning, !requiresExplicitResume, case .uploading = phase else { return false }
+        return BackgroundUploader.shared.hasSystemTransfer(account: accountKey, localIds: backlogUploadIDs)
+    }
     var continuedOwnerID: UUID { client.context.id }
     var continuedDiagnosticFailure: BackgroundTaskDiagnostics.Failure? { diagnosticFailure }
     var continuedDiagnosticPhase: BackgroundTaskDiagnostics.Phase {

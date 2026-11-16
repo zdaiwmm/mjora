@@ -19,12 +19,14 @@ protocol ContinuedWorkload: AnyObject {
     /// reporting a failure makes the system tell the user the job failed,
     /// so a job the user stopped themselves must not count as one.
     var continuedFailed: Bool { get }
+    var continuedSystemHandoffReady: Bool { get }
     var continuedDiagnosticPhase: BackgroundTaskDiagnostics.Phase { get }
     var continuedDiagnosticFailure: BackgroundTaskDiagnostics.Failure? { get }
     var onContinuedProgress: (() -> Void)? { get set }
 
-    /// starts the job if idle and suspends until it ends. the task has to
-    /// outlive the whole thing, so it needs something to await.
+    /// Starts an idle job and awaits its verified end. A system task may
+    /// release its preparation budget after a daemon handoff; the workload
+    /// keeps its independent run and durable backup intent.
     func runToCompletion() async
     /// Stops new work and retains the request. An ambiguous continued-task
     /// expiration requires an explicit action before any automatic retry.
@@ -34,6 +36,7 @@ protocol ContinuedWorkload: AnyObject {
 }
 
 extension ContinuedWorkload {
+    var continuedSystemHandoffReady: Bool { false }
     var continuedDiagnosticPhase: BackgroundTaskDiagnostics.Phase { .idle }
     var continuedDiagnosticFailure: BackgroundTaskDiagnostics.Failure? { nil }
 }
@@ -93,6 +96,7 @@ final class ContinuedProcessing {
     /// one job of each kind runs at a time, so a single id covers it.
     private let identifier: String
     private var isRegistered = false
+    private(set) var hasSystemHandoff = false
     /// the task the system is drawing progress for, until it is completed.
     /// nothing may touch a task past that point.
     private var current: (any ContinuedTask)?
@@ -108,7 +112,9 @@ final class ContinuedProcessing {
     @ObservationIgnored private let diagnostics: BackgroundTaskDiagnostics
 
     var status: ContinuedSubmissionState.Status { submissionState.status }
-    var canRequestContinuation: Bool { current == nil && !status.isActive }
+    var canRequestContinuation: Bool {
+        current == nil && !status.isActive && !(hasSystemHandoff && workload?.continuedSystemHandoffReady == true)
+    }
     private(set) var backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
 
     init(
@@ -152,6 +158,7 @@ final class ContinuedProcessing {
     }
 
     private func invalidateOwnerRequest() {
+        hasSystemHandoff = false
         let hadRequest = status.isActive
         if hadRequest, let workload = currentBinding?.workload ?? pendingBinding?.workload {
             recordDiagnostic(.invalidated, workload: workload, success: false)
@@ -234,6 +241,7 @@ final class ContinuedProcessing {
     func submit(title: String, subtitle: String) async -> Bool {
         guard canRequestContinuation,
               let submission = submissionState.beginSubmission(owner: workload?.continuedOwnerID ?? ownerGeneration) else { return false }
+        hasSystemHandoff = false
         diagnostics.beginAttempt(phase: workload?.continuedDiagnosticPhase ?? .idle)
         guard isRegistered, let workload else {
             submissionState.completeSubmission(submission, failure: .notPermitted)
@@ -321,6 +329,18 @@ final class ContinuedProcessing {
     private func report(to task: any ContinuedTask, request: ContinuedSubmissionState.Request, force: Bool = false) {
         guard task === current, let binding = currentBinding, binding.request == request else { return }
         let workload = binding.workload
+        if workload.continuedSystemHandoffReady {
+            workload.onContinuedProgress = nil
+            hasSystemHandoff = true
+            task.updateTitle(String(localized: "Background upload started"),
+                subtitle: String(localized: "Prepared files are uploading. Check Backup for remaining items."))
+            // This task now completes its preparation/handoff goal. Whole-library
+            // completion remains the manager's independently verified state.
+            task.progress.totalUnitCount = 1
+            task.progress.completedUnitCount = 1
+            finish(task, request: request, success: true, handedOff: true)
+            return
+        }
         if !force { recordDiagnostic(.progress, workload: workload) }
         let title = workload.continuedTitle
         let subtitle = workload.continuedSubtitle
@@ -341,10 +361,10 @@ final class ContinuedProcessing {
         task.updateTitle(title, subtitle: subtitle)
     }
 
-    private func finish(_ task: any ContinuedTask, request: ContinuedSubmissionState.Request, success: Bool, paused: Bool = false) {
+    private func finish(_ task: any ContinuedTask, request: ContinuedSubmissionState.Request, success: Bool, paused: Bool = false, handedOff: Bool = false) {
         guard task === current, currentBinding?.request == request else { return }
         if !paused, let workload = currentBinding?.workload {
-            recordDiagnostic(.completed, workload: workload, success: success)
+            recordDiagnostic(handedOff ? .handedOff : .completed, workload: workload, success: success)
         }
         current = nil
         currentBinding = nil

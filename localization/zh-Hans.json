@@ -1887,5 +1887,10 @@
   "Couldn't Load Capture Dates": "无法载入拍摄日期",
   "Couldn't locate this photo in the current sort. Try again.": "无法在当前排序中定位此照片，请重试。",
   "Loading capture dates": "正在载入拍摄日期",
-  "The library session changed. Reopen the calendar overview.": "图库会话已更改，请重新打开日期概览。"
+  "The library session changed. Reopen the calendar overview.": "图库会话已更改，请重新打开日期概览。",
+  "Device is too warm. Backup will resume when it cools.": "设备温度过高。降温后将继续备份。",
+  "Background upload started": "后台上传已开始",
+  "Prepared files are uploading. Check Backup for remaining items.": "已准备的文件正在上传。剩余项目可在备份页查看。",
+  "Prepared uploads are handled by iOS. Remaining files continue when background time is available.": "已准备的上传由 iOS 接管；获得后台运行机会后，将继续处理剩余文件。",
+  "This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers.": "此控制适用于整个图库。已准备的上传由 iOS 接管；后台运行不可用时，请保持 Imora 打开以准备剩余文件。从后台划掉 Imora 会停止后台传输。"
 }

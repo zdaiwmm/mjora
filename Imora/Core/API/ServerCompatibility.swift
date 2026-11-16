@@ -85,6 +85,7 @@ nonisolated struct ServerVersionReport: Decodable, Sendable {
 /// too, which is why /server/version is read first. the rest are capability
 /// flags an older server leaves out.
 nonisolated struct ServerFeaturesFingerprint: Codable, Hashable, Sendable {
+    var backgroundUploadsV1: Bool? = nil
     var peopleStatistics: Bool? = nil
     /// Explicit unified photo action capability; never inferred from a server version.
     var photoEditsV1: Bool? = nil

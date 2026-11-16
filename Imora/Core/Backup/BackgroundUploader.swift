@@ -22,6 +22,8 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         /// the asset.
         var isChunk: Bool? = nil
         var contextID: UUID? = nil
+        var isSealed: Bool? = nil
+        var transportIdentity: LocalServerIdentity? = nil
     }
 
     struct Completion: Codable, Sendable {
@@ -48,6 +50,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
     }
 
     private static let sessionID = "app.imora.backup.uploads"
+    static let sealedSessionID = "\(Bundle.main.bundleIdentifier ?? "app.imora").backup.sealed.v1"
     /// application support rather than tmp or caches: the body has to outlive
     /// the app process, and neither of those is promised to.
     static let bodyDirectory: URL = FileManager.default
@@ -55,6 +58,14 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         .appending(path: "imora/uploads")
 
     private var session: URLSession!
+    private var sealedSession: URLSession!
+    private var sealedCompletion: LaunchCompletion?
+    private var sealedEventsDelivered = false
+    private var sealedEventGeneration = UUID()
+    private struct Followup: Hashable { let account: String; let localId: String }
+    private var pendingFollowups: Set<Followup> = []
+    private var systemTransfers: [UUID: Followup] = [:]
+    private var systemHandoffHandler: (@Sendable (String) -> Void)?
     private var pinnedSessions: [String: URLSession] = [:]
     private let lock = NSLock()
     private var continuations: [ObjectIdentifier: CheckedContinuation<Data, any Error>] = [:]
@@ -73,6 +84,15 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         config.httpCookieStorage = nil
         config.httpMaximumConnectionsPerHost = 3
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        let background = URLSessionConfiguration.background(withIdentifier: Self.sealedSessionID)
+        background.httpCookieStorage = nil
+        background.urlCredentialStorage = nil
+        background.urlCache = nil
+        background.httpMaximumConnectionsPerHost = 1
+        background.isDiscretionary = false
+        background.sessionSendsLaunchEvents = true
+        background.timeoutIntervalForResource = 7 * 24 * 60 * 60
+        sealedSession = URLSession(configuration: background, delegate: self, delegateQueue: nil)
     }
 
     private func session(for request: URLRequest, context: AccountRequestContext) throws -> URLSession {
@@ -92,7 +112,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
     }
 
     private func allTasks() async -> [URLSessionTask] {
-        let values = lock.withLock { [session!] + Array(pinnedSessions.values) }
+        let values = lock.withLock { [session!, sealedSession!] + Array(pinnedSessions.values) }
         var tasks: [URLSessionTask] = []
         for value in values { tasks += await value.allTasks }
         return tasks
@@ -100,6 +120,29 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
 
     /// Retire legacy daemon-owned transfers before beginning guarded work.
     func attach() { LegacyTransferCanceller.shared.cancel(identifier: Self.sessionID) }
+
+    /// Relaunched daemon tasks belong to the newly authenticated context only
+    /// after its stable server/user account has been confirmed.
+    func adopt(account: String, context: AccountRequestContext) {
+        Task {
+            for task in await allTasks() {
+                guard var ticket = Self.decode(task.taskDescription), ticket.isSealed == true,
+                      ticket.account == account else { continue }
+                try? context.startWhileActive {
+                    ticket.contextID = context.id
+                    task.taskDescription = Self.encode(ticket)
+                }
+            }
+        }
+    }
+
+    func setSystemHandoffHandler(_ handler: (@Sendable (String) -> Void)?) {
+        lock.withLock { systemHandoffHandler = handler }
+    }
+
+    func hasSystemTransfer(account: String, localIds: Set<String>) -> Bool {
+        lock.withLock { systemTransfers.values.contains { $0.account == account && localIds.contains($0.localId) } }
+    }
 
     /// request bodies are large and regenerable, so they have no business in
     /// the user's icloud backup even though application support is.
@@ -165,16 +208,43 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
 
     /// stored by the app delegate when the system relaunches us to deliver
     /// finished transfers; calling it is what lets the app suspend again.
-    func setBackgroundCompletionHandler(_ handler: LaunchCompletion) {
+    func setBackgroundCompletionHandler(_ handler: LaunchCompletion, identifier: String? = nil) {
+        if identifier == Self.sealedSessionID {
+            lock.withLock {
+                sealedCompletion = handler
+                sealedEventsDelivered = false
+                sealedEventGeneration = UUID()
+            }
+            return
+        }
         LegacyTransferCanceller.shared.cancel(identifier: Self.sessionID,
             completion: .init(run: handler.run))
+    }
+
+    /// Keep the system event window through the authenticated offset check and
+    /// next handoff, or through terminal handling when no next part is needed.
+    func finishedPreparing(account: String, localId: String) {
+        lock.withLock { _ = pendingFollowups.remove(Followup(account: account, localId: localId)) }
+        finishSealedEventsIfReady()
+    }
+
+    private func finishSealedEventsIfReady(forceGeneration: UUID? = nil) {
+        let completion = lock.withLock { () -> LaunchCompletion? in
+            guard sealedEventsDelivered,
+                  forceGeneration == nil || forceGeneration == sealedEventGeneration,
+                  forceGeneration != nil || pendingFollowups.isEmpty else { return nil }
+            if forceGeneration != nil { pendingFollowups.removeAll() }
+            defer { sealedCompletion = nil; sealedEventsDelivered = false }
+            return sealedCompletion
+        }
+        if let completion { Task { @MainActor in completion.run() } }
     }
 
     // MARK: - uploading
 
     /// Retain the process execution lease through transfer completion.
     func upload(
-        _ request: URLRequest,
+        _ initialRequest: URLRequest,
         fromFile bodyURL: URL,
         ticket: Ticket,
         context: AccountRequestContext,
@@ -185,13 +255,23 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
     ) async throws -> Data {
         try Task.checkCancellation()
         defer { lease?.release() }
-        let request = try context.authorize(request, localAPIURL: ServerRoute.configuredLocal(for: context.apiURL))
         var ticket = ticket
+        let request: URLRequest
+        if ticket.isSealed == true {
+            guard let url = initialRequest.url,
+                  context.policy(for: url, localAPIURL: ServerRoute.configuredLocal(for: context.apiURL)) != nil,
+                  initialRequest.value(forHTTPHeaderField: "Authorization") == nil else { throw ServerTrustError.untrustedTarget }
+            ticket.transportIdentity = try ServerRoute.transportIdentity(to: url, for: context.apiURL)
+            request = initialRequest
+        } else {
+            request = try context.authorize(initialRequest, localAPIURL: ServerRoute.configuredLocal(for: context.apiURL))
+        }
         ticket.contextID = context.id
         try ProtectedTemporaryFiles.protect(bodyURL)
         // Persist a source candidate, not a completion proof, before sending.
         try journal.prepare(ticket)
-        let task = try session(for: request, context: context).uploadTask(with: request, fromFile: bodyURL)
+        let target = ticket.isSealed == true ? sealedSession! : try session(for: request, context: context)
+        let task = target.uploadTask(with: request, fromFile: bodyURL)
         task.taskDescription = Self.encode(ticket)
         let id = ObjectIdentifier(task)
         return try await withTaskCancellationHandler {
@@ -210,11 +290,17 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
                         byteProgressHandlers[id] = nil
                         return false
                     }
+                    if ticket.isSealed == true, let transfer = ticket.id {
+                        systemTransfers[transfer] = Followup(account: ticket.account, localId: ticket.localId)
+                    }
                     return true
                 }
                 if !started {
                     task.cancel()
                     continuation.resume(throwing: CancellationError())
+                } else if ticket.isSealed == true {
+                    lock.withLock { systemHandoffHandler }?(ticket.account)
+                    finishedPreparing(account: ticket.account, localId: ticket.localId)
                 }
             }
         } onCancel: { [weak self] in
@@ -264,6 +350,32 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
 
     // MARK: - delegate
 
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @Sendable @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let identity = Self.decode(task.taskDescription)?.transportIdentity
+        LocalServerIdentity.answer(challenge, requestURL: task.currentRequest?.url, identity: identity, completion: completionHandler)
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        guard session.configuration.identifier == Self.sealedSessionID else { return }
+        receivedSealedEvents()
+    }
+
+    func receivedSealedEvents() {
+        let generation = lock.withLock { () -> UUID in
+            sealedEventsDelivered = true
+            return sealedEventGeneration
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(20))
+            finishSealedEventsIfReady(forceGeneration: generation)
+        }
+        Task {
+            await replayReceipts()
+            finishSealedEventsIfReady()
+        }
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
                     completionHandler: @Sendable @escaping (URLRequest?) -> Void) {
@@ -272,6 +384,9 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
 
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // Responses may have been redirected and have no authority. Do not
+        // buffer or persist an untrusted daemon response body.
+        if Self.decode(dataTask.taskDescription)?.isSealed == true { return }
         lock.withLock { buffers[ObjectIdentifier(dataTask), default: Data()].append(data) }
         if let ticket = Self.decode(dataTask.taskDescription) {
             do { try journal.appendResponse(data, ticket: ticket) }
@@ -300,6 +415,7 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         let id = ObjectIdentifier(task)
         let ticket = Self.decode(task.taskDescription)
+        if let transfer = ticket?.id { lock.withLock { _ = systemTransfers.removeValue(forKey: transfer) } }
         let (continuation, data) = lock.withLock { () -> (CheckedContinuation<Data, any Error>?, Data) in
             let continuation = continuations.removeValue(forKey: id)
             let buffered = buffers.removeValue(forKey: id) ?? Data()
@@ -312,8 +428,13 @@ nonisolated final class BackgroundUploader: NSObject, URLSessionDataDelegate, @u
         let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         var deliveryError = error
         if let ticket {
+            if ticket.isSealed == true {
+                lock.withLock { _ = pendingFollowups.insert(Followup(account: ticket.account, localId: ticket.localId)) }
+            }
             do {
-                if error == nil, (200..<300).contains(status),
+                if ticket.isSealed == true, error == nil, (200..<300).contains(status) {
+                    journal.settle(ticket)
+                } else if error == nil, (200..<300).contains(status),
                    let result = try? JSONDecoder().decode(AssetUploadResult.self, from: data) {
                     // the delegate queue writes this before acknowledging events
                     // to UIKit, even if the account/index is not ready yet.
