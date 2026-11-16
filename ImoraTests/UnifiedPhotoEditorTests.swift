@@ -289,8 +289,27 @@ final class UnifiedPhotoEditorTests: XCTestCase {
         let editor = try await LocalPhotoEditor.open(localIdentifier: id)
         var photo = PhotoAdjust.neutral; photo.exposure = -35; photo.tint = 16; photo.straighten = 8
         let edits: [AssetEdit] = [.crop(x: 2, y: 2, width: 12, height: 8), try .photo(photo)]
+        let draftRoot = FileManager.default.temporaryDirectory.appending(path: "photokit-draft-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: draftRoot) }
+        let store = PhotoEditDraftStore(root: draftRoot)
+        let binding = PhotoEditDraft.Binding(scope: .verified(server: "https://local-draft.invalid", accountID: "synthetic"),
+            subject: "local:" + id, sourceRevision: editor.sourceRevision, width: 20, height: 14, mode: "local")
+        let snapshot = EditSnapshot(state: EditTransform.state(from: edits, originalWidth: 20, originalHeight: 14),
+            adjust: photo, disabledTools: [], aspect: .freeform, isPortrait: false, removesPreservedEdits: false)
+        var draft = PhotoEditDraft(binding: binding,
+            baseline: .init(edits: editor.recipe.edits, adjust: nil, localModification: editor.modificationDate), snapshot: snapshot)
+        draft.submission = .init(edits: edits, adjust: nil, snapshot: snapshot)
+        try store.write(draft)
         try await editor.save(edits: edits)
         let reopened = try await LocalPhotoEditor.open(localIdentifier: id)
+        XCTAssertEqual(reopened.sourceRevision, editor.sourceRevision)
+        let restored = try XCTUnwrap(PhotoEditDraftStore(root: draftRoot).load(scope: binding.scope, subject: binding.subject))
+        guard case .saved = try restored.recover(binding: binding,
+            current: .init(edits: reopened.recipe.edits, adjust: nil, localModification: reopened.modificationDate)) else {
+            return XCTFail("PhotoKit's authoritative recipe must confirm a save interrupted before draft cleanup")
+        }
+        try store.remove(scope: binding.scope, subject: binding.subject)
+        XCTAssertNil(try store.load(scope: binding.scope, subject: binding.subject))
         XCTAssertEqual(reopened.recipe.edits, edits)
         XCTAssertEqual(reopened.originalWidth, 20)
         let savedAsset = try XCTUnwrap(PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject)
@@ -301,6 +320,7 @@ final class UnifiedPhotoEditorTests: XCTestCase {
         try await reopened.save(edits: [])
         let reverted = try await LocalPhotoEditor.open(localIdentifier: id)
         XCTAssertEqual(reverted.recipe.edits, [])
+        XCTAssertEqual(reverted.sourceRevision, editor.sourceRevision)
         let originalAfterRevert = try await originalBytes(id)
         XCTAssertEqual(originalAfterRevert, originalBeforeSave)
         XCTAssertEqual(PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).count, 1)

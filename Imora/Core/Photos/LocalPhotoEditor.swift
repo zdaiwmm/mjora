@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 @preconcurrency import Photos
 import ImageIO
 import CoreImage
@@ -71,13 +72,21 @@ final class LocalPhotoEditor {
     private let input: PHContentEditingInput
     private let sourceURL: URL
     private let orientation: Int32
-    private let modificationDate: Date?
+    let modificationDate: Date?
+    let sourceRevision: String
+
+    var isAccessible: Bool { (try? Self.accessibleAsset(localIdentifier)) != nil }
+
+    var isCurrent: Bool {
+        guard let asset = try? Self.accessibleAsset(localIdentifier) else { return false }
+        return asset.modificationDate == modificationDate
+    }
 
     private init(id: String, input: PHContentEditingInput, url: URL, preview: UIImage, width: Int, height: Int,
-                 recipe: LocalPhotoEditRecipe, modificationDate: Date?) {
+                 recipe: LocalPhotoEditRecipe, modificationDate: Date?, sourceRevision: String) {
         localIdentifier = id; self.input = input; sourceURL = url; orientation = input.fullSizeImageOrientation
         self.preview = preview; originalWidth = width; originalHeight = height
-        self.recipe = recipe; self.modificationDate = modificationDate
+        self.recipe = recipe; self.modificationDate = modificationDate; self.sourceRevision = sourceRevision
     }
 
     private static func accessibleAsset(_ id: String) throws -> PHAsset {
@@ -114,7 +123,7 @@ final class LocalPhotoEditor {
         }
         guard recipe.originalWidth == loaded.width, recipe.originalHeight == loaded.height else { throw LocalPhotoEditorError.changed }
         return LocalPhotoEditor(id: id, input: input, url: url, preview: loaded.image, width: loaded.width,
-                                height: loaded.height, recipe: recipe, modificationDate: asset.modificationDate)
+                                height: loaded.height, recipe: recipe, modificationDate: asset.modificationDate, sourceRevision: loaded.sourceRevision)
     }
 
     func save(edits: [AssetEdit]) async throws {
@@ -147,10 +156,20 @@ final class LocalPhotoEditor {
         let image: UIImage
         let width: Int
         let height: Int
+        let sourceRevision: String
     }
 
     @concurrent
     private static func loadImage(url: URL, orientation: Int32, maxPixelSize: Int?) async throws -> LoadedImage {
+        // Bind recovery to PhotoKit's original bytes without copying them.
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try Task.checkCancellation()
+            digest.update(data: chunk)
+        }
+        let sourceRevision = Data(digest.finalize()).base64EncodedString()
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let rawWidth = properties[kCGImagePropertyPixelWidth] as? Int,
@@ -169,7 +188,7 @@ final class LocalPhotoEditor {
         let context = CIContext(options: [.cacheIntermediates: false])
         guard let upright = context.createCGImage(oriented, from: oriented.extent) else { throw LocalPhotoEditorError.noInput }
         let swapsAxes = (5...8).contains(orientation)
-        return LoadedImage(image: UIImage(cgImage: upright), width: swapsAxes ? rawHeight : rawWidth, height: swapsAxes ? rawWidth : rawHeight)
+        return LoadedImage(image: UIImage(cgImage: upright), width: swapsAxes ? rawHeight : rawWidth, height: swapsAxes ? rawWidth : rawHeight, sourceRevision: sourceRevision)
     }
 
     @concurrent

@@ -581,6 +581,9 @@ struct EditorPrimaryBar: View {
     var doneIdentifier = "edit-done"
     let onCancel: () -> Void
     let onDone: () -> Void
+    var onKeepDraft: (() -> Void)? = nil
+    var canSave = true
+    var hasDraft = false
 
     @State private var showDiscard = false
 
@@ -600,7 +603,7 @@ struct EditorPrimaryBar: View {
         HStack {
             Button {
                 guard !isSaving else { return }
-                if hasChanges {
+                if hasChanges || hasDraft {
                     showDiscard = true
                 } else {
                     onCancel()
@@ -625,6 +628,10 @@ struct EditorPrimaryBar: View {
                     guard !isSaving else { return }
                     onCancel()
                 }
+                if let onKeepDraft {
+                    Button("Save Draft and Close") { onKeepDraft() }
+                        .accessibilityIdentifier("edit-keep-draft")
+                }
                 Button("Keep Editing", role: .cancel) {}
             }
 
@@ -646,7 +653,7 @@ struct EditorPrimaryBar: View {
                     hasChanges ? .regular.tint(EditorAppearance.accent).interactive() : .regular,
                     in: .capsule
                 )
-                .disabled(!hasChanges)
+                .disabled(!hasChanges || !canSave)
                 .accessibilityIdentifier(doneIdentifier)
             }
         }

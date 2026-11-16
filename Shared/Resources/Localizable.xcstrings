@@ -33734,6 +33734,193 @@
           }
         }
       }
+    },
+    "Discard Saved Draft": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Saved Draft"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "放弃已保存的草稿"
+          }
+        }
+      }
+    },
+    "Draft restored. Continue editing or tap Done to save.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draft restored. Continue editing or tap Done to save."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿已恢复。可以继续编辑，或轻点“完成”保存。"
+          }
+        }
+      }
+    },
+    "Save Draft and Close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Draft and Close"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存草稿并关闭"
+          }
+        }
+      }
+    },
+    "Save not confirmed. Your edits are restored. Tap Done to check and retry.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save not confirmed. Your edits are restored. Tap Done to check and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上次保存尚未确认，编辑内容已恢复。轻点“完成”核对并重试。"
+          }
+        }
+      }
+    },
+    "Saving edits…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saving edits…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保存编辑…"
+          }
+        }
+      }
+    },
+    "Sign in to the same account to recover your photo draft.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to the same account to recover your photo draft."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请登录原来的账号以恢复照片编辑草稿。"
+          }
+        }
+      }
+    },
+    "The saved draft couldn't be read. It has been kept. You can try again or discard it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved draft couldn't be read. It has been kept. You can try again or discard it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取已保存的草稿。草稿仍然保留，你可以重试或明确放弃。"
+          }
+        }
+      }
+    },
+    "This photo is no longer accessible. Reopen it after restoring access.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This photo is no longer accessible. Reopen it after restoring access."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目前无法访问这张照片。恢复访问权限后，请重新打开。"
+          }
+        }
+      }
+    },
+    "This photo or its edits changed. Your saved draft was kept, but can't be applied to this version.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This photo or its edits changed. Your saved draft was kept, but can't be applied to this version."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这张照片或已保存的编辑已发生变化。草稿仍保留在本机，无法应用到当前版本。"
+          }
+        }
+      }
+    },
+    "Your draft is saved on this device. Restore access or reconnect, then try again to check the photo and save status.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your draft is saved on this device. Restore access or reconnect, then try again to check the photo and save status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿已保存在本机。恢复访问权限或网络连接后，请重试以核对照片版本和保存状态。"
+          }
+        }
+      }
+    },
+    "Your previous save was confirmed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your previous save was confirmed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上次保存已确认完成。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

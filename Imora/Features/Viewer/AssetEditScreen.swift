@@ -5,7 +5,7 @@ import SwiftUI
 
 /// photos' crop aspect ratios, `PUCropAspect`: original, freeform, square,
 /// wallpaper, then ratios that a portrait toggle turns upright.
-nonisolated enum EditAspect: Hashable, Identifiable {
+nonisolated enum EditAspect: Codable, Hashable, Identifiable, Sendable {
     case original
     case freeform
     case square
@@ -57,7 +57,7 @@ nonisolated enum EditAspect: Hashable, Identifiable {
 /// rotation-outermost, vertical-mirror-innermost form the official editor
 /// uses, so any stored edit list round-trips into ui state.
 nonisolated enum EditTransform {
-    struct State: Equatable {
+    struct State: Codable, Equatable, Sendable {
         var rotation = 0.0
         var flipH = false
         var flipV = false
@@ -253,7 +253,7 @@ private enum EditTool: Hashable {
 /// photos' adjustments the servers can store: gallery's exposure, contrast
 /// and saturation, each -100...100, and its invert, a toggle like photos'
 /// auto that has no slider.
-private enum AdjustTool: CaseIterable, Hashable {
+nonisolated enum AdjustTool: String, Codable, CaseIterable, Hashable, Sendable {
     case exposure
     case contrast
     case saturation
@@ -326,7 +326,7 @@ private enum AdjustTool: CaseIterable, Hashable {
 }
 
 /// everything undo and redo step through.
-private struct EditSnapshot: Equatable {
+nonisolated struct EditSnapshot: Codable, Equatable, Sendable {
     var state: EditTransform.State
     var adjust: PhotoAdjust
     var disabledTools: Set<AdjustTool>
@@ -339,6 +339,7 @@ private struct EditSnapshot: Equatable {
 /// Local originals stay in PhotoKit; remote originals stay on the server.
 struct AssetEditScreen: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(SessionStore.self) private var session
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -415,6 +416,18 @@ struct AssetEditScreen: View {
     @State private var geometryTool = PhotoGeometryTool.crop
     @State private var saveError: String?
     @State private var legacyRecovery = LegacyPhotoEditRecovery()
+    @State private var editorClient: ImoraClient?
+    @State private var requiresPrivateAccess = false
+    @State private var draft: PhotoEditDraft?
+    @State private var draftBinding: PhotoEditDraft.Binding?
+    @State private var draftBaseline: PhotoEditDraft.Version?
+    @State private var draftInitialized = false
+    @State private var draftClosed = false
+    @State private var draftNotice: String?
+    @State private var hasStoredDraft = false
+    #if DEBUG && targetEnvironment(simulator)
+    @State private var draftTestStage = ""
+    #endif
     @State private var adjustSource: CGImage?
     @State private var isRenderingAdjust = false
     @State private var undoStack: [EditSnapshot] = []
@@ -431,8 +444,9 @@ struct AssetEditScreen: View {
     }
 
     private var hasChanges: Bool {
-        legacyRecovery.needsSave(draftChanged: state != initialState || effectiveAdjust != initialAdjust || removesPreservedEdits)
+        draft?.submission != nil || legacyRecovery.needsSave(draftChanged: state != initialState || effectiveAdjust != initialAdjust || removesPreservedEdits)
     }
+    private var hasDraftIntent: Bool { hasChanges || adjust != initialAdjust }
     private var editAnimation: Animation? { reduceMotion ? nil : .smooth(duration: 0.28) }
     private var canUndo: Bool { !undoStack.isEmpty || committed.map { $0 != snapshot } == true }
 
@@ -461,9 +475,16 @@ struct AssetEditScreen: View {
                     Label("Couldn't Load Photo", systemImage: "exclamationmark.circle")
                 } description: {
                     Text(message)
+                    if hasStoredDraft {
+                        Text("Your draft is saved on this device. Restore access or reconnect, then try again to check the photo and save status.")
+                    }
                 } actions: {
                     Button("Try Again") { Task { await load() } }
                         .buttonStyle(.borderedProminent)
+                    if hasStoredDraft {
+                        Button("Discard Saved Draft", role: .destructive) { discardAndFinish() }
+                            .accessibilityIdentifier("edit-discard-draft")
+                    }
                 }
             case .ready:
                 if let image {
@@ -474,20 +495,39 @@ struct AssetEditScreen: View {
             primaryBar
         }
         .statusBarHidden()
-        .interactiveDismissDisabled(hasChanges || isSaving)
+        .interactiveDismissDisabled(hasDraftIntent || hasStoredDraft || isSaving)
         .task { await load() }
         .onChange(of: session.lockedFolder?.publicationGeneration) { _, _ in
-            if asset.visibility == .locked, editInput?.isCurrent != true {
-                image = nil; editInput = nil
-                loadState = .failed(String(localized: "access denied."))
+            if editInput != nil, editInput?.isCurrent != true || (requiresPrivateAccess && editorClient?.lockedMediaLease == nil) {
+                revokeEditorAccess()
             }
         }
-        .onChange(of: snapshot) { scheduleRecord() }
+        .onChange(of: snapshot) {
+            scheduleRecord()
+            do { try persistDraft() } catch { saveError = error.localizedDescription }
+        }
+        .onChange(of: session.client?.context.id) { _, _ in revokeEditorAccess() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, draftInitialized {
+                do { try requireDraftAccess() } catch { revokeEditorAccess() }
+            } else { try? persistDraft() }
+        }
+        .overlay(alignment: .top) {
+            if let draftNotice, draftInitialized {
+                Text(draftNotice).font(.footnote).multilineTextAlignment(.center)
+                    .padding(8).background(.regularMaterial, in: .capsule)
+                    .padding(.horizontal, 24).padding(.top, 110)
+                    .accessibilityIdentifier("edit-draft-status").allowsHitTesting(false)
+                    #if DEBUG && targetEnvironment(simulator)
+                    .accessibilityValue(draftTestStage)
+                    #endif
+            }
+        }
         .alert("Couldn't Save Edits", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("Keep Editing", role: .cancel) {}
             Button("Try Again") { beginSave() }
         } message: { Text(saveError ?? "") }
-        .onDisappear { recordTask?.cancel() }
+        .onDisappear { try? persistDraft(); recordTask?.cancel() }
         .onChange(of: geometryTool) { showsOriginal = false }
         .onChange(of: tool) { _, _ in
             showsOriginal = false
@@ -503,8 +543,14 @@ struct AssetEditScreen: View {
         EditorPrimaryBar(
             hasChanges: hasChanges,
             isSaving: isSaving,
-            onCancel: { finish(.cancelled) },
-            onDone: beginSave
+            onCancel: discardAndFinish,
+            onDone: beginSave,
+            onKeepDraft: {
+                do { try persistDraft(); finish(.cancelled) }
+                catch { saveError = error.localizedDescription }
+            },
+            canSave: draftInitialized,
+            hasDraft: hasDraftIntent || hasStoredDraft
         )
     }
 
@@ -1057,8 +1103,28 @@ struct AssetEditScreen: View {
     // MARK: - loading and saving
 
     private func load() async {
+        draftInitialized = false
+        draftClosed = false
+        draftNotice = nil
+        legacyRecovery.recordConfirmed()
+        guard let client = session.client, client.mediaDisplayScope.accountID != nil else {
+            loadState = .failed(String(localized: "Sign in to the same account to recover your photo draft."))
+            return
+        }
+        editorClient = client
+        draftBinding = nil; draftBaseline = nil; draft = nil
+        let subject = localAssetIdentifier.map { "local:" + $0 } ?? "remote:" + asset.id
+        do {
+            // Metadata may be recognized offline, but parameters are applied
+            // only after fresh input, version and access validation below.
+            hasStoredDraft = true
+            draft = try PhotoEditDraftStore.shared.load(scope: client.mediaDisplayScope, subject: subject)
+            hasStoredDraft = draft != nil
+        } catch {
+            loadState = .failed(error.localizedDescription)
+            return
+        }
         if let id = localAssetIdentifier { await loadLocal(id); return }
-        guard let client = session.client else { return }
         loadState = .loading
         do {
             // the editor always starts from the unedited picture and replays
@@ -1070,6 +1136,10 @@ struct AssetEditScreen: View {
             async let adjustTask = offersAdjust ? (try? await client.imageAdjust(id: asset.id)) : nil
 
             let detail = try await detailTask
+            guard detail.id == asset.id, detail.type == .image, detail.canEdit != false, !detail.isTrashed else {
+                throw ImoraError.http(403, String(localized: "access denied."))
+            }
+            requiresPrivateAccess = asset.visibility == .locked || detail.visibility == .locked
             let input = try await PhotoEditInput.load(detail: detail, client: client, requiresElevation: asset.visibility == .locked)
             let image = input.image
             // saving replaces the whole edit list, so an unreadable one must
@@ -1121,10 +1191,136 @@ struct AssetEditScreen: View {
             if let image = self.image {
                 isPortrait = image.size.height > image.size.width
             }
+            guard session.client === client, input.isCurrent else { throw CancellationError() }
+            guard let revision = detail.checksum, !revision.isEmpty else { throw PhotoEditDraft.RecoveryError.changed }
+            let binding = PhotoEditDraft.Binding(scope: client.mediaDisplayScope, subject: "remote:" + asset.id,
+                sourceRevision: revision, width: width, height: height,
+                mode: canUseUnifiedEditor ? "unified" : (canAdjust ? "legacy" : "geometry"))
+            try restoreDraft(binding: binding, current: .init(edits: edits,
+                adjust: canUseUnifiedEditor || !canAdjust ? nil : loadedAdjust))
             committed = snapshot
             loadState = .ready
+            draftInitialized = true
+            renderAdjust()
         } catch {
             loadState = .failed(error.localizedDescription)
+        }
+    }
+
+    private func requireDraftAccess() throws {
+        guard let client = editorClient, session.client === client, client.context.isActive,
+              let binding = draftBinding, client.mediaDisplayScope == binding.scope else { throw CancellationError() }
+        if requiresPrivateAccess, client.lockedMediaLease == nil { throw ImoraError.http(403, String(localized: "access denied.")) }
+        if let localEditor {
+            guard localEditor.isAccessible else { throw LocalPhotoEditorError.unavailable }
+        } else {
+            guard editInput?.isCurrent == true else { throw CancellationError() }
+        }
+    }
+
+    private func revokeEditorAccess() {
+        draftInitialized = false
+        image = nil; editInput = nil; adjustedImage = nil; cropPreview = nil; adjustSource = nil
+        loadState = .failed(String(localized: "This photo is no longer accessible. Reopen it after restoring access."))
+    }
+
+    private func restoreDraft(binding: PhotoEditDraft.Binding, current: PhotoEditDraft.Version) throws {
+        draftBinding = binding; draftBaseline = current
+        try requireDraftAccess()
+        // Expose explicit discard even for a corrupt or incompatible record.
+        hasStoredDraft = true
+        guard let stored = try PhotoEditDraftStore.shared.load(scope: binding.scope, subject: binding.subject) else {
+            hasStoredDraft = false; draft = nil; return
+        }
+        switch try stored.recover(binding: binding, current: current) {
+        case .saved:
+            try PhotoEditDraftStore.shared.remove(scope: binding.scope, subject: binding.subject)
+            draft = nil; hasStoredDraft = false
+            if let localEditor { onLocalSaved(localEditor.localIdentifier) }
+            else { onRemoteSaveUnconfirmed(asset.id) }
+            draftNotice = String(localized: "Your previous save was confirmed.")
+        case .editing(let recovered), .retry(let recovered):
+            draft = recovered; draftBaseline = recovered.baseline
+            initialState = EditTransform.state(from: recovered.baseline.edits,
+                originalWidth: originalWidth, originalHeight: originalHeight)
+            initialAdjust = canUseUnifiedEditor
+                ? (try recovered.baseline.edits.compactMap { try $0.photoAdjust() }.last ?? .neutral)
+                : PhotoAdjust(legacy: recovered.baseline.adjust ?? .neutral)
+            hadServerEdits = !recovered.baseline.edits.isEmpty
+            preservedEdits = recovered.baseline.edits.filter { $0.isOther && (!canUseUnifiedEditor || !$0.isPhotoAdjustment) }
+            if recovered.submission != nil { legacyRecovery.recordUnconfirmed() }
+            apply(recovered.snapshot)
+            draftNotice = recovered.submission == nil
+                ? String(localized: "Draft restored. Continue editing or tap Done to save.")
+                : String(localized: "Save not confirmed. Your edits are restored. Tap Done to check and retry.")
+        }
+    }
+
+    private func persistDraft() throws {
+        guard draftInitialized, !draftClosed else { return }
+        try requireDraftAccess()
+        guard let binding = draftBinding, let baseline = draftBaseline else { return }
+        if !hasDraftIntent {
+            try PhotoEditDraftStore.shared.remove(scope: binding.scope, subject: binding.subject)
+            draft = nil; hasStoredDraft = false
+            return
+        }
+        var value = draft ?? PhotoEditDraft(binding: binding, baseline: baseline, snapshot: snapshot)
+        value.snapshot = snapshot
+        try PhotoEditDraftStore.shared.write(value)
+        draft = value; hasStoredDraft = true
+    }
+
+    private func discardAndFinish() {
+        do {
+            if let client = editorClient {
+                guard session.client === client, client.context.isActive else { finish(.cancelled); return }
+                let subject = localAssetIdentifier.map { "local:" + $0 } ?? "remote:" + asset.id
+                try PhotoEditDraftStore.shared.remove(scope: client.mediaDisplayScope, subject: subject)
+            }
+            draft = nil; hasStoredDraft = false
+            finish(.cancelled)
+        } catch { saveError = error.localizedDescription }
+    }
+
+    /// A retry always reads first, including within the same process. If that
+    /// read fails, no new mutation is sent and the pending record stays intact.
+    private func reconcilePendingSave() async throws -> Bool {
+        guard let stored = draft, let binding = draftBinding else { return false }
+        try requireDraftAccess()
+        let current: PhotoEditDraft.Version
+        let currentBinding: PhotoEditDraft.Binding
+        var freshLocal: LocalPhotoEditor?
+        if let localEditor {
+            let fresh = try await LocalPhotoEditor.open(localIdentifier: localEditor.localIdentifier)
+            freshLocal = fresh
+            current = .init(edits: fresh.recipe.edits, adjust: nil, localModification: fresh.modificationDate)
+            currentBinding = .init(scope: binding.scope, subject: binding.subject, sourceRevision: fresh.sourceRevision,
+                width: fresh.originalWidth, height: fresh.originalHeight, mode: binding.mode)
+        } else {
+            guard let client = editorClient else { throw CancellationError() }
+            let detail = try await client.assetDetail(id: asset.id)
+            guard detail.id == asset.id, detail.type == .image, detail.canEdit != false, !detail.isTrashed else {
+                throw ImoraError.http(403, String(localized: "access denied."))
+            }
+            requiresPrivateAccess = requiresPrivateAccess || detail.visibility == .locked
+            let edits = try await client.assetEdits(id: asset.id)
+            let currentAdjust = canUseUnifiedEditor || !canAdjust ? nil : try await client.imageAdjust(id: asset.id)
+            current = .init(edits: edits, adjust: currentAdjust)
+            currentBinding = .init(scope: client.mediaDisplayScope, subject: binding.subject,
+                sourceRevision: detail.checksum ?? "", width: binding.width, height: binding.height, mode: binding.mode)
+        }
+        try requireDraftAccess()
+        switch try stored.recover(binding: currentBinding, current: current) {
+        case .saved:
+            try PhotoEditDraftStore.shared.remove(scope: binding.scope, subject: binding.subject)
+            draft = nil; hasStoredDraft = false
+            return true
+        case .editing(let recovered), .retry(let recovered):
+            try PhotoEditDraftStore.shared.write(recovered)
+            draft = recovered; draftBaseline = recovered.baseline
+            if let freshLocal { localEditor = freshLocal }
+            return false
         }
     }
 
@@ -1168,6 +1364,9 @@ struct AssetEditScreen: View {
         loadState = .loading
         do {
             let editor = try await LocalPhotoEditor.open(localIdentifier: id)
+            guard let client = editorClient, session.client === client, client.context.isActive, editor.isCurrent else {
+                throw CancellationError()
+            }
             localEditor = editor; image = editor.preview
             originalWidth = editor.originalWidth; originalHeight = editor.originalHeight
             state = EditTransform.state(from: editor.recipe.edits, originalWidth: originalWidth, originalHeight: originalHeight)
@@ -1177,7 +1376,11 @@ struct AssetEditScreen: View {
             canUseUnifiedEditor = true; canAdjust = true; tool = .adjust
             adjustSource = ImageAdjustRenderer.upright(editor.preview)
             isPortrait = editor.preview.size.height > editor.preview.size.width
-            committed = snapshot; loadState = .ready
+            let binding = PhotoEditDraft.Binding(scope: client.mediaDisplayScope, subject: "local:" + id,
+                sourceRevision: editor.sourceRevision, width: originalWidth, height: originalHeight, mode: "local")
+            try restoreDraft(binding: binding, current: .init(edits: editor.recipe.edits, adjust: nil,
+                localModification: editor.modificationDate))
+            committed = snapshot; loadState = .ready; draftInitialized = true
             renderAdjust()
         } catch { loadState = .failed(error.localizedDescription) }
     }
@@ -1207,12 +1410,29 @@ struct AssetEditScreen: View {
         }
     }
 
+    #if DEBUG && targetEnvironment(simulator)
+    /// Bounded fault point, restricted to the pre-existing owned synthetic UI
+    /// account and its fixture assets. Absent from shipping builds.
+    private func pauseForDraftInterruption(_ stage: String) async throws {
+        guard ProcessInfo.processInfo.environment["IMORA_PHASE4_EDIT_INTERRUPTION"] == stage,
+              let fixture = try? Phase4OwnedFixture.load("legacy"),
+              editorClient?.mediaDisplayScope.accountID == fixture.ownerID,
+              fixture.assets?.contains(where: { $0.id == asset.id }) == true else { return }
+        draftNotice = String(localized: "Saving edits…")
+        draftTestStage = stage
+        try await Task.sleep(for: .seconds(45))
+    }
+    #endif
+
     private var canCrop: Bool { originalWidth > 0 && originalHeight > 0 }
 
     private func beginSave() {
         guard !isSaving, hasChanges, let image else { return }
         guard localEditor != nil || session.client != nil else { return }
+        do { try persistDraft(); try requireDraftAccess() }
+        catch { saveError = error.localizedDescription; return }
         isSaving = true
+        let savedSnapshot = snapshot
         let savedState = state, savedAdjust = effectiveAdjust
         var edits = EditTransform.edits(from: savedState, originalWidth: originalWidth, originalHeight: originalHeight)
             + (removesPreservedEdits ? [] : preservedEdits)
@@ -1229,18 +1449,37 @@ struct AssetEditScreen: View {
             var derivativeReady: Task<Void, Never>?
             defer { derivativeReady?.cancel() }
             do {
+                if try await reconcilePendingSave() {
+                    if let localEditor { onLocalSaved(localEditor.localIdentifier) }
+                    else { onRemoteSaveUnconfirmed(asset.id) }
+                    isSaving = false
+                    finish(.saved(nil))
+                    return
+                }
+                try requireDraftAccess()
+                guard var pending = draft else { throw PhotoEditDraft.RecoveryError.invalid }
+                pending.submission = .init(edits: localEditor != nil || unified ? intent : legacyIntent.edits,
+                    adjust: localEditor != nil || unified ? nil : legacyIntent.adjust, snapshot: savedSnapshot)
+                try PhotoEditDraftStore.shared.write(pending)
+                draft = pending
+                #if DEBUG && targetEnvironment(simulator)
+                try await pauseForDraftInterruption("before-write")
+                #endif
                 if let localEditor {
                     try await localEditor.save(edits: intent)
+                    try PhotoEditDraftStore.shared.remove(scope: pending.binding.scope, subject: pending.binding.subject)
+                    draft = nil; hasStoredDraft = false
                     onLocalSaved(localEditor.localIdentifier)
                     isSaving = false
                     finish(.saved(nil))
                     return
                 }
-                guard let client = session.client else { throw ImoraError.unreachable }
+                guard let client = editorClient, session.client === client else { throw ImoraError.unreachable }
                 let rendered: Data?
                 if unified { rendered = await AssetEditPreviewRenderer.projection(image, state: renderedState, photo: savedAdjust) }
                 else { rendered = await AssetEditPreviewRenderer.projection(image, state: renderedState, adjust: savedAdjust.legacy) }
                 guard let preview = rendered else { throw LocalPhotoEditorError.rendering }
+                try requireDraftAccess()
                 let realtime = session.realtime, assetID = asset.id
                 func observeDerivative() -> Task<Void, Never> {
                     Task {
@@ -1267,6 +1506,12 @@ struct AssetEditScreen: View {
                         }, readAdjust: { try await client.imageAdjust(id: assetID) },
                         readEdits: { try await client.assetEdits(id: assetID) })
                 }
+                #if DEBUG && targetEnvironment(simulator)
+                try await pauseForDraftInterruption("after-save")
+                #endif
+                try requireDraftAccess()
+                try PhotoEditDraftStore.shared.remove(scope: pending.binding.scope, subject: pending.binding.subject)
+                draft = nil; hasStoredDraft = false; draftClosed = true
                 // A projection is published only after durable acceptance.
                 onProjected(AssetEditProjection(operationID: operationID, assetID: asset.id, imageData: preview))
                 await derivativeReady?.value
@@ -1283,12 +1528,16 @@ struct AssetEditScreen: View {
                     if !unified { legacyRecovery.recordUnconfirmed() }
                     onRemoteSaveUnconfirmed(asset.id)
                 }
+                if draft?.submission != nil {
+                    draftNotice = String(localized: "Save not confirmed. Your edits are restored. Tap Done to check and retry.")
+                }
                 saveError = error.localizedDescription
             }
         }
     }
 
     private func finish(_ outcome: AssetEditOutcome) {
+        draftClosed = true
         onFinished(outcome)
         dismiss()
     }

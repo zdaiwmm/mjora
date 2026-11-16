@@ -25,11 +25,12 @@ final class LocalHTTPServer: @unchecked Sendable {
     var received: [Request] { requests.withLock { $0 } }
     var apiURL: URL { URL(string: "http://127.0.0.1:\(listener.port!.rawValue)/api")! }
 
-    init(concurrent: Bool = false, handler: @escaping @Sendable (Request) -> Response) throws {
+    init(concurrent: Bool = false, port: UInt16? = nil, handler: @escaping @Sendable (Request) -> Response) throws {
         self.handler = handler
         queue = DispatchQueue(label: "imora.tests.loopback", attributes: concurrent ? .concurrent : [])
         let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: port.flatMap(NWEndpoint.Port.init(rawValue:)) ?? .any)
+        if port != nil { parameters.allowLocalEndpointReuse = true }
         listener = try NWListener(using: parameters)
     }
 

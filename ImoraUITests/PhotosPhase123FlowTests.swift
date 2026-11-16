@@ -16,11 +16,12 @@ final class PhotosPhase123FlowTests: XCTestCase {
         try OwnedUIFixture.load()
     }
 
-    private func launch() throws -> XCUIApplication {
+    private func launch(interruption: String? = nil) throws -> XCUIApplication {
         continueAfterFailure = false
         let fixture = try fixture()
         let app = XCUIApplication()
         OwnedUIFixture.configure(app)
+        app.launchEnvironment["IMORA_PHASE4_EDIT_INTERRUPTION"] = interruption
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
@@ -284,6 +285,163 @@ final class PhotosPhase123FlowTests: XCTestCase {
         closeViewer(app)
     }
 
+    func testLocalPhotoDraftSurvivesProcessTerminationAndExplicitDiscard() throws {
+        var app = try launch()
+        defer { finishOnCloud(app) }
+        searchDevice(app, filename: "Phase123_Beach.jpg")
+        try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap()
+        waitForEditorReady(app)
+        try resetExistingSyntheticEdits(app)
+        let exposure = try setAdjustment(app, labels: ["曝光", "Exposure"])
+        snapshot(app, "draft-local-before-kill")
+        app.terminate()
+        app = try launch()
+        searchDevice(app, filename: "Phase123_Beach.jpg")
+        try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap()
+        waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: exposure)
+        snapshot(app, "draft-local-after-relaunch")
+        saveEditor(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: exposure)
+        snapshot(app, "draft-local-saved-reopened")
+        revertEditor(app); saveEditor(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        let keptExposure = try setAdjustment(app, labels: ["曝光", "Exposure"])
+        app.buttons["edit-cancel"].tap()
+        app.buttons.matching(identifier: "edit-keep-draft").firstMatch.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: keptExposure)
+        app.buttons["edit-cancel"].tap()
+        let discard = button(app, labels: ["Discard Changes", "放弃更改"])
+        XCTAssertTrue(discard.waitForExistence(timeout: 4)); discard.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+        app.buttons["viewer-edit"].firstMatch.tap()
+        waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: 0)
+        app.buttons["edit-cancel"].tap()
+    }
+
+    func testDisabledLocalAdjustmentDraftSurvivesTerminationWithoutEnablingSave() throws {
+        var app = try launch()
+        defer { finishOnCloud(app) }
+        searchDevice(app, filename: "Phase123_Beach.jpg"); try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try resetExistingSyntheticEdits(app)
+        let amount = try setAdjustment(app, labels: ["曝光", "Exposure"])
+        button(app, labels: ["曝光", "Exposure"]).tap()
+        XCTAssertFalse(app.buttons["edit-done"].isEnabled, "Disabled adjustment leaves the output unchanged")
+        snapshot(app, "draft-disabled-tool-before-kill")
+        app.terminate(); app = try launch()
+        searchDevice(app, filename: "Phase123_Beach.jpg"); try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        XCTAssertEqual(try rulerValue(app, id: "edit-adjust-ruler"), amount, accuracy: 1)
+        XCTAssertFalse(app.buttons["edit-done"].isEnabled, "Restoring an inactive tool must not invent a saveable change")
+        snapshot(app, "draft-disabled-tool-recovered")
+        app.buttons["edit-cancel"].tap()
+        app.buttons.matching(identifier: "edit-keep-draft").firstMatch.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        XCTAssertEqual(try rulerValue(app, id: "edit-adjust-ruler"), amount, accuracy: 1)
+        XCTAssertFalse(app.buttons["edit-done"].isEnabled)
+        button(app, labels: ["曝光", "Exposure"]).tap()
+        XCTAssertTrue(app.buttons["edit-done"].isEnabled)
+        app.buttons["edit-cancel"].tap()
+        let discard = button(app, labels: ["Discard Changes", "放弃更改"])
+        XCTAssertTrue(discard.waitForExistence(timeout: 4)); discard.tap()
+        XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+    }
+
+    private func searchCloud(_ app: XCUIApplication, filename: String) {
+        source(app, device: false)
+        tapID(app, "photos-search")
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        enter(filename, in: field, app: app); field.typeText("\n")
+        waitUntil("One exact owned cloud fixture", timeout: 25) { self.visibleTiles(app).count == 1 }
+    }
+
+    func testCloudPhotoDraftSurvivesProcessTerminationAndSaveReopen() async throws {
+        let api = try FixtureAPI(fixture: fixture()); try await api.login()
+        let rows = try await api.assets()
+        let filename = try XCTUnwrap(rows.first(where: { ($0["originalFileName"] as? String)?.hasPrefix("Phase4_Legacy_") == true })?["originalFileName"] as? String)
+        var app = try launch()
+        defer { finishOnCloud(app) }
+        searchCloud(app, filename: filename); try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try resetExistingSyntheticEdits(app)
+        let exposure = try setAdjustment(app, labels: ["曝光", "Exposure"])
+        button(app, labels: ["裁剪", "Crop"]).tap()
+        button(app, labels: ["Rotate Left", "向左旋转"]).tap()
+        snapshot(app, "draft-cloud-before-kill")
+        app.terminate(); app = try launch()
+        searchCloud(app, filename: filename); try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: exposure)
+        XCTAssertTrue(app.buttons["edit-done"].isEnabled)
+        snapshot(app, "draft-cloud-after-relaunch")
+        saveEditor(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: exposure)
+        snapshot(app, "draft-cloud-saved-reopened")
+        revertEditor(app); saveEditor(app)
+    }
+
+    func testCloudUnsubmittedSaveRecoversAfterProcessTermination() async throws {
+        try await interruptedCloudSave(stage: "before-write")
+    }
+    func testCloudAcceptedSaveIsConfirmedAfterProcessTermination() async throws {
+        try await interruptedCloudSave(stage: "after-save")
+    }
+
+    private func interruptedCloudSave(stage: String) async throws {
+        let api = try FixtureAPI(fixture: fixture()); try await api.login()
+        let rows = try await api.assets()
+        let row = try XCTUnwrap(rows.first { ($0["originalFileName"] as? String)?.hasPrefix("Phase4_Legacy_") == true })
+        let id = try XCTUnwrap(row["id"] as? String), filename = try XCTUnwrap(row["originalFileName"] as? String)
+        var app = try launch(interruption: stage)
+        defer { finishOnCloud(app) }
+        searchCloud(app, filename: filename); try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try resetExistingSyntheticEdits(app)
+        let exposure = try setAdjustment(app, labels: ["曝光", "Exposure"])
+        button(app, labels: ["裁剪", "Crop"]).tap()
+        button(app, labels: ["Rotate Left", "向左旋转"]).tap()
+        app.buttons["edit-done"].tap()
+        let checkpoint = app.staticTexts["edit-draft-status"]
+        waitUntil("Owned interruption reached " + stage, timeout: 20) { checkpoint.value as? String == stage }
+        snapshot(app, "draft-cloud-interrupted-" + stage)
+        let before = try await api.editState(id: id)
+        XCTAssertEqual(before.edits.isEmpty, stage != "after-save")
+        XCTAssertEqual(before.exposure, stage == "before-write" ? 0 : exposure, accuracy: 1)
+        app.terminate(); app = try launch()
+        searchCloud(app, filename: filename); try openOnlyResult(app)
+        app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+        try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: exposure)
+        snapshot(app, "draft-cloud-recovered-" + stage)
+        if stage == "after-save" {
+            XCTAssertFalse(app.buttons["edit-done"].isEnabled, "A confirmed save must not request another submission")
+            XCTAssertTrue(app.staticTexts["edit-draft-status"].exists)
+            app.buttons["edit-cancel"].tap()
+            XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+            snapshot(app, "draft-cloud-confirmed-viewer")
+            app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+            XCTAssertFalse(app.buttons["edit-done"].isEnabled)
+        } else {
+            XCTAssertTrue(app.buttons["edit-done"].isEnabled, "Missing or partial writes need explicit retry")
+            saveEditor(app)
+            app.buttons["viewer-edit"].firstMatch.tap(); waitForEditorReady(app)
+            try assertAdjustment(app, labels: ["曝光", "Exposure"], equals: exposure)
+        }
+        let after = try await api.editState(id: id)
+        XCTAssertEqual(after.exposure, exposure, accuracy: 1)
+        XCTAssertFalse(after.edits.isEmpty)
+        revertEditor(app); saveEditor(app)
+    }
+
     private func selectAdjustment(_ app: XCUIApplication, labels: [String]) throws {
         button(app, labels: ["调整", "Adjust"]).tap()
         let item = button(app, labels: labels)
@@ -351,7 +509,14 @@ final class PhotosPhase123FlowTests: XCTestCase {
         XCTAssertTrue(revert.waitForExistence(timeout: 5))
         if revert.isEnabled {
             revert.tap(); button(app, labels: ["还原为原始版本", "Revert to Original"]).tap()
-            saveEditor(app); app.buttons.matching(identifier: "viewer-edit").firstMatch.tap()
+            // A recovered, unsaved draft can revert to the already-stored
+            // original. There is then no external save to perform.
+            if app.buttons["edit-done"].isEnabled { saveEditor(app) }
+            else {
+                app.buttons["edit-cancel"].tap()
+                XCTAssertTrue(app.buttons["edit-done"].waitForNonExistence(timeout: 10))
+            }
+            app.buttons.matching(identifier: "viewer-edit").firstMatch.tap()
             waitForEditorReady(app)
         } else {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.42)).tap()
@@ -540,6 +705,22 @@ final class PhotosPhase123FlowTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(200))
             }
             XCTFail("Synthetic server preference must confirm the UI change and initial restoration")
+        }
+        func editState(id: String) async throws -> (edits: [[String: Any]], exposure: Double) {
+            let owned = try await assets()
+            guard owned.contains(where: { $0["id"] as? String == id && $0["ownerId"] as? String == fixture.ownerID }) else {
+                throw Failure.invalidFixtureResponse
+            }
+            let edits = try await request("assets/\(id)/edits", method: "GET", body: nil)
+            let adjust: Any
+            do { adjust = try await request("assets/\(id)/adjust", method: "GET", body: nil) }
+            catch let error as NSError where error.domain == "Phase123 synthetic HTTP status" && error.code == 404 {
+                adjust = ["exposure": 0]
+            }
+            let storedEdits = try XCTUnwrap((edits as? [String: Any])?["edits"] as? [[String: Any]])
+            let photo = storedEdits.last(where: { $0["action"] as? String == "photo" })?["parameters"] as? [String: Any]
+            let exposure = photo?["exposure"] as? Double ?? (adjust as? [String: Any])?["exposure"] as? Double ?? 0
+            return (storedEdits, exposure)
         }
         func assets(filename: String? = nil, albumID: String? = nil) async throws -> [[String: Any]] {
             var body: [String: Any] = ["size": 100, "page": 1, "withExif": true]
