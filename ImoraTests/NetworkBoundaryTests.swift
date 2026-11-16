@@ -78,7 +78,7 @@ extension NetworkBoundaryTests {
         defer { source.stop() }
         let client = ImoraClient(apiURL: source.apiURL, accessToken: "media-token")
         let file = try await client.localMediaFile(client.playbackURL(assetID: "fixture"))
-        XCTAssertTrue(file.url.isFileURL)
+        XCTAssertTrue(try file.url.isFileURL)
         XCTAssertEqual(try Data(contentsOf: file.url), Data("synthetic-video".utf8))
         XCTAssertEqual(source.received.last?.headers["authorization"], "Bearer media-token")
         do {

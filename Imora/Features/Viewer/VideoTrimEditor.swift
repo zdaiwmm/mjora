@@ -352,8 +352,9 @@ struct VideoTrimEditor: View {
             let url = trim == nil
                 ? client.playbackURL(assetID: asset.id)
                 : client.originalURL(assetID: asset.id)
-            let localURL = try await client.localMediaFile(url)
-            let urlAsset = localURL.makeAsset()
+            let localURL = try await client.localMediaFile(url, role: .editInput,
+                contentRevision: detail.checksum, requiresElevation: asset.visibility == .locked)
+            let urlAsset = try localURL.makeAsset()
             let playable = try await urlAsset.load(.duration).seconds
             // the asset's own duration is the trimmed one once a trim applies.
             let serverDuration = trim?.originalDuration ?? detail.duration.map { Double($0) / 1000 }

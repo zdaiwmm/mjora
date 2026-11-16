@@ -13,7 +13,7 @@ struct AssetContextPreview: View {
     @State private var looper: AVPlayerLooper?
 
     private var pairedLocalIdentifier: String? {
-        asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id]
+        asset.visibility == .locked ? nil : (asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id])
     }
 
     var body: some View {
@@ -47,19 +47,25 @@ struct AssetContextPreview: View {
             looper = nil
             player = nil
         }
+        .onChange(of: session.lockedFolder?.publicationGeneration) { _, _ in
+            if asset.visibility == .locked {
+                player?.pause(); looper = nil; player = nil
+            }
+        }
     }
 
     private func startVideo() async {
         guard asset.isVideo, player == nil else { return }
         var item: AVPlayerItem?
-        if let localId = pairedLocalIdentifier {
+        if asset.visibility != .locked, let localId = pairedLocalIdentifier {
             // The paired device copy is free; a backed-up one stuck in iCloud
             // falls through to the server stream instead of downloading.
             item = await LocalImageLoader.shared.playerItem(localIdentifier: localId, allowsNetwork: false)
         }
         if item == nil, let client = session.client,
-           let localURL = try? await client.localMediaFile(client.playbackURL(assetID: asset.id)) {
-            item = AVPlayerItem(asset: localURL.makeAsset())
+           let localURL = try? await client.localMediaFile(client.playbackURL(assetID: asset.id), requiresElevation: asset.visibility == .locked),
+           let source = try? localURL.makeAsset() {
+            item = AVPlayerItem(asset: source)
         }
         guard let item, !Task.isCancelled else { return }
         let queue = AVQueuePlayer()

@@ -33717,6 +33717,23 @@
           }
         }
       }
+    },
+    "The server did not return a supported media file.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server did not return a supported media file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器未返回支持的媒体文件。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

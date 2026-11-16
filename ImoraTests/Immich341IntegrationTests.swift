@@ -140,8 +140,8 @@ final class Immich341IntegrationTests: XCTestCase {
         defer { client.invalidate() }
         let start = Date()
         let local = try await client.localMediaFile(client.playbackURL(assetID: f.motionID))
-        XCTAssertTrue(local.url.isFileURL)
-        let asset = local.makeAsset()
+        XCTAssertTrue(try local.url.isFileURL)
+        let asset = try local.makeAsset()
         let playable = try await asset.load(.isPlayable)
         XCTAssertTrue(playable)
         let generator = AVAssetImageGenerator(asset: asset)

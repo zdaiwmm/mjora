@@ -41,6 +41,96 @@ final class Phase4ViewerFlowTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in condition() }, object: nil)], timeout: timeout), .completed, description)
     }
 
+    private func launchOwnedCloud() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchEnvironment["IMORA_PHASE4_OWNED_FIXTURE"] = "live"
+        app.launchEnvironment["IMORA_LAUNCH_TRACE"] = "0"
+        app.launch()
+        let source = app.buttons["photos-source-menu"]
+        XCTAssertTrue(source.waitForExistence(timeout: 35)); source.tap()
+        let cloud = app.buttons.matching(NSPredicate(format: "(label == %@ OR label BEGINSWITH %@) AND identifier != %@",
+            "Cloud Photos", "Cloud Photos,", "photos-source-menu")).firstMatch
+        XCTAssertTrue(cloud.waitForExistence(timeout: 5)); cloud.tap()
+        let all = app.segmentedControls["photos-period-picker"].buttons["All"]
+        if all.exists && all.isHittable { all.tap() }
+        return app
+    }
+
+    func testSavedCloudPhotoCanReopenEditorAndRevert() throws {
+        continueAfterFailure = false
+        let fixture = try fixture(), app = launchOwnedCloud()
+        defer { app.terminate() }
+        let photo = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label BEGINSWITH %@", "asset-tile", "Photo,")).firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 25)); photo.tap()
+        let viewer = app.descendants(matching: .any)["asset-viewer"].firstMatch
+        wait("Only the new owned control still may be edited") { viewer.value as? String == fixture.controlStillID }
+        let edit = app.buttons["viewer-edit"].firstMatch
+        XCTAssertTrue(edit.waitForExistence(timeout: 10)); edit.tap()
+        let more = app.buttons["edit-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 30))
+        app.buttons["Crop"].tap()
+        let rotate = app.buttons["Rotate Left"]
+        XCTAssertTrue(rotate.waitForExistence(timeout: 5)); rotate.tap()
+        let done = app.buttons["edit-done"]
+        wait("A real rotation must be saveable") { done.isEnabled }
+        done.tap()
+        wait("Saving must return to the viewer", timeout: 60) { !done.exists && edit.isHittable }
+        edit.tap()
+        XCTAssertTrue(more.waitForExistence(timeout: 30))
+        XCTAssertTrue(more.isHittable, "A second edit must not fail with a retired-image CancellationError")
+        capture(app, "closeout-cloud-editor-reopened")
+        more.tap()
+        let revert = app.buttons["Revert to Original"].firstMatch
+        XCTAssertTrue(revert.waitForExistence(timeout: 5)); XCTAssertTrue(revert.isEnabled); revert.tap()
+        XCTAssertTrue(revert.waitForExistence(timeout: 5)); revert.tap()
+        wait("Reverting the synthetic edit must be saveable") { done.isEnabled }
+        done.tap()
+        wait("Revert must finish", timeout: 60) { !done.exists && edit.isHittable }
+        edit.tap()
+        XCTAssertTrue(more.waitForExistence(timeout: 30)); XCTAssertTrue(more.isHittable)
+        capture(app, "closeout-cloud-editor-reopened-after-revert")
+        app.buttons["edit-cancel"].tap()
+    }
+
+    func testDeviceMediaCountsAndPreviewModes() throws {
+        continueAfterFailure = false
+        _ = try fixture()
+        let app = launchOwnedCloud()
+        defer { app.terminate() }
+        app.buttons["photos-source-menu"].tap()
+        let device = app.buttons["On Device"].firstMatch
+        XCTAssertTrue(device.waitForExistence(timeout: 5)); device.tap()
+        let collections = app.buttons["shell-albums"]
+        XCTAssertTrue(collections.waitForExistence(timeout: 15)); collections.tap()
+        let home = app.scrollViews["collections-home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 15))
+        let photos = app.buttons["collections-device-media-photos"]
+        for _ in 0..<10 where !photos.exists || !photos.isHittable { home.swipeUp() }
+        XCTAssertTrue(photos.waitForExistence(timeout: 15)); XCTAssertTrue(photos.isHittable)
+        let count = try XCTUnwrap((photos.value as? String)?.split(separator: " ").first.flatMap { Int($0) })
+        XCTAssertGreaterThan(count, 0)
+        capture(app, "closeout-device-media-large")
+        photos.tap()
+        let deviceCount = app.staticTexts["device-library-count"]
+        XCTAssertTrue(deviceCount.waitForExistence(timeout: 20))
+        XCTAssertEqual(Int(deviceCount.label.split(separator: " ").first ?? ""), count)
+        capture(app, "closeout-device-media-filtered-count")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let layout = app.buttons["collections-layout-menu"]
+        XCTAssertTrue(layout.waitForExistence(timeout: 10)); layout.tap()
+        app.buttons["Customize Collections"].tap()
+        let modes = app.segmentedControls["collections-preview-size"]
+        XCTAssertTrue(modes.waitForExistence(timeout: 10)); modes.buttons["None"].tap()
+        app.buttons["Done"].tap()
+        for _ in 0..<10 where !photos.isHittable { home.swipeUp() }
+        XCTAssertTrue(photos.isHittable)
+        XCTAssertLessThan(photos.frame.height, 90)
+        capture(app, "closeout-device-media-no-preview")
+        layout.tap(); app.buttons["Customize Collections"].tap()
+        XCTAssertTrue(modes.waitForExistence(timeout: 10)); modes.buttons["Large"].tap(); app.buttons["Done"].tap()
+    }
+
     func testHoldReleaseThenSwipe() throws {
         continueAfterFailure = false
         let fixture = try fixture(), app = XCUIApplication()

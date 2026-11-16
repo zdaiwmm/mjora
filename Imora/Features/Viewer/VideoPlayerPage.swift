@@ -506,6 +506,10 @@ final class VideoPlayback {
                 guard let self, let player, self.player === player,
                       self.generation == capturedGeneration, !self.isScrubbing, !self.isSeeking, self.pendingSeekSeconds == nil
                 else { return }
+                if let asset = player.currentItem?.asset, !ControlledMediaFile.isAuthorized(asset) {
+                    self.reload(assetID: self.ownerID ?? "")
+                    return
+                }
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
                 self.currentTime = seconds
@@ -631,7 +635,7 @@ struct VideoPlayerPage: View {
     @State private var localUnavailable = false
 
     private var posterLocalIdentifier: String? {
-        localUnavailable ? nil : deviceIdentifier
+        localUnavailable || asset.visibility == .locked ? nil : deviceIdentifier
     }
 
     var body: some View {
@@ -689,6 +693,9 @@ struct VideoPlayerPage: View {
             }
         }
         .onDisappear { playback.release(assetID: asset.id) }
+        .onChange(of: session.lockedFolder?.publicationGeneration) { _, _ in
+            if asset.visibility == .locked, session.client?.lockedMediaLease == nil { playback.reload(assetID: asset.id) }
+        }
     }
 
     private var posterURL: URL? {
@@ -705,7 +712,7 @@ struct VideoPlayerPage: View {
     /// back to the server stream instead of spinning forever. device-only
     /// assets may pull from icloud since they have nowhere else to go.
     private func makeItem() async -> AVPlayerItem? {
-        if let deviceIdentifier,
+        if asset.visibility != .locked, let deviceIdentifier,
            let item = await LocalImageLoader.shared.playerItem(
                localIdentifier: deviceIdentifier,
                allowsNetwork: asset.isLocal
@@ -713,8 +720,8 @@ struct VideoPlayerPage: View {
             return item
         }
         guard !asset.isLocal, let client = session.client else { return nil }
-        guard let localURL = try? await client.localMediaFile(client.playbackURL(assetID: asset.id)), !Task.isCancelled else { return nil }
-        let urlAsset = localURL.makeAsset()
+        guard let localURL = try? await client.localMediaFile(client.playbackURL(assetID: asset.id), requiresElevation: asset.visibility == .locked),
+              !Task.isCancelled, let urlAsset = try? localURL.makeAsset() else { return nil }
         return AVPlayerItem(asset: urlAsset)
     }
 }

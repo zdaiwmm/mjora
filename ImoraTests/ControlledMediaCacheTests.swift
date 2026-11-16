@@ -22,11 +22,11 @@ final class ControlledMediaCacheTests: XCTestCase {
         var first: ControlledMediaFile? = try await firstRequest
         var same: ControlledMediaFile? = try await sameRequest
         let firstURL = try XCTUnwrap(first?.url)
-        XCTAssertEqual(first?.url, same?.url)
+        XCTAssertEqual(try first?.url, try same?.url)
         XCTAssertEqual(ControlledMediaStore.diskUsage(root: root), 4)
         let second = try await store.file(request: context.authorize(URLRequest(url: server.apiURL.appending(path: "second"))), session: ControlledSession.noRedirect, context: context)
         XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path), "An active consumer lost its file")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: second.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try second.url.path))
         ControlledMediaStore.clearCache(root: root)
         XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path), "Clear removed an active consumer")
         first = nil; same = nil
@@ -45,7 +45,7 @@ final class ControlledMediaCacheTests: XCTestCase {
         let context = AccountRequestContext(apiURL: server.apiURL, token: "fixture")
         var first: ControlledMediaFile? = try await store.file(request: context.authorize(URLRequest(url: server.apiURL.appending(path: "a"))), session: ControlledSession.noRedirect, context: context)
         let path = try XCTUnwrap(first?.url)
-        var playbackAsset: AVURLAsset? = first?.makeAsset()
+        var playbackAsset: AVURLAsset? = try first?.makeAsset()
         first = nil
         let second = try await store.file(request: context.authorize(URLRequest(url: server.apiURL.appending(path: "b"))), session: ControlledSession.noRedirect, context: context)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path.path))
@@ -53,7 +53,7 @@ final class ControlledMediaCacheTests: XCTestCase {
         playbackAsset = nil
         for _ in 0..<100 where FileManager.default.fileExists(atPath: path.path) { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: second.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try second.url.path))
         XCTAssertEqual(ControlledMediaStore.diskUsage(root: root), 4)
     }
 }

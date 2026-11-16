@@ -3,17 +3,41 @@ import Foundation
 import ObjectiveC
 import Synchronization
 
+nonisolated enum MediaFileRole: String, Hashable, Sendable { case playback, editInput }
+
+nonisolated struct MediaFileAccess: Sendable {
+    let context: AccountRequestContext
+    let privateLease: LockedMediaLease?
+    let requiresElevation: Bool
+
+    var isCurrent: Bool { context.isActive && (!requiresElevation || privateLease?.isCurrent == true) }
+    var privateProducer: String? { requiresElevation ? privateLease?.identity : nil }
+}
+
 /// Keeps the file alive through asynchronous preparation and AVFoundation use.
 nonisolated final class ControlledMediaFile: Sendable {
-    let url: URL
+    private let fileURL: URL
+    private let access: MediaFileAccess
     private let release: @Sendable () -> Void
     private nonisolated(unsafe) static var associationKey: UInt8 = 0
-    init(url: URL, release: @escaping @Sendable () -> Void) { self.url = url; self.release = release }
+    init(url: URL, access: MediaFileAccess, release: @escaping @Sendable () -> Void) {
+        self.fileURL = url; self.access = access; self.release = release
+    }
     deinit { release() }
-    func makeAsset() -> AVURLAsset {
-        let asset = AVURLAsset(url: url)
+    var url: URL {
+        get throws {
+            guard access.isCurrent else { throw ServerTrustError.sessionExpired }
+            return fileURL
+        }
+    }
+    func makeAsset() throws -> AVURLAsset {
+        let asset = AVURLAsset(url: try url)
         objc_setAssociatedObject(asset, &Self.associationKey, self, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         return asset
+    }
+    static func isAuthorized(_ asset: AVAsset) -> Bool {
+        guard let file = objc_getAssociatedObject(asset, &Self.associationKey) as? ControlledMediaFile else { return true }
+        return file.access.isCurrent
     }
 }
 
@@ -30,7 +54,13 @@ actor ControlledMediaStore {
     private nonisolated static let registry = Mutex(Registry())
     private let directory: URL
     private let maximumBytes: Int64
-    private var files: [URL: URL] = [:]
+    private struct Key: Hashable {
+        let url: URL
+        let role: MediaFileRole
+        let contentRevision: String?
+        let privateProducer: String?
+    }
+    private var files: [Key: URL] = [:]
     private var revision: UInt64 = 0
 
     init(root: URL = ControlledMediaStore.rootDirectory, maximumBytes: Int64 = 1_073_741_824) {
@@ -67,9 +97,9 @@ actor ControlledMediaStore {
             }
         }
     }
-    private func lease(_ file: URL) -> ControlledMediaFile {
+    private func lease(_ file: URL, access: MediaFileAccess) -> ControlledMediaFile {
         Self.registry.withLock { $0.pins[file, default: 0] += 1 }
-        return ControlledMediaFile(url: file) { [self] in
+        return ControlledMediaFile(url: file, access: access) { [self] in
             Self.registry.withLock { state in
                 state.pins[file, default: 0] -= 1
                 if state.pins[file] == 0 {
@@ -95,34 +125,49 @@ actor ControlledMediaStore {
             }
         }
     }
-    func file(request: URLRequest, session: URLSession, context: AccountRequestContext) async throws -> ControlledMediaFile {
+    func file(request: URLRequest, session: URLSession, context: AccountRequestContext,
+              role: MediaFileRole = .playback, contentRevision: String? = nil,
+              privateLease: LockedMediaLease? = nil, requiresElevation: Bool = false) async throws -> ControlledMediaFile {
         try Task.checkCancellation()
-        guard context.isActive, let key = request.url else { throw ServerTrustError.sessionExpired }
-        if let file = files[key], FileManager.default.isReadableFile(atPath: file.path) { return lease(file) }
+        let access = MediaFileAccess(context: context, privateLease: privateLease, requiresElevation: requiresElevation)
+        guard access.isCurrent, let url = request.url else { throw ServerTrustError.sessionExpired }
+        let key = Key(url: url, role: role, contentRevision: contentRevision, privateProducer: access.privateProducer)
+        let reusable = role == .playback || contentRevision?.isEmpty == false
+        if reusable, let file = files[key], FileManager.default.isReadableFile(atPath: file.path) { return lease(file, access: access) }
         let downloadRevision = revision
         let (temporary, response) = try await session.download(for: request)
         defer { try? FileManager.default.removeItem(at: temporary) }
         try Task.checkCancellation()
-        guard context.isActive else { throw ServerTrustError.sessionExpired }
+        guard access.isCurrent else { throw ServerTrustError.sessionExpired }
         guard revision == downloadRevision else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw ImoraError.http((response as? HTTPURLResponse)?.statusCode ?? 0, "")
         }
         // Another overlapping request may already have installed this URL.
-        if let file = files[key], FileManager.default.isReadableFile(atPath: file.path) { return lease(file) }
+        if reusable, let file = files[key], FileManager.default.isReadableFile(atPath: file.path) { return lease(file, access: access) }
         let mime = response.mimeType?.lowercased() ?? ""
         let handle = try FileHandle(forReadingFrom: temporary)
         let prefix = try handle.read(upToCount: 8) ?? Data()
         try handle.close()
-        guard (mime.hasPrefix("video/") || mime == "application/octet-stream"),
+        guard (mime.hasPrefix("video/") || mime == "application/octet-stream" || (role == .editInput && mime.hasPrefix("image/"))),
               !mime.contains("mpegurl"), !prefix.starts(with: Data("#EXTM3U".utf8))
-        else { throw ImoraError.decoding(String(localized: "The server did not return a self-contained video file.")) }
+        else {
+            throw ImoraError.decoding(role == .editInput
+                ? String(localized: "The server did not return a supported media file.")
+                : String(localized: "The server did not return a self-contained video file."))
+        }
         try ProtectedTemporaryFiles.prepareDirectory(directory)
-        let file = directory.appending(path: UUID().uuidString).appendingPathExtension(mime == "video/quicktime" ? "mov" : "mp4")
+        let file = directory.appending(path: UUID().uuidString).appendingPathExtension(mime.hasPrefix("image/") ? "image" : (mime == "video/quicktime" ? "mov" : "mp4"))
         try FileManager.default.moveItem(at: temporary, to: file)
         try ProtectedTemporaryFiles.protect(file)
+        if let old = files[key], old != file {
+            Self.registry.withLock { state in
+                if (state.pins[old] ?? 0) > 0 { state.clearWhenReleased.insert(old) }
+                else { try? FileManager.default.removeItem(at: old) }
+            }
+        }
         files[key] = file
-        let result = lease(file)
+        let result = lease(file, access: access)
         trim()
         return result
     }
@@ -130,6 +175,12 @@ actor ControlledMediaStore {
         revision &+= 1
         Self.clearCache(root: directory)
         files.removeAll()
+    }
+
+    func revokePrivateFiles(producer: String) {
+        for key in files.keys.filter({ $0.privateProducer == producer }) {
+            if let file = files.removeValue(forKey: key) { try? FileManager.default.removeItem(at: file) }
+        }
     }
 
     func removeAll() {

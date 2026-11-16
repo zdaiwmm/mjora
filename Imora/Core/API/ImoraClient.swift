@@ -136,6 +136,7 @@ nonisolated final class ImoraClient: Sendable {
             return (value.nonce, retiredProducer, value.producer, value.observer)
         }
         guard let nonce = result.0, let retiredProducer = result.1, let replacement = result.2 else { return nil }
+        Task { await mediaStore.revokePrivateFiles(producer: retiredProducer.uuidString) }
         ImageLoader.shared.revokePrivateImages(client: self, leaseIdentity: retiredProducer.uuidString)
         if let observer = result.3 {
             Task { @MainActor [weak self] in
@@ -287,12 +288,20 @@ nonisolated final class ImoraClient: Sendable {
         await mediaStore.invalidateCachedFiles()
     }
 
-    func localMediaFile(_ url: URL, allowsExpensiveNetworkAccess: Bool = true) async throws -> ControlledMediaFile {
+    func localMediaFile(_ url: URL, allowsExpensiveNetworkAccess: Bool = true, role: MediaFileRole = .playback,
+                        contentRevision: String? = nil, requiresElevation: Bool = false) async throws -> ControlledMediaFile {
         var request = try authorizedRequest(url: url)
         request.allowsCellularAccess = allowsExpensiveNetworkAccess
         request.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
         request.allowsConstrainedNetworkAccess = allowsExpensiveNetworkAccess
-        return try await mediaStore.file(request: request, session: transportSession(for: request), context: context)
+        let lease = requiresElevation ? lockedMediaLease : nil
+        do {
+            return try await mediaStore.file(request: request, session: transportSession(for: request), context: context,
+                role: role, contentRevision: contentRevision, privateLease: lease, requiresElevation: requiresElevation)
+        } catch {
+            if let lease, case ImoraError.http(let code, _) = error, code == 401 || code == 403 { rejectLockedMediaLease(lease) }
+            throw error
+        }
     }
 
     // MARK: - server resolution

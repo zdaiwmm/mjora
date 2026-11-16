@@ -204,9 +204,10 @@ struct LivePhotoPage: View {
             // A cached controlled file remains available offline. For a miss,
             // URLSession enforces the policy even if Wi-Fi changes mid-load.
             let file = try await client.localMediaFile(client.playbackURL(assetID: motionID),
-                allowsExpensiveNetworkAccess: playback.permitsExpensiveLiveDownload)
+                allowsExpensiveNetworkAccess: playback.permitsExpensiveLiveDownload,
+                requiresElevation: asset.visibility == .locked)
             guard !Task.isCancelled else { return nil }
-            return AVPlayerItem(asset: file.makeAsset())
+            return AVPlayerItem(asset: try file.makeAsset())
         } catch let error as URLError {
             if [.dataNotAllowed, .internationalRoamingOff, .notConnectedToInternet].contains(error.code), !Task.isCancelled {
                 _ = await playback.liveNetworkAllowed()

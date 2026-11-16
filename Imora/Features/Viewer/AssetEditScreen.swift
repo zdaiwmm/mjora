@@ -379,6 +379,7 @@ struct AssetEditScreen: View {
 
     @State private var loadState = LoadState.loading
     @State private var image: UIImage?
+    @State private var editInput: PhotoEditInput?
     @State private var originalWidth = 0
     @State private var originalHeight = 0
     @State private var state = EditTransform.State()
@@ -475,6 +476,12 @@ struct AssetEditScreen: View {
         .statusBarHidden()
         .interactiveDismissDisabled(hasChanges || isSaving)
         .task { await load() }
+        .onChange(of: session.lockedFolder?.publicationGeneration) { _, _ in
+            if asset.visibility == .locked, editInput?.isCurrent != true {
+                image = nil; editInput = nil
+                loadState = .failed(String(localized: "access denied."))
+            }
+        }
         .onChange(of: snapshot) { scheduleRecord() }
         .alert("Couldn't Save Edits", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("Keep Editing", role: .cancel) {}
@@ -1056,16 +1063,15 @@ struct AssetEditScreen: View {
         do {
             // the editor always starts from the unedited picture and replays
             // stored edits as ui state, like the official clients.
-            let url = client.thumbnailURL(assetID: asset.id, size: "preview", edited: false)
-            async let imageTask = ImageLoader.shared.image(for: url, targetPixelSize: 2048)
             async let detailTask = client.assetDetail(id: asset.id)
             async let editsTask = client.assetEdits(id: asset.id)
             let unified = session.capabilities.supportsPhotoEditsV1 && asset.livePhotoVideoId == nil
             let offersAdjust = session.capabilities.supportsAdjust && asset.livePhotoVideoId == nil
             async let adjustTask = offersAdjust ? (try? await client.imageAdjust(id: asset.id)) : nil
 
-            let image = try await imageTask
             let detail = try await detailTask
+            let input = try await PhotoEditInput.load(detail: detail, client: client, requiresElevation: asset.visibility == .locked)
+            let image = input.image
             // saving replaces the whole edit list, so an unreadable one must
             // not be mistaken for an empty one: that would silently drop a
             // crop the asset already carries.
@@ -1089,6 +1095,8 @@ struct AssetEditScreen: View {
                 return
             }
 
+            guard !Task.isCancelled, session.client === client, input.isCurrent else { throw CancellationError() }
+            editInput = input
             self.image = image
             (originalWidth, originalHeight) = (width, height)
             let seeded = EditTransform.state(from: edits, originalWidth: originalWidth, originalHeight: originalHeight)
