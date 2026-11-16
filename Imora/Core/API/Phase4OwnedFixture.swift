@@ -23,6 +23,7 @@ nonisolated struct Phase4OwnedFixture: Decodable, Sendable {
         let file: String
         let simulator: String
         switch name {
+        case "memories": (file, simulator) = ("legacy-ui-fixture.json", "096710F4-E2E2-4F95-AAC2-3489F82B0F74")
         case "legacy": (file, simulator) = ("legacy-ui-fixture.json", "14BCD43F-2B3B-4D5C-A515-DCEF05889845")
         case "entry": (file, simulator) = ("entry-ui-fixture.json", "E30E1970-2CBA-44E4-BDAC-6B8EFD9F2558")
         case "benchmark": (file, simulator) = ("ui-fixture.json", "E30E1970-2CBA-44E4-BDAC-6B8EFD9F2558")
