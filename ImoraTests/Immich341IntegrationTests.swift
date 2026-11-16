@@ -5,8 +5,7 @@ import UIKit
 import XCTest
 @testable import Imora
 
-/// Writes only synthetic assets in the dedicated local account prepared by
-/// tests/integration/fixture.py --prepare-ios. Production URLs are rejected.
+/// Writes only synthetic assets in the separate Phase 4 native fixture account.
 final class Immich341IntegrationTests: XCTestCase {
     private struct Fixture: Decodable {
         let apiURL: URL
@@ -20,14 +19,41 @@ final class Immich341IntegrationTests: XCTestCase {
         let stillBytes: Int64
         let motionBytes: Int64
     }
+    private static func allowed(apiURL: URL, email: String, ownerID: String, stillID: String, motionID: String) -> Bool {
+        apiURL.absoluteString == "http://127.0.0.1:33284/api"
+            && email.hasSuffix("@imora-phase4-fixture.invalid")
+            && UUID(uuidString: ownerID) != nil && UUID(uuidString: stillID) != nil
+            && UUID(uuidString: motionID) != nil && stillID != motionID
+    }
+
     private func fixture() throws -> Fixture {
-        let url = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
+        let root = URL(fileURLWithPath: "/Users/achilles/mjora/execution/photos-phase4", isDirectory: true)
+        let url = root.appending(path: "native-integration-fixture.json")
         guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("Prepare the dedicated local Immich 3.4.1 iOS fixture first.") }
+        let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        guard url.resolvingSymlinksInPath().path == url.path, permissions?.intValue == 0o600 else { throw ServerTrustError.untrustedTarget }
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        guard fixture.apiURL.absoluteString == "http://127.0.0.1:32283/api", fixture.email.hasSuffix("@imora-fixture.invalid") else {
+        guard Self.allowed(apiURL: fixture.apiURL, email: fixture.email, ownerID: fixture.ownerID,
+                           stillID: fixture.stillID, motionID: fixture.motionID) else {
             throw ServerTrustError.untrustedTarget
         }
+        for name in ["ui-fixture.json", "entry-ui-fixture.json", "legacy-ui-fixture.json"] {
+            let other = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appending(path: name))) as? [String: Any]
+            guard let owner = other?["ownerID"] as? String, UUID(uuidString: owner) != nil, owner != fixture.ownerID else {
+                throw ServerTrustError.untrustedTarget
+            }
+        }
         return fixture
+    }
+
+    func testOwnedNativeFixtureGuardRejectsUntrustedDestinations() throws {
+        let f = try fixture()
+        XCTAssertTrue(Self.allowed(apiURL: f.apiURL, email: f.email, ownerID: f.ownerID, stillID: f.stillID, motionID: f.motionID))
+        XCTAssertFalse(Self.allowed(apiURL: URL(string: "http://127.0.0.1:32283/api")!, email: f.email,
+            ownerID: f.ownerID, stillID: f.stillID, motionID: f.motionID))
+        XCTAssertFalse(Self.allowed(apiURL: f.apiURL, email: "unrelated@example.invalid", ownerID: f.ownerID,
+            stillID: f.stillID, motionID: f.motionID))
+        XCTAssertFalse(Self.allowed(apiURL: f.apiURL, email: f.email, ownerID: "invalid", stillID: f.stillID, motionID: f.motionID))
     }
     private func checksum(_ hex: String) throws -> String {
         guard hex.count == 40, hex.range(of: "^[0-9a-fA-F]+$", options: .regularExpression) != nil else { throw ControlledUploadError.unconfirmed }
@@ -38,7 +64,10 @@ final class Immich341IntegrationTests: XCTestCase {
     }
     private func client(_ fixture: Fixture) async throws -> ImoraClient {
         let login = try await ImoraClient.login(apiURL: fixture.apiURL, email: fixture.email, password: fixture.password)
-        return ImoraClient(apiURL: fixture.apiURL, accessToken: login.accessToken)
+        guard login.userId == fixture.ownerID else { throw ServerTrustError.untrustedTarget }
+        let client = ImoraClient(apiURL: fixture.apiURL, accessToken: login.accessToken)
+        guard try await client.currentUser().id == fixture.ownerID else { client.invalidate(); throw ServerTrustError.untrustedTarget }
+        return client
     }
 
     func testActual341ExactPairRepairBulkCheckAndBothOriginalReadbacks() async throws {

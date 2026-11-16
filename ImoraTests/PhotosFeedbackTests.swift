@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import SwiftUI
 import UIKit
 import XCTest
@@ -84,16 +85,33 @@ final class PhotosFeedbackTests: XCTestCase {
         XCTAssertEqual(url.queryItems?.first { $0.name == "isUpcoming" }?.value, "false")
     }
 
-    func testPreparedLivePhotoAdvancesAndReplaysUsingTheSamePlayer() async throws {
-        let manifest = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
-        guard let bytes = try? Data(contentsOf: manifest),
-              let fixture = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              fixture["apiURL"] as? String == "http://127.0.0.1:32283/api",
+    private func ownedMotionURL() throws -> URL {
+        let root = URL(fileURLWithPath: "/Users/achilles/mjora/execution/photos-phase4", isDirectory: true)
+        let manifest = root.appending(path: "native-integration-fixture.json")
+        let permissions = try FileManager.default.attributesOfItem(atPath: manifest.path)[.posixPermissions] as? NSNumber
+        guard manifest.resolvingSymlinksInPath().path == manifest.path, permissions?.intValue == 0o600,
+              let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any],
+              fixture["apiURL"] as? String == "http://127.0.0.1:33284/api",
+              let email = fixture["email"] as? String, email.hasSuffix("@imora-phase4-fixture.invalid"),
+              let owner = fixture["ownerID"] as? String, UUID(uuidString: owner) != nil,
               let path = fixture["motionPath"] as? String,
-              path.hasPrefix("/private/tmp/imora-ios-fixture-media-")
-        else { throw XCTSkip("Prepare the dedicated synthetic motion fixture first.") }
+              let expected = fixture["motionChecksum"] as? String else { throw ServerTrustError.untrustedTarget }
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard url.path == root.appending(path: "services/video-media/live-motion.mov").resolvingSymlinksInPath().path else {
+            throw ServerTrustError.untrustedTarget
+        }
+        let actual = Insecure.SHA1.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+        guard actual.lowercased() == expected.lowercased() else { throw ServerTrustError.untrustedTarget }
+        return url
+    }
+
+    func testOwnedMotionFixtureGuard() throws {
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try ownedMotionURL().path))
+    }
+
+    func testPreparedLivePhotoAdvancesAndReplaysUsingTheSamePlayer() async throws {
+        let url = try ownedMotionURL()
         let playback = VideoPlayback()
-        let url = URL(fileURLWithPath: path)
         await playback.claim(assetID: "synthetic-live", forceMuted: true, seedDuration: nil,
                              autoPlays: false, rewindsAtEnd: true, defersItem: true) {
             AVPlayerItem(url: url)

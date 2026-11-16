@@ -1203,27 +1203,35 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             surfaceProvider: { tile.checkpointSurface(for: $0, client: client) })
         XCTAssertNotNil(tile.checkpointSurface(for: key, client: client))
         XCTAssertNotNil(ImageLoader.shared.cachedImage(for: high, targetPixelSize: 1400))
+        func renderedPixel(_ name: String) throws -> [UInt8] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            var drawn = false
+            let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                drawn = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            XCTAssertTrue(drawn, "The appeared window must actually render")
+            if let data = frame.pngData() {
+                let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+                attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            }
+            let point = tile.convert(CGPoint(x: 66, y: 66), to: window)
+            let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return pixel
+        }
+        let before = try renderedPixel("memory-pressure-before")
+        XCTAssertGreaterThan(before[0], 180); XCTAssertLessThan(before[2], 80)
         NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         XCTAssertNil(ImageLoader.shared.cachedImage(for: high, targetPixelSize: 1400), "Offscreen high-resolution memory should be released")
         XCTAssertNotNil(ImageLoader.shared.cachedImage(for: url, targetPixelSize: 416)?.cgImage, "W0 must remain in the bounded cache")
         XCTAssertNotNil(tile.checkpointSurface(for: key, client: client)?.image.cgImage, "Mounted W0 must retain its real image")
-        let format = UIGraphicsImageRendererFormat(); format.scale = 1
-        let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
-        }
-        if let data = frame.pngData() {
-            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
-            attachment.name = "memory-pressure-mounted-W0"; attachment.lifetime = .keepAlways; add(attachment)
-        }
-        let point = tile.convert(CGPoint(x: 66, y: 66), to: window)
-        let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
-        var pixel = [UInt8](repeating: 0, count: 4)
-        pixel.withUnsafeMutableBytes { buffer in
-            let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
-                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-            context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        }
-        XCTAssertGreaterThan(pixel[0], 180); XCTAssertLessThan(pixel[2], 80)
+        let after = try renderedPixel("memory-pressure-after")
+        XCTAssertGreaterThan(after[0], 180); XCTAssertLessThan(after[2], 80)
     }
 
     func testGridAndViewerReusePreparedLocalImage() async throws {
