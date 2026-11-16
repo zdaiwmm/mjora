@@ -90,6 +90,169 @@ final class VideoPlayback {
     /// bounce can reclaim it in place instead of restarting the clip.
     @ObservationIgnored private var releaseTask: Task<Void, Never>?
     @ObservationIgnored private var resumesOnReclaim = false
+    @ObservationIgnored private let liveHold = LiveHoldController()
+    @ObservationIgnored private var liveContext: LiveHoldContext?
+    @ObservationIgnored private var liveAuthorization: (() -> Bool)?
+    @ObservationIgnored private var liveToken: LiveHoldToken?
+    @ObservationIgnored private var liveLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var liveSource: LivePlaybackSource?
+    private(set) var liveNetworkNeedsPermission = false
+    @ObservationIgnored private var liveAllowsExpensiveDownload = false
+    @ObservationIgnored private var liveRequiresNetwork = false
+    @ObservationIgnored private var livePath: NetworkPathSnapshot?
+    @ObservationIgnored private var liveNetworkWatcher: NetworkPathWatcher?
+    @ObservationIgnored private var livePathWaiter: (id: UUID, continuation: CheckedContinuation<NetworkPathSnapshot?, Never>)?
+
+    func configureLiveHold(context: LiveHoldContext, isAuthorized: @escaping () -> Bool) {
+        guard ownerID == context.assetID else { return }
+        if let previous = liveContext,
+           previous.assetID != context.assetID || previous.pageGeneration != context.pageGeneration
+                || previous.sessionID != context.sessionID || liveAuthorization?() != true {
+            executeLive(liveHold.handle(event: .pageChanged, context: previous))
+        }
+        liveContext = context
+        liveAuthorization = isAuthorized
+        if liveNetworkWatcher == nil {
+            liveNetworkWatcher = NetworkPathWatcher { [weak self] path in
+                guard let self else { return }
+                self.livePath = path
+                self.resolveLivePath(path)
+                if self.liveRequiresNetwork, self.liveLoadTask != nil,
+                   !LiveNetworkPolicy.allows(path, consent: self.liveAllowsExpensiveDownload) {
+                    self.liveNetworkNeedsPermission = path.connected && (path.expensive || path.constrained)
+                    self.isFailed = true
+                    self.cancelLivePlayback()
+                }
+            }
+        }
+    }
+
+    func handleLiveHold(_ event: LiveHoldEvent, context: LiveHoldContext) {
+        guard let current = liveContext, ownerID == context.assetID,
+              current.assetID == context.assetID, current.pageGeneration == context.pageGeneration,
+              current.sessionID == context.sessionID else { return }
+        liveContext = context
+        executeLive(liveHold.handle(event: liveAuthorization?() == true ? event : .sceneInactive, context: context))
+    }
+
+    func releaseLivePage(assetID: String, pageGeneration: UUID) {
+        guard let context = liveContext, context.assetID == assetID,
+              context.pageGeneration == pageGeneration else { return }
+        executeLive(liveHold.handle(event: .pageChanged, context: context))
+        liveContext = nil; liveAuthorization = nil
+        liveAllowsExpensiveDownload = false; liveNetworkNeedsPermission = false
+        release(assetID: assetID)
+    }
+
+    func cancelLivePlayback() {
+        guard let context = liveContext else { return }
+        executeLive(liveHold.handle(event: .cancelled, context: context))
+    }
+
+    var permitsExpensiveLiveDownload: Bool { liveAllowsExpensiveDownload }
+
+    func allowLiveDownloadAndPlay() {
+        guard liveContext != nil, liveAuthorization?() == true else { return }
+        liveAllowsExpensiveDownload = true; liveNetworkNeedsPermission = false
+        togglePlayPause()
+    }
+
+    func liveNetworkAllowed() async -> Bool {
+        liveRequiresNetwork = true
+        let path: NetworkPathSnapshot?
+        if let current = livePath { path = current }
+        else {
+            let id = UUID()
+            path = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    resolveLivePath(nil)
+                    if Task.isCancelled { continuation.resume(returning: nil) }
+                    else { livePathWaiter = (id, continuation) }
+                }
+            } onCancel: { [weak self] in
+                Task { @MainActor in self?.resolveLivePath(nil, id: id) }
+            }
+        }
+        guard !Task.isCancelled, liveAuthorization?() == true, let path else { return false }
+        let allowed = LiveNetworkPolicy.allows(path, consent: liveAllowsExpensiveDownload)
+        liveNetworkNeedsPermission = !allowed && path.connected && (path.expensive || path.constrained)
+        return allowed
+    }
+
+    private func resolveLivePath(_ path: NetworkPathSnapshot?, id: UUID? = nil) {
+        guard let waiter = livePathWaiter, id == nil || id == waiter.id else { return }
+        livePathWaiter = nil
+        waiter.continuation.resume(returning: path)
+    }
+
+    private func executeLive(_ commands: [LivePlaybackCommand]) {
+        for command in commands {
+            switch command {
+            case .prepare(let token): prepareLive(token)
+            case .start(let token):
+                guard liveToken == token, ownerID == token.assetID,
+                      liveAuthorization?() == true, let player,
+                      player.currentItem?.status == .readyToPlay else { continue }
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] finished in
+                    Task { @MainActor [weak self, weak player] in
+                        guard finished, let self, let player, self.player === player,
+                              self.liveToken == token, self.ownerID == token.assetID,
+                              self.liveAuthorization?() == true else { return }
+                        self.isEngaged = true
+                        if !self.forcesMute, !self.isMuted { activatePlaybackAudioSession() }
+                        player.play()
+                    }
+                }
+            case .pause(let token):
+                guard liveToken == token, ownerID == token.assetID else { continue }
+                player?.pause(); isPlaying = false
+            case .showPoster(let token):
+                guard liveToken == token, ownerID == token.assetID else { continue }
+                isEngaged = false
+            case .cancelLoad(let token):
+                guard liveToken == token, ownerID == token.assetID else { continue }
+                liveToken = nil
+                liveLoadTask?.cancel(); liveLoadTask = nil
+                resolveLivePath(nil)
+                liveRequiresNetwork = false
+                isBuffering = false
+            }
+        }
+    }
+
+    private func prepareLive(_ token: LiveHoldToken) {
+        guard ownerID == token.assetID, liveAuthorization?() == true else { return }
+        liveLoadTask?.cancel()
+        liveToken = token; isFailed = false; liveRequiresNetwork = false
+        if player?.currentItem?.status == .failed { detachPlayer() }
+        isBuffering = player?.currentItem?.status != .readyToPlay
+        if player != nil { liveReadyIfCurrent(); return }
+        guard let maker = pendingItemMaker else { isFailed = true; return }
+        let capturedGeneration = generation
+        isBuffering = true
+        liveLoadTask = Task { [weak self] in
+            let item = await maker()
+            guard let self, !Task.isCancelled, self.generation == capturedGeneration,
+                  self.liveToken == token, self.ownerID == token.assetID,
+                  self.liveAuthorization?() == true else { return }
+            self.liveLoadTask = nil
+            guard let item else {
+                self.isFailed = true
+                self.cancelLivePlayback()
+                return
+            }
+            self.install(item, generation: capturedGeneration)
+            self.liveReadyIfCurrent()
+        }
+    }
+
+    private func liveReadyIfCurrent() {
+        guard let context = liveContext, let token = liveToken,
+              player?.currentItem?.status == .readyToPlay else { return }
+        guard liveAuthorization?() == true else { cancelLivePlayback(); return }
+        isBuffering = false
+        executeLive(liveHold.handle(event: .loadReady(token), context: context))
+    }
 
     /// `autoPlays` is false for live photos: their page opens on the still and
     /// only moves once the viewer asks it to. `defersItem` goes further and
@@ -102,9 +265,10 @@ final class VideoPlayback {
         autoPlays: Bool = true,
         rewindsAtEnd: Bool = false,
         defersItem: Bool = false,
+        liveSource: LivePlaybackSource? = nil,
         makeItem: @escaping @MainActor () async -> AVPlayerItem?
     ) async {
-        if ownerID == assetID {
+        if ownerID == assetID, self.liveSource == liveSource {
             // the same page re-claims when its mute flag flips, e.g. a context
             // preview committing to the full viewer, or right after a resize
             // bounced it out of the lazy viewport and released transiently.
@@ -126,6 +290,7 @@ final class VideoPlayback {
         let gen = generation
         teardown()
         ownerID = assetID
+        self.liveSource = liveSource
         forcesMute = forceMuted
         self.rewindsAtEnd = rewindsAtEnd
         if let seedDuration { duration = seedDuration }
@@ -168,7 +333,7 @@ final class VideoPlayback {
     /// Warm only a locally available Live Photo. A press that already started
     /// loading, or a page that left the viewport, always keeps its ownership.
     func prepareLocalItem(_ item: AVPlayerItem, assetID: String) {
-        guard ownerID == assetID, pendingItemMaker != nil, releaseTask == nil else { return }
+        guard ownerID == assetID, pendingItemMaker != nil, releaseTask == nil, liveLoadTask == nil else { return }
         pendingItemMaker = nil
         install(item, generation: generation)
     }
@@ -203,6 +368,8 @@ final class VideoPlayback {
     /// resumes where it was.
     func release(assetID: String) {
         guard ownerID == assetID else { return }
+        cancelLivePlayback()
+        liveContext = nil; liveAuthorization = nil
         resumesOnReclaim = resumesOnReclaim || isPlaying
         player?.pause()
         releaseTask?.cancel()
@@ -230,6 +397,10 @@ final class VideoPlayback {
     }
 
     func togglePlayPause() {
+        if let context = liveContext {
+            handleLiveHold(.accessibilityToggle, context: context)
+            return
+        }
         guard !isFailed else { return }
         guard let player else {
             engagePendingItem(thenPlays: true)
@@ -326,12 +497,14 @@ final class VideoPlayback {
     }
 
     private func attachObservers(to player: AVPlayer, item: AVPlayerItem) {
+        let capturedGeneration = generation
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(value: 1, timescale: 30),
             queue: .main
-        ) { [weak self] time in
+        ) { [weak self, weak player] time in
             MainActor.assumeIsolated {
-                guard let self, !self.isScrubbing, !self.isSeeking, self.pendingSeekSeconds == nil
+                guard let self, let player, self.player === player,
+                      self.generation == capturedGeneration, !self.isScrubbing, !self.isSeeking, self.pendingSeekSeconds == nil
                 else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
@@ -340,9 +513,9 @@ final class VideoPlayback {
         }
 
         statusObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
-            let status = player.timeControlStatus
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.generation == capturedGeneration, self.player === player else { return }
+                let status = player.timeControlStatus
                 self.isPlaying = status != .paused
                 self.isBuffering = status == .waitingToPlayAtSpecifiedRate
             }
@@ -352,13 +525,15 @@ final class VideoPlayback {
             let status = item.status
             let seconds = item.duration.seconds
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.generation == capturedGeneration, self.player?.currentItem === item else { return }
                 if status == .failed {
                     self.isFailed = true
                     self.isBuffering = false
+                    self.cancelLivePlayback()
                 }
                 if status == .readyToPlay, seconds.isFinite, seconds > 0 {
                     self.duration = seconds
+                    self.liveReadyIfCurrent()
                 }
             }
         }
@@ -367,9 +542,9 @@ final class VideoPlayback {
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: item,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self, weak player] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, let player, self.player === player, self.generation == capturedGeneration else { return }
                 guard self.rewindsAtEnd else {
                     self.currentTime = self.duration
                     return
@@ -377,28 +552,30 @@ final class VideoPlayback {
                 self.player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
                 self.currentTime = 0
                 self.isEngaged = false
+                if let context = self.liveContext {
+                    self.executeLive(self.liveHold.handle(event: .playbackEnded, context: context))
+                }
             }
         }
     }
 
     private func teardown() {
+        cancelLivePlayback()
+        liveLoadTask?.cancel(); liveLoadTask = nil
+        liveContext = nil; liveAuthorization = nil; liveToken = nil
+        liveSource = nil
+        liveNetworkWatcher?.stop(); liveNetworkWatcher = nil; livePath = nil
+        resolveLivePath(nil)
+        liveAllowsExpensiveDownload = false; liveRequiresNetwork = false; liveNetworkNeedsPermission = false
         releaseTask?.cancel()
         releaseTask = nil
         resumesOnReclaim = false
         pendingItemMaker = nil
-        if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
-        timeObserver = nil
-        statusObservation = nil
-        itemStatusObservation = nil
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-        endObserver = nil
+        detachPlayer()
         pendingSeekSeconds = nil
         isSeeking = false
         rewindsAtEnd = false
         frameInterval = 1.0 / 30
-        player?.pause()
-        player?.replaceCurrentItem(with: nil)
-        player = nil
         isPlaying = false
         isBuffering = false
         isFailed = false
@@ -406,6 +583,18 @@ final class VideoPlayback {
         isEngaged = false
         duration = 0
         currentTime = 0
+    }
+
+    private func detachPlayer() {
+        if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        statusObservation = nil
+        itemStatusObservation = nil
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
     }
 }
 

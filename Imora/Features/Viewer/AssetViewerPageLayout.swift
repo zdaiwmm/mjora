@@ -42,6 +42,7 @@ nonisolated struct AssetViewerChromePresentation: Equatable, Sendable {
         isContextPreview: Bool,
         isPlayable: Bool,
         isPlayerReady: Bool,
+        isLivePhoto: Bool = false,
         isMediaZoomed: Bool
     ) {
         let canShowChrome = isChromeVisible && !isContextPreview
@@ -59,7 +60,7 @@ nonisolated struct AssetViewerChromePresentation: Equatable, Sendable {
         showsTransportControls = reservesTransportControls
             && canShowChrome
             && mediaIsUnobstructed
-            && isPlayerReady
+            && (isLivePhoto || isPlayerReady)
         showsCarousel = !isContextPreview
             && canShowChrome
             && mediaIsUnobstructed

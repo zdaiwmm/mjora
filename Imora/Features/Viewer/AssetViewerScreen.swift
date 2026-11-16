@@ -2501,6 +2501,7 @@ struct AssetViewerScreen: View {
             isContextPreview: isContextPreview,
             isPlayable: isPlayable,
             isPlayerReady: isPlayerReady,
+            isLivePhoto: current?.isLivePhoto == true,
             isMediaZoomed: mediaPresentationZoomed
         )
     }
@@ -4562,6 +4563,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
     let onZoomInteractionStarted: () -> Void
     let onZoomPresentationChanged: (Bool) -> Void
     let onZoomChanged: (Bool) -> Void
+    var onLiveHold: ((LiveHoldEvent, Double) -> Void)? = nil
     @ViewBuilder let content: Content
 
     func makeUIView(context: Context) -> AssetZoomScrollView {
@@ -4620,6 +4622,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.onZoomInteractionStarted = onZoomInteractionStarted
         context.coordinator.onZoomPresentationChanged = onZoomPresentationChanged
         context.coordinator.onZoomChanged = onZoomChanged
+        context.coordinator.onLiveHold = onLiveHold
         context.coordinator.attachCommandBridge(zoomCommandBridge)
         if wasActivePage, !isActivePage {
             context.coordinator.resetToFit(scrollView)
@@ -4660,7 +4663,8 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             onDoubleTapZoomChanged: onDoubleTapZoomChanged,
             onZoomInteractionStarted: onZoomInteractionStarted,
             onZoomPresentationChanged: onZoomPresentationChanged,
-            onZoomChanged: onZoomChanged
+            onZoomChanged: onZoomChanged,
+            onLiveHold: onLiveHold
         )
     }
 
@@ -4685,6 +4689,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         var onZoomInteractionStarted: () -> Void
         var onZoomPresentationChanged: (Bool) -> Void
         var onZoomChanged: (Bool) -> Void
+        var onLiveHold: ((LiveHoldEvent, Double) -> Void)?
         weak var scrollView: UIScrollView?
         private weak var gestureHub: AssetViewerZoomGestureHub?
         private weak var commandBridge: AssetViewerZoomCommandBridge?
@@ -4708,7 +4713,8 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             onDoubleTapZoomChanged: @escaping (Bool) -> Void,
             onZoomInteractionStarted: @escaping () -> Void,
             onZoomPresentationChanged: @escaping (Bool) -> Void,
-            onZoomChanged: @escaping (Bool) -> Void
+            onZoomChanged: @escaping (Bool) -> Void,
+            onLiveHold: ((LiveHoldEvent, Double) -> Void)? = nil
         ) {
             self.contentID = contentID
             zoomCommandAssetID = assetID
@@ -4720,6 +4726,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             self.onZoomInteractionStarted = onZoomInteractionStarted
             self.onZoomPresentationChanged = onZoomPresentationChanged
             self.onZoomChanged = onZoomChanged
+            self.onLiveHold = onLiveHold
         }
 
         func resetZoomReporting() {
@@ -4740,6 +4747,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             onZoomInteractionStarted = {}
             onZoomPresentationChanged = { _ in }
             onZoomChanged = { _ in }
+            onLiveHold = nil
             guard let pendingInformationFit else { return }
             self.pendingInformationFit = nil
             informationFitGeneration &+= 1
@@ -4809,6 +4817,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         }
 
         func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+            routeLiveHold(.zoomBegan)
             guard let pinchGesture = scrollView.pinchGestureRecognizer else { return }
             let pinchIsActive = pinchGesture.state == .began || pinchGesture.state == .changed
             if AssetViewerOpeningMediaHandoff.claimsPreviewForPinch(
@@ -4890,8 +4899,19 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             onMediaTap()
         }
 
+        var supportsLiveHold: Bool {
+            guard isActivePage, onLiveHold != nil, let scrollView else { return false }
+            return abs(scrollView.zoomScale - scrollView.minimumZoomScale) <= 0.01
+        }
+
+        func routeLiveHold(_ event: LiveHoldEvent) {
+            guard let scrollView else { return }
+            onLiveHold?(event, Double(scrollView.zoomScale / max(0.001, scrollView.minimumZoomScale)))
+        }
+
         func routeDoubleTap(at point: CGPoint, from view: UIView) {
             guard allowsDoubleTapZoom else { return }
+            routeLiveHold(.zoomBegan)
             performDoubleTap(at: hostingController.view.convert(point, from: view))
         }
 

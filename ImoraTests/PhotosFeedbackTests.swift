@@ -112,6 +112,139 @@ final class PhotosFeedbackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: try ownedMotionURL().path))
     }
 
+    func testLiveHoldReleasedBeforeDeferredItemRejectsActualLateMovie() async throws {
+        let url = try ownedMotionURL(), playback = VideoPlayback()
+        var pending: CheckedContinuation<AVPlayerItem?, Never>?
+        await playback.claim(assetID: "held-synthetic-live", forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) {
+            await withCheckedContinuation { pending = $0 }
+        }
+        let context = LiveHoldContext(assetID: "held-synthetic-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        defer { pending?.resume(returning: nil); playback.reload(assetID: context.assetID) }
+        playback.handleLiveHold(.began, context: context)
+        playback.handleLiveHold(.recognized, context: context)
+        for _ in 0..<100 where pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let delivery = try XCTUnwrap(pending); pending = nil
+        XCTAssertTrue(playback.isBuffering)
+        playback.handleLiveHold(.ended, context: context)
+        XCTAssertFalse(playback.isBuffering); XCTAssertFalse(playback.isEngaged)
+        delivery.resume(returning: AVPlayerItem(url: url))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(playback.player, "A real movie arriving after release must not even install an old player")
+        XCTAssertFalse(playback.isPlaying); XCTAssertFalse(playback.isEngaged)
+    }
+
+    func testLiveHoldStopsActualPreparedPlayerAndOldPageCannotStopNewPress() async throws {
+        let url = try ownedMotionURL(), playback = VideoPlayback()
+        let context = LiveHoldContext(assetID: "prepared-synthetic-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) { AVPlayerItem(url: url) }
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        playback.prepareLocalItem(AVPlayerItem(url: url), assetID: context.assetID)
+        let player = try XCTUnwrap(playback.player)
+        defer { playback.reload(assetID: context.assetID) }
+        playback.handleLiveHold(.began, context: context)
+        playback.handleLiveHold(.recognized, context: context)
+        for _ in 0..<150 where playback.currentTime < 0.1 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertGreaterThan(playback.currentTime, 0.09); XCTAssertTrue(playback.isEngaged)
+        playback.handleLiveHold(.ended, context: context)
+        XCTAssertEqual(player.rate, 0); XCTAssertFalse(playback.isEngaged); XCTAssertFalse(playback.isPlaying)
+
+        let newer = LiveHoldContext(assetID: context.assetID, pageGeneration: UUID(), sessionID: context.sessionID, isActive: true, zoomScale: 1)
+        playback.configureLiveHold(context: newer, isAuthorized: { true })
+        playback.handleLiveHold(.began, context: newer)
+        playback.handleLiveHold(.recognized, context: newer)
+        for _ in 0..<150 where !playback.isPlaying { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(playback.player === player); XCTAssertGreaterThan(player.rate, 0)
+        playback.releaseLivePage(assetID: context.assetID, pageGeneration: context.pageGeneration)
+        XCTAssertGreaterThan(player.rate, 0, "An old page's teardown must not pause the newer page's player")
+        playback.releaseLivePage(assetID: newer.assetID, pageGeneration: newer.pageGeneration)
+        XCTAssertEqual(player.rate, 0); XCTAssertFalse(playback.isEngaged)
+    }
+
+    func testFailedLivePlayerCanRetryTheSameSource() async throws {
+        let url = try ownedMotionURL(), playback = VideoPlayback()
+        let missing = URL(fileURLWithPath: "/private/tmp/imora-phase4-missing-live-\(UUID()).mov")
+        var attempts = 0
+        let context = LiveHoldContext(assetID: "retry-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) {
+            attempts += 1
+            return AVPlayerItem(url: attempts == 1 ? missing : url)
+        }
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        defer { playback.reload(assetID: context.assetID) }
+        playback.togglePlayPause()
+        for _ in 0..<200 where !playback.isFailed { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(playback.isFailed); XCTAssertEqual(attempts, 1)
+        XCTAssertFalse(playback.isEngaged)
+        playback.togglePlayPause()
+        for _ in 0..<200 where playback.currentTime < 0.1 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertGreaterThan(playback.currentTime, 0.09)
+        XCTAssertTrue(playback.isEngaged); XCTAssertFalse(playback.isFailed)
+        playback.cancelLivePlayback()
+        XCTAssertEqual(playback.player?.rate, 0)
+    }
+
+    func testNormalLiveEndRestoresPosterAndNewPressReplays() async throws {
+        let url = try ownedMotionURL(), playback = VideoPlayback()
+        let context = LiveHoldContext(assetID: "ending-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) { AVPlayerItem(url: url) }
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        defer { playback.reload(assetID: context.assetID) }
+        playback.handleLiveHold(.began, context: context)
+        playback.handleLiveHold(.recognized, context: context)
+        for _ in 0..<200 where playback.currentTime < 0.1 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertGreaterThan(playback.currentTime, 0.09)
+        for _ in 0..<250 where playback.isEngaged { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(playback.isEngaged); XCTAssertEqual(playback.player?.rate, 0)
+        playback.handleLiveHold(.recognized, context: context)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(playback.isEngaged, "The still-held token must not loop automatically")
+        playback.handleLiveHold(.ended, context: context)
+        playback.handleLiveHold(.began, context: context)
+        playback.handleLiveHold(.recognized, context: context)
+        for _ in 0..<200 where playback.currentTime < 0.1 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertGreaterThan(playback.currentTime, 0.09); XCTAssertTrue(playback.isEngaged)
+    }
+
+    func testRevokedLiveAuthorizationRejectsActualDeferredMovie() async throws {
+        let url = try ownedMotionURL(), playback = VideoPlayback()
+        var pending: CheckedContinuation<AVPlayerItem?, Never>?, authorized = true
+        let context = LiveHoldContext(assetID: "revoked-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) {
+            await withCheckedContinuation { pending = $0 }
+        }
+        playback.configureLiveHold(context: context, isAuthorized: { authorized })
+        defer { pending?.resume(returning: nil); playback.reload(assetID: context.assetID) }
+        playback.togglePlayPause()
+        for _ in 0..<100 where pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let delivery = try XCTUnwrap(pending); pending = nil
+        authorized = false
+        delivery.resume(returning: AVPlayerItem(url: url))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(playback.player); XCTAssertFalse(playback.isEngaged)
+        playback.cancelLivePlayback()
+        XCTAssertFalse(playback.isBuffering)
+    }
+
+    func testLiveMeteredConsentEndsWithItsPage() async {
+        let playback = VideoPlayback()
+        let context = LiveHoldContext(assetID: "consent-live", pageGeneration: UUID(), sessionID: UUID(), isActive: true, zoomScale: 1)
+        await playback.claim(assetID: context.assetID, forceMuted: true, seedDuration: nil,
+                             autoPlays: false, rewindsAtEnd: true, defersItem: true) { nil }
+        playback.configureLiveHold(context: context, isAuthorized: { true })
+        defer { playback.reload(assetID: context.assetID) }
+        playback.allowLiveDownloadAndPlay()
+        XCTAssertTrue(playback.permitsExpensiveLiveDownload)
+        playback.releaseLivePage(assetID: context.assetID, pageGeneration: context.pageGeneration)
+        XCTAssertFalse(playback.permitsExpensiveLiveDownload)
+    }
+
     func testPreparedLivePhotoAdvancesAndReplaysUsingTheSamePlayer() async throws {
         let url = try ownedMotionURL()
         let playback = VideoPlayback()

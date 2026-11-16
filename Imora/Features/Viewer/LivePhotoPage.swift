@@ -2,11 +2,11 @@ import Foundation
 import AVFoundation
 import SwiftUI
 
-/// live photo page. the still is the asset and stays on screen at rest, with
-/// the paired clip driven by the viewer's shared playback engine so it can be
-/// scrubbed and stepped frame by frame rather than only played as a whole.
+/// The still remains visible at rest. Hold playback and the accessible
+/// transport button share the viewer's single playback owner.
 struct LivePhotoPage: View {
     @Environment(SessionStore.self) private var session
+    @Environment(\.scenePhase) private var scenePhase
     let asset: Asset
     let aspectRatio: Double
     let deviceIdentifier: String?
@@ -33,9 +33,35 @@ struct LivePhotoPage: View {
     /// photokit could not serve the device copy after all; the page falls back
     /// to the server for the rest of its life.
     @State private var localUnavailable = false
+    @State private var pageGeneration = UUID()
 
     private var localIdentifier: String? {
-        localUnavailable ? nil : deviceIdentifier
+        localUnavailable || asset.visibility == .locked ? nil : deviceIdentifier
+    }
+
+    private struct LoadIdentity: Equatable {
+        let assetID: String
+        let isActive: Bool
+        let forcesMute: Bool
+        let source: LivePlaybackSource
+        let privatePublication: Int
+    }
+
+    private var loadIdentity: LoadIdentity {
+        // The publication read refreshes the lease identity after PIN changes.
+        let publication = asset.visibility == .locked ? session.lockedFolder?.publicationGeneration ?? 0 : 0
+        return .init(assetID: asset.id, isActive: isActive, forcesMute: forcesMute,
+            source: .init(localIdentifier: localIdentifier, localRevision: asset.localImageVersion,
+                remoteMotionID: asset.livePhotoVideoId, posterRevision: asset.thumbhash,
+                runtimeSession: session.client?.context.id,
+                privateProducer: asset.visibility == .locked ? session.client?.lockedMediaLease?.identity : nil),
+            privatePublication: publication)
+    }
+
+    private func holdContext(scale: Double) -> LiveHoldContext? {
+        guard let client = session.client else { return nil }
+        return .init(assetID: asset.id, pageGeneration: pageGeneration, sessionID: client.context.id,
+                     isActive: isActive && !forcesMute, zoomScale: scale)
     }
 
     var body: some View {
@@ -51,7 +77,11 @@ struct LivePhotoPage: View {
             onDoubleTapZoomChanged: onDoubleTapZoomChanged,
             onZoomInteractionStarted: onZoomInteractionStarted,
             onZoomPresentationChanged: onZoomPresentationChanged,
-            onZoomChanged: onZoomChanged
+            onZoomChanged: onZoomChanged,
+            onLiveHold: { event, scale in
+                guard let context = holdContext(scale: scale) else { return }
+                playback.handleLiveHold(event, context: context)
+            }
         ) {
             MediaSurfaceStack(
                 assetID: asset.id,
@@ -79,19 +109,15 @@ struct LivePhotoPage: View {
                     bridge: launchMediaBridge
                 )
             )
-            // press and hold plays the clip, the same gesture the system photos
-            // app uses. the handler only touches the playback reference, which
-            // outlives the hosted root the zoom container caches.
-            .onLongPressGesture(minimumDuration: 0.35) {
-                guard playback.ownerID == asset.id, !playback.isPlaying else { return }
-                playback.togglePlayPause()
-            }
         }
-        .task(id: "\(asset.id):\(isActive):\(forcesMute):\(localIdentifier ?? "remote")") {
+        .task(id: loadIdentity) {
             guard isActive else {
-                playback.release(assetID: asset.id)
+                playback.releaseLivePage(assetID: asset.id, pageGeneration: pageGeneration)
                 return
             }
+            guard let client = session.client else { return }
+            let identity = loadIdentity
+            let generation = UUID(); pageGeneration = generation
             await playback.claim(
                 assetID: asset.id,
                 forceMuted: forcesMute,
@@ -101,10 +127,20 @@ struct LivePhotoPage: View {
                 // the clip loads on the first long press or transport tap.
                 // swiping a run of live photos used to fetch one motion video
                 // per page, nearly all of them thrown away.
-                defersItem: true
+                defersItem: true,
+                liveSource: identity.source
             ) {
                 await makeItem()
             }
+            guard !Task.isCancelled, session.client === client else { return }
+            let lease = asset.visibility == .locked ? client.lockedMediaLease : nil
+            let requiresElevation = asset.visibility == .locked
+            playback.configureLiveHold(context: .init(assetID: asset.id, pageGeneration: generation,
+                sessionID: client.context.id, isActive: !forcesMute, zoomScale: 1),
+                isAuthorized: { [weak client] in
+                    client?.context.isActive == true && UIApplication.shared.applicationState == .active
+                        && (!requiresElevation || lease?.isCurrent == true)
+                })
             // Let rapid paging pass without exports. Once this page settles,
             // prepare an on-device clip and its decoding layer behind the still.
             // iCloud and remote clips continue to load only on engagement.
@@ -118,7 +154,22 @@ struct LivePhotoPage: View {
                 }
             }
         }
-        .onDisappear { playback.release(assetID: asset.id) }
+        .onDisappear {
+            let generation = pageGeneration
+            Task { @MainActor in playback.releaseLivePage(assetID: asset.id, pageGeneration: generation) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { playback.cancelLivePlayback() }
+        }
+        .onChange(of: session.client?.context.id) { _, _ in playback.cancelLivePlayback() }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
+            playback.cancelLivePlayback()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
+            if notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                playback.cancelLivePlayback()
+            }
+        }
     }
 
     private var posterURL: URL? {
@@ -137,101 +188,93 @@ struct LivePhotoPage: View {
         if let localIdentifier,
            let item = await LocalImageLoader.shared.motionPlayerItem(
                localIdentifier: localIdentifier,
-               allowsNetwork: asset.isLocal
+               allowsNetwork: false
            ) {
             return item
+        }
+        if asset.isLocal {
+            guard let localIdentifier, await playback.liveNetworkAllowed(), !Task.isCancelled else { return nil }
+            return await LocalImageLoader.shared.motionPlayerItem(localIdentifier: localIdentifier, allowsNetwork: true)
         }
         guard !asset.isLocal,
               let motionID = asset.livePhotoVideoId,
               let client = session.client
         else { return nil }
-        guard let localURL = try? await client.localMediaFile(client.playbackURL(assetID: motionID)), !Task.isCancelled else { return nil }
-        let urlAsset = localURL.makeAsset()
-        return AVPlayerItem(asset: urlAsset)
+        do {
+            // A cached controlled file remains available offline. For a miss,
+            // URLSession enforces the policy even if Wi-Fi changes mid-load.
+            let file = try await client.localMediaFile(client.playbackURL(assetID: motionID),
+                allowsExpensiveNetworkAccess: playback.permitsExpensiveLiveDownload)
+            guard !Task.isCancelled else { return nil }
+            return AVPlayerItem(asset: file.makeAsset())
+        } catch let error as URLError {
+            if [.dataNotAllowed, .internationalRoamingOff, .notConnectedToInternet].contains(error.code), !Task.isCancelled {
+                _ = await playback.liveNetworkAllowed()
+            }
+            return nil
+        } catch { return nil }
     }
 }
 
 // MARK: - controls
 
-/// transport strip for a live photo. the clip is only a couple of seconds
-/// long, so the timeline is paired with frame steps: dragging cannot reliably
-/// land on one picture out of the handful the scrubber spans.
+/// Frame selection belongs to the editor; viewing only needs play/stop.
 struct LivePhotoControlsBar: View {
     let playback: VideoPlayback
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button(action: playback.togglePlayPause) {
-                Group {
-                    if playback.isFailed {
-                        Image(systemName: "exclamationmark.circle")
-                    } else if playback.isBuffering {
-                        ProgressView()
-                    } else {
-                        Image(systemName: playback.isPlaying ? "pause.fill" : "livephoto")
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Button(action: playback.togglePlayPause) {
+                    Group {
+                        if playback.isFailed { Image(systemName: "arrow.clockwise") }
+                        else if playback.isBuffering { ProgressView() }
+                        else { Image(systemName: playback.isPlaying ? "stop.fill" : "livephoto") }
                     }
-                }
-                .font(.body.weight(.semibold))
-                .frame(width: 30, height: 30)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .disabled(playback.isFailed)
-            .accessibilityLabel(playback.isPlaying ? "Pause Live Photo" : "Play Live Photo")
-            .accessibilityIdentifier("live-photo-play-pause")
-
-            stepButton(
-                systemImage: "backward.frame.fill",
-                label: String(localized: "Previous frame"),
-                identifier: "live-photo-step-backward",
-                count: -1
-            )
-
-            VideoScrubber(playback: playback, identifier: "live-photo-scrubber")
-
-            stepButton(
-                systemImage: "forward.frame.fill",
-                label: String(localized: "Next frame"),
-                identifier: "live-photo-step-forward",
-                count: 1
-            )
-
-            Button {
-                playback.isMuted.toggle()
-            } label: {
-                Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(width: 30, height: 30)
+                    .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
                     .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(playback.isFailed ? String(localized: "Retry Live Photo") : (playback.isPlaying || playback.isBuffering ? String(localized: "Stop Live Photo") : String(localized: "Play Live Photo")))
+                .accessibilityIdentifier("live-photo-play-pause")
+
+                Text(playback.isFailed ? String(localized: "Live Photo unavailable") : String(localized: "Live Photo"))
+                    .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                if playback.isBuffering {
+                    Button("Cancel", action: playback.cancelLivePlayback)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("live-photo-cancel-load")
+                }
+                Spacer(minLength: 8)
+                Button {
+                    playback.isMuted.toggle()
+                } label: {
+                    Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(playback.isMuted ? String(localized: "Unmute") : String(localized: "Mute"))
+                .accessibilityIdentifier("live-photo-mute")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("live-photo-mute")
+            if playback.liveNetworkNeedsPermission {
+                Button("Allow Download and Play", action: playback.allowLiveDownloadAndPlay)
+                    .font(.subheadline.weight(.medium))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("live-photo-allow-download")
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .glassEffect(.regular, in: .capsule)
+        .glassEffect(.regular, in: .rect(cornerRadius: 24))
         .padding(.horizontal, 24)
         .frame(maxWidth: 560)
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(playback.isBuffering ? String(localized: "Loading") : (playback.isPlaying ? String(localized: "Playing") : String(localized: "Stopped")))
+        .accessibilityHint("Touch and hold the photo to play. Release to stop.")
         .accessibilityIdentifier("live-photo-controls")
-    }
-
-    private func stepButton(
-        systemImage: String,
-        label: String,
-        identifier: String,
-        count: Int
-    ) -> some View {
-        Button {
-            playback.stepFrame(by: count)
-        } label: {
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.semibold))
-                .frame(width: 28, height: 30)
-                .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .disabled(playback.isFailed)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier(identifier)
     }
 }

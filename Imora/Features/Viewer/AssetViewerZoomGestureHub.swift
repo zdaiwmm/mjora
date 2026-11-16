@@ -5,8 +5,63 @@ import UIKit
 @MainActor
 protocol AssetViewerZoomGestureTarget: AnyObject {
     var allowsDoubleTapZoom: Bool { get }
+    var supportsLiveHold: Bool { get }
     func routeMediaTap()
     func routeDoubleTap(at point: CGPoint, from view: UIView)
+    func routeLiveHold(_ event: LiveHoldEvent)
+}
+
+extension AssetViewerZoomGestureTarget {
+    var supportsLiveHold: Bool { false }
+    func routeLiveHold(_ event: LiveHoldEvent) {}
+}
+
+/// Report release and a second finger even while UIKit is still waiting for
+/// the long-press threshold. Navigation recognizers remain free to proceed.
+@MainActor
+final class LiveHoldGestureRecognizer: UILongPressGestureRecognizer {
+    var onTouchEvent: ((LiveHoldEvent) -> Void)?
+    private weak var firstTouch: UITouch?
+    private var origin: CGPoint?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard firstTouch == nil, touches.count == 1, let touch = touches.first else {
+            onTouchEvent?(.secondFinger)
+            state = state == .possible ? .failed : .cancelled
+            return
+        }
+        firstTouch = touch; origin = touch.location(in: view)
+        onTouchEvent?(.began)
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let firstTouch, let origin {
+            let point = firstTouch.location(in: view)
+            let distance = hypot(point.x - origin.x, point.y - origin.y)
+            onTouchEvent?(.moved(distancePt: Double(distance)))
+            if distance > LiveHoldController.maximumMovement {
+                state = state == .possible ? .failed : .cancelled
+                return
+            }
+        }
+        super.touchesMoved(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        onTouchEvent?(.ended)
+        super.touchesEnded(touches, with: event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        onTouchEvent?(.cancelled)
+        super.touchesCancelled(touches, with: event)
+    }
+
+    override func reset() {
+        super.reset()
+        firstTouch = nil; origin = nil
+    }
 }
 
 @MainActor
@@ -145,7 +200,7 @@ final class AssetViewerZoomCommandBridge {
 }
 
 @MainActor
-final class AssetViewerZoomGestureHub: NSObject {
+final class AssetViewerZoomGestureHub: NSObject, UIGestureRecognizerDelegate {
     private static var associationKey: UInt8 = 0
 
     static func attached(to view: UIView) -> AssetViewerZoomGestureHub {
@@ -167,6 +222,8 @@ final class AssetViewerZoomGestureHub: NSObject {
     private weak var singleTapGesture: UITapGestureRecognizer?
     private weak var doubleTapGesture: UITapGestureRecognizer?
     private weak var activeTarget: (any AssetViewerZoomGestureTarget)?
+    private weak var heldTarget: (any AssetViewerZoomGestureTarget)?
+    private weak var holdGesture: LiveHoldGestureRecognizer?
 
     private init(view: UIView) {
         gestureView = view
@@ -190,18 +247,77 @@ final class AssetViewerZoomGestureHub: NSObject {
         doubleTapGesture = doubleTap
 
         singleTap.require(toFail: doubleTap)
+        let hold = LiveHoldGestureRecognizer(target: self, action: #selector(handleHold(_:)))
+        hold.minimumPressDuration = LiveHoldController.minimumDuration
+        hold.allowableMovement = LiveHoldController.maximumMovement
+        hold.numberOfTouchesRequired = 1
+        hold.cancelsTouchesInView = false
+        hold.delaysTouchesBegan = false
+        hold.delaysTouchesEnded = false
+        hold.delegate = self
+        hold.isEnabled = false
+        hold.onTouchEvent = { [weak self] event in self?.routeHoldTouch(event) }
+        view.addGestureRecognizer(hold)
+        holdGesture = hold
+        singleTap.require(toFail: hold)
+        doubleTap.require(toFail: hold)
     }
 
     func setActive(_ target: any AssetViewerZoomGestureTarget, isActive: Bool) {
         if isActive {
+            if activeTarget !== target { cancelHeldTarget() }
             activeTarget = target
             singleTapGesture?.isEnabled = true
             doubleTapGesture?.isEnabled = true
+            holdGesture?.isEnabled = target.supportsLiveHold
         } else if activeTarget === target {
+            cancelHeldTarget()
             activeTarget = nil
             singleTapGesture?.isEnabled = false
             doubleTapGesture?.isEnabled = false
+            holdGesture?.isEnabled = false
         }
+    }
+
+    private func cancelHeldTarget() {
+        guard let previous = heldTarget else { return }
+        heldTarget = nil
+        // Active targets can change during a representable update. Its scoped
+        // cancellation must not synchronously reenter SwiftUI invalidation.
+        DispatchQueue.main.async { [weak previous] in previous?.routeLiveHold(.pageChanged) }
+    }
+
+    private func routeHoldTouch(_ event: LiveHoldEvent) {
+        if event == .began { heldTarget = activeTarget }
+        heldTarget?.routeLiveHold(event)
+        switch event {
+        case .ended, .cancelled, .secondFinger: heldTarget = nil
+        default: break
+        }
+    }
+
+    @objc private func handleHold(_ gesture: UILongPressGestureRecognizer) {
+        if gesture.state == .began { heldTarget?.routeLiveHold(.recognized) }
+        else if gesture.state == .cancelled || gesture.state == .failed { routeHoldTouch(.cancelled) }
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        activeTarget?.supportsLiveHold == true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard activeTarget?.supportsLiveHold == true else { return false }
+        var view = touch.view
+        while let current = view, current !== gestureView {
+            if current is UIControl { return false }
+            view = current.superview
+        }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        otherGestureRecognizer is UIPanGestureRecognizer || otherGestureRecognizer is UIPinchGestureRecognizer
     }
 
     @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {

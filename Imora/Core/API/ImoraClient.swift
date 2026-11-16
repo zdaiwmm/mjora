@@ -287,8 +287,11 @@ nonisolated final class ImoraClient: Sendable {
         await mediaStore.invalidateCachedFiles()
     }
 
-    func localMediaFile(_ url: URL) async throws -> ControlledMediaFile {
-        let request = try authorizedRequest(url: url)
+    func localMediaFile(_ url: URL, allowsExpensiveNetworkAccess: Bool = true) async throws -> ControlledMediaFile {
+        var request = try authorizedRequest(url: url)
+        request.allowsCellularAccess = allowsExpensiveNetworkAccess
+        request.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
+        request.allowsConstrainedNetworkAccess = allowsExpensiveNetworkAccess
         return try await mediaStore.file(request: request, session: transportSession(for: request), context: context)
     }
 
