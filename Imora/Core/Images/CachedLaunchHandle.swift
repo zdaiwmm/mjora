@@ -100,7 +100,7 @@ final class CachedLaunchHandle {
 /// Unsupported/non-default selections never borrow a different selection's pack.
 enum PhotosLaunchSelection {
     static func cloudFilter(mergesSharedSpaces: Bool, favorites: Bool = false, sortByAdded: Bool = false) -> TimelineFilter {
-        TimelineFilter(withPartners: true, withSharedSpaces: mergesSharedSpaces, withStacked: true,
+        TimelineFilter(withPartners: !favorites, withSharedSpaces: mergesSharedSpaces, withStacked: true,
             isFavorite: favorites ? true : nil, order: "asc", orderBy: sortByAdded ? "createdAt" : nil)
     }
 }

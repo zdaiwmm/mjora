@@ -52,7 +52,7 @@ nonisolated enum LivePlaybackCommand: Equatable, Sendable {
 /// only start the exact still-held token that requested it.
 @MainActor
 final class LiveHoldController {
-    static let minimumDuration = 0.35
+    static let minimumDuration = 0.15
     static let maximumMovement = 10.0
 
     enum Phase: Equatable { case rest, arming, loadingHeld, playingHeld, loadingPersistent, playingPersistent }
@@ -103,5 +103,26 @@ final class LiveHoldController {
         guard let token else { return [] }
         self.token = nil; phase = .rest
         return [.pause(token), .showPoster(token), .cancelLoad(token)]
+    }
+}
+
+nonisolated enum LivePhotoMode: String, CaseIterable, Identifiable {
+    case live, loop, bounce, off
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .live: String(localized: "Live")
+        case .loop: String(localized: "Loop")
+        case .bounce: String(localized: "Bounce")
+        case .off: String(localized: "Live Off")
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .live: "livephoto"
+        case .loop: "repeat"
+        case .bounce: "arrow.left.arrow.right"
+        case .off: "livephoto.slash"
+        }
     }
 }

@@ -93,7 +93,7 @@ struct ActiveBackupScreen: View {
             }
 
             ProgressView(value: backup.progressFraction)
-                .tint(.indigo)
+                .tint(.accentColor)
                 .frame(maxWidth: 280)
                 .accessibilityLabel("Backup progress")
                 .accessibilityValue(backup.continuedSubtitle)

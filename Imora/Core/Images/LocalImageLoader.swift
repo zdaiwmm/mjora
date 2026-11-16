@@ -73,13 +73,15 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         }
     }
     private let cache: NSCache<NSString, CachedImage>
-    private let cachedSizes = OSAllocatedUnfairLock(initialState: [String: CGFloat]())
+    private struct CachedSize { let pixels: CGFloat; let localIdentifier: String }
+    private let cachedSizes = OSAllocatedUnfairLock(initialState: [String: CachedSize]())
     /// photokit's stored previews, one per asset whatever size was asked. the
     /// opening transition needs an uncropped picture for a tile that only has
     /// its preview yet - a snapshot of the square tile is a crop the viewer
     /// visibly zooms out of once the render lands.
     private let previews: NSCache<NSString, UIImage>
     private let assets: NSCache<NSString, PHAsset>
+    private let assetSnapshots = OSAllocatedUnfairLock(initialState: (assets: [String: PHAsset](), overflow: false))
     private let libraryGeneration = OSAllocatedUnfairLock(initialState: 0)
     var permissionGeneration: Int {
         libraryGeneration.withLock { $0 } * 10 + PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue
@@ -151,9 +153,45 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     static func fixture(manager: PHCachingImageManager) -> LocalImageLoader { LocalImageLoader(manager: manager) }
     #endif
 
-    /// asset lookups are cached; a library change invalidates them all.
-    func noteLibraryChange() {
+    /// PhotoKit changes retire only affected assets. An access change or an
+    /// incomplete snapshot still retires the entire local namespace.
+    func noteLibraryChange(_ change: PHChange? = nil) {
+        if let change, PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
+            let snapshot = assetSnapshots.withLock { $0 }
+            if !snapshot.overflow {
+                var changed = Set<String>()
+                var updates: [(String, PHAsset?)] = []
+                for before in snapshot.assets.values {
+                    guard let details = change.changeDetails(for: before) else { continue }
+                    let after = details.objectAfterChanges
+                    if details.assetContentChanged || after == nil || before.isHidden != after?.isHidden
+                        || before.modificationDate != after?.modificationDate {
+                        changed.insert(before.localIdentifier)
+                    }
+                    assets.removeObject(forKey: before.localIdentifier as NSString)
+                    updates.append((before.localIdentifier, after))
+                }
+                assetSnapshots.withLock { [updates] snapshot in
+                    for (id, after) in updates { snapshot.assets[id] = after }
+                }
+                let keys = cachedSizes.withLock { [changed] sizes in
+                    let keys = sizes.filter { changed.contains($0.value.localIdentifier) }.map(\.key)
+                    keys.forEach { sizes[$0] = nil }
+                    return keys
+                }
+                for key in keys {
+                    cache.removeObject(forKey: key as NSString)
+                    previews.removeObject(forKey: key as NSString)
+                }
+                cachingQueue.async { [self] in
+                    for key in keys { prefetchTasks.removeValue(forKey: key)?.cancel() }
+                }
+                Task { @MainActor in ImageLoadRecovery.shared.contentChanged() }
+                return
+            }
+        }
         libraryGeneration.withLock { $0 &+= 1 }
+        assetSnapshots.withLock { $0 = ([:], false) }
         Task { @MainActor in ImageLoadRecovery.shared.contentChanged() }
         cachingQueue.async { [self] in
             prefetchTasks.values.forEach { $0.cancel() }
@@ -168,12 +206,24 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
 
     private func fetchAsset(_ localIdentifier: String) -> PHAsset? {
         let key = localIdentifier as NSString
-        if let cached = assets.object(forKey: key) { return cached }
+        if let cached = assets.object(forKey: key) { track(cached); return cached }
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
             return nil
         }
         assets.setObject(asset, forKey: key)
+        track(asset)
         return asset
+    }
+
+    private func track(_ asset: PHAsset) {
+        let needsPruning = assetSnapshots.withLock { $0.assets.count >= 4096 }
+        let retained = needsPruning ? cachedSizes.withLock { Set($0.values.map(\.localIdentifier)) } : nil
+        assetSnapshots.withLock { snapshot in
+            if let retained { snapshot.assets = snapshot.assets.filter { retained.contains($0.key) } }
+            if snapshot.assets.count < 4096 || snapshot.assets[asset.localIdentifier] != nil {
+                snapshot.assets[asset.localIdentifier] = asset
+            } else { snapshot.overflow = true }
+        }
     }
 
     /// one library query for every identifier not already cached, instead of
@@ -185,6 +235,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         found.reserveCapacity(localIdentifiers.count)
         for localIdentifier in localIdentifiers {
             if let cached = assets.object(forKey: localIdentifier as NSString) {
+                track(cached)
                 found.append(cached)
             } else {
                 missing.append(localIdentifier)
@@ -193,6 +244,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         guard !missing.isEmpty else { return found }
         PHAsset.fetchAssets(withLocalIdentifiers: missing, options: nil).enumerateObjects { asset, _, _ in
             self.assets.setObject(asset, forKey: asset.localIdentifier as NSString)
+            self.track(asset)
             found.append(asset)
         }
         return found
@@ -261,12 +313,10 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         cacheScope: String = "",
         modificationRevision: String? = nil
     ) {
+        _ = fetchAsset(localIdentifier)
         let cacheKey = key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope)
         let cacheKeyString = cacheKey as String
-        cachedSizes.withLock { sizes in
-            if sizes.count >= 4096, let oldest = sizes.keys.first { sizes[oldest] = nil }
-            sizes[cacheKeyString] = targetPixelSize
-        }
+        recordCachedKey(cacheKeyString, localIdentifier: localIdentifier, pixels: targetPixelSize)
         cache.setObject(
             CachedImage(image, modificationRevision: modificationRevision),
             forKey: cacheKey,
@@ -280,7 +330,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
             prefetchTasks.removeAll()
         }
         let oversized = cachedSizes.withLock { sizes -> [String] in
-            let keys = sizes.compactMap { $0.value > 1280 ? $0.key : nil }
+            let keys = sizes.compactMap { $0.value.pixels > 1280 ? $0.key : nil }
             keys.forEach { sizes[$0] = nil }
             return keys
         }
@@ -289,7 +339,26 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     }
 
     private func storePreview(_ image: UIImage, localIdentifier: String, cacheScope: String = "") {
-        previews.setObject(image, forKey: "\(permissionGeneration)|\(cacheScope)|\(localIdentifier)" as NSString, cost: Self.cost(of: image))
+        _ = fetchAsset(localIdentifier)
+        let key = "\(permissionGeneration)|\(cacheScope)|\(localIdentifier)"
+        recordCachedKey(key, localIdentifier: localIdentifier, pixels: 0)
+        previews.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
+    }
+
+    private func recordCachedKey(_ key: String, localIdentifier: String, pixels: CGFloat) {
+        let evicted = cachedSizes.withLock { sizes -> String? in
+            var evicted: String?
+            if sizes[key] == nil, sizes.count >= 4096, let oldest = sizes.keys.first {
+                sizes[oldest] = nil
+                evicted = oldest
+            }
+            sizes[key] = CachedSize(pixels: pixels, localIdentifier: localIdentifier)
+            return evicted
+        }
+        if let evicted {
+            cache.removeObject(forKey: evicted as NSString)
+            previews.removeObject(forKey: evicted as NSString)
+        }
     }
 
     func cachedImage(
@@ -511,6 +580,11 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                         ) { image, info in
                             guard !request.isCancelled else { return }
                             guard self.libraryGeneration.withLock({ $0 }) == generation else {
+                                continuation.yield(.terminal(.missing))
+                                continuation.finish()
+                                return
+                            }
+                            guard sourceRevision != nil, Self.currentModificationRevision(localIdentifier) == sourceRevision else {
                                 continuation.yield(.terminal(.missing))
                                 continuation.finish()
                                 return

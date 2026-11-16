@@ -53,7 +53,7 @@ extension FilterSheet {
                 ? String(localized: "\(name) or \(others) more")
                 : String(localized: "\(name) + \(others) more")
         case .location:
-            return joined([filter.city, filter.state, filter.country].compactMap { $0?.label })
+            return joined([filter.city, filter.state, filter.country].compactMap { $0?.label }.map { PhotoPlaceName.localized($0) })
         case .camera:
             return joined([filter.make, filter.model, filter.lensModel].compactMap { $0?.label })
         case .date:

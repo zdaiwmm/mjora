@@ -763,7 +763,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     /// the end of the track is simply the end of the scroll.
     private func bottomPadding() -> CGFloat {
         if isSelecting { return 90 }
-        return extendsPhotosBehindBars ? 100 : 0
+        return 8
     }
 
     private var selectionMoreMenu: some View {
@@ -943,7 +943,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 if let grid = scrollView as? TimelineGridView {
                     grid.initialPresentationCovered = coversInitialPhotos
                     grid.initialPhotosPositionReady = model.hasRestoredLaunchViewport || completedPhotosRestoration
-                    grid.permitsEmptyInitialViewport = showsEmptyState && model.hasCompletedInitialLoad
+                    grid.permitsEmptyInitialViewport = showsEmptyState && (model.hasCompletedInitialLoad || model.usesSuppliedAssets)
                         && model.rows.isEmpty && model.loadError == nil
                     grid.onInitialViewportPrepared = {
                         Task { @MainActor in initialPhotosPrepared = true }
@@ -953,7 +953,8 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 if photosConfiguration != nil {
                     let fullCanvas = (photosConfiguration?.controls.mode ?? .all) == .all
                     (scrollView as? TimelineGridView)?.usesFullPhotosCanvas = fullCanvas
-                    scrollView.contentInsetAdjustmentBehavior = fullCanvas ? .never : .always
+                    scrollView.contentInsetAdjustmentBehavior = .always
+                    scrollView.contentInset.top = 4
                 }
                 selectionSlideController.attach(to: scrollView)
                 selectionSlideController.configure(
@@ -1255,9 +1256,16 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                         isWorking: isSelectionWorking,
                         onShare: shareSelection,
                         onShowSelected: presentSelectedSheet,
-                        onRestore: filter.isTrashed == true ? { await applyRestore() } : nil,
-                        onTrash: { await applyTrash() },
-                        trashDisabled: selectionHasForeignAssets
+                        onRestore: filter.isTrashed == true ? {
+                            if selection.isEmpty { await run(.restoreAllTrash) }
+                            else { await applyRestore() }
+                        } : nil,
+                        onTrash: {
+                            if filter.isTrashed == true, selection.isEmpty { await run(.emptyTrash) }
+                            else { await applyTrash() }
+                        },
+                        trashDisabled: selectionHasForeignAssets,
+                        allowsAllTrashActions: filter.isTrashed == true && !model.isEmpty
                     )
                     .transition(.opacity)
                 } else if let configuration = photosConfiguration, showsPeriodControls, horizontalSizeClass == .regular {
@@ -1773,8 +1781,13 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         }
 
         var sections: [UIMenuElement] = []
-        if !primary.isEmpty { sections.append(UIMenu(options: .displayInline, children: primary)) }
-        if !transfer.isEmpty { sections.append(UIMenu(options: .displayInline, children: transfer)) }
+        let quickTitles = [String(localized: "Share"), String(localized: "Favorite"),
+                           String(localized: "Unfavorite"), String(localized: "Edit"), String(localized: "Add to Album")]
+        let actions = transfer + primary
+        let quick = quickTitles.compactMap { title in actions.first { $0.title == title } }
+        let more = actions.filter { !quickTitles.contains($0.title) }
+        if !quick.isEmpty { sections.append(UIMenu(options: .displayInline, children: quick)) }
+        if !more.isEmpty { sections.append(UIMenu(title: String(localized: "More"), image: UIImage(systemName: "ellipsis.circle"), children: more)) }
         if !destructive.isEmpty { sections.append(UIMenu(options: .displayInline, children: destructive)) }
         return sections
     }

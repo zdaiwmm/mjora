@@ -97,6 +97,19 @@ final class VideoPlayback {
     @ObservationIgnored private var liveLoadTask: Task<Void, Never>?
     @ObservationIgnored private var liveSource: LivePlaybackSource?
     private(set) var liveNetworkNeedsPermission = false
+    private(set) var liveMode: LivePhotoMode = .live
+
+    var canBounce: Bool {
+        guard let item = player?.currentItem, item.status == .readyToPlay else { return false }
+        return item.canPlayReverse || item.canPlaySlowReverse
+    }
+
+    func setLiveMode(_ mode: LivePhotoMode) {
+        guard mode != liveMode, mode != .bounce || canBounce else { return }
+        cancelLivePlayback()
+        liveMode = mode
+        if mode == .loop || mode == .bounce { togglePlayPause() }
+    }
     @ObservationIgnored private var liveAllowsExpensiveDownload = false
     @ObservationIgnored private var liveRequiresNetwork = false
     @ObservationIgnored private var livePath: NetworkPathSnapshot?
@@ -128,6 +141,14 @@ final class VideoPlayback {
     }
 
     func handleLiveHold(_ event: LiveHoldEvent, context: LiveHoldContext) {
+        if liveMode != .live {
+            switch event {
+            case .accessibilityToggle:
+                guard liveMode != .off else { return }
+            case .pageChanged, .zoomBegan, .sceneInactive, .cancelled: break
+            default: return
+            }
+        }
         guard let current = liveContext, ownerID == context.assetID,
               current.assetID == context.assetID, current.pageGeneration == context.pageGeneration,
               current.sessionID == context.sessionID else { return }
@@ -193,6 +214,12 @@ final class VideoPlayback {
                 guard liveToken == token, ownerID == token.assetID,
                       liveAuthorization?() == true, let player,
                       player.currentItem?.status == .readyToPlay else { continue }
+                if abs(player.currentTime().seconds) < 0.04 {
+                    isEngaged = true
+                    if !forcesMute, !isMuted { activatePlaybackAudioSession() }
+                    player.play()
+                    continue
+                }
                 player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] finished in
                     Task { @MainActor [weak self, weak player] in
                         guard finished, let self, let player, self.player === player,
@@ -330,9 +357,9 @@ final class VideoPlayback {
         }
     }
 
-    /// Warm only a locally available Live Photo. A press that already started
+    /// Warm a prepared Live Photo. A press that already started
     /// loading, or a page that left the viewport, always keeps its ownership.
-    func prepareLocalItem(_ item: AVPlayerItem, assetID: String) {
+    func prepareLiveItem(_ item: AVPlayerItem, assetID: String) {
         guard ownerID == assetID, pendingItemMaker != nil, releaseTask == nil, liveLoadTask == nil else { return }
         pendingItemMaker = nil
         install(item, generation: generation)
@@ -513,6 +540,9 @@ final class VideoPlayback {
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
                 self.currentTime = seconds
+                if self.liveMode == .bounce, self.isEngaged, player.rate < 0, seconds <= 0.04 {
+                    player.play()
+                }
             }
         }
 
@@ -553,6 +583,21 @@ final class VideoPlayback {
                     self.currentTime = self.duration
                     return
                 }
+                if self.isEngaged, self.liveAuthorization?() == true,
+                   self.liveMode == .loop || self.liveMode == .bounce {
+                    if self.liveMode == .bounce, self.canBounce {
+                        player.rate = item.canPlayReverse ? -1 : -0.5
+                    } else {
+                        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] finished in
+                            Task { @MainActor in
+                                guard finished, let self, let player, self.player === player,
+                                      self.isEngaged, self.liveAuthorization?() == true else { return }
+                                player.play()
+                            }
+                        }
+                    }
+                    return
+                }
                 self.player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
                 self.currentTime = 0
                 self.isEngaged = false
@@ -568,6 +613,7 @@ final class VideoPlayback {
         liveLoadTask?.cancel(); liveLoadTask = nil
         liveContext = nil; liveAuthorization = nil; liveToken = nil
         liveSource = nil
+        liveMode = .live
         liveNetworkWatcher?.stop(); liveNetworkWatcher = nil; livePath = nil
         resolveLivePath(nil)
         liveAllowsExpensiveDownload = false; liveRequiresNetwork = false; liveNetworkNeedsPermission = false

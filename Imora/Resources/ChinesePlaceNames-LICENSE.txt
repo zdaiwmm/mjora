@@ -1,0 +1,10 @@
+ChinesePlaceNames.json is derived from GeoNames geographical data:
+https://download.geonames.org/export/dump/CN.zip
+https://www.geonames.org/
+Accessed 2026-11-17. GeoNames data is licensed under Creative Commons
+Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+
+This application extracts populated places (500+ inhabitants or administrative
+seats) and administrative divisions, normalizes Latin name aliases, and uses
+Simplified Chinese alternate names. For ambiguous aliases the largest populated
+place is preferred. Original server metadata is preserved.

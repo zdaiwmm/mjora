@@ -53,7 +53,10 @@ struct PhotosSourceMenu: View {
             }
             if let backup = session.backup, let status = backup.libraryStatus {
                 Section("Backup Status") {
-                    Text(status.completionText(backup.summary))
+                    Text(status.countText)
+                    if status.pending > 0 { Text("\(status.pending) items waiting to back up") }
+                    if backup.summary.failed > 0 { Text("\(backup.summary.failed) items failed to back up") }
+                    if status.unsupported > 0 { Text("\(status.unsupported) unsupported items") }
                 }
             }
             if configuration.pendingFavoriteCount > 0 {
@@ -79,26 +82,26 @@ struct PhotosSourceMenu: View {
                     .accessibilityIdentifier("notifications-open")
             }
         } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text(title).font(.largeTitle.bold()).minimumScaleFactor(0.7).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-                    if configuration.pendingFavoriteCount > 0 {
-                        Image(systemName: configuration.favoriteSyncFailed ? "exclamationmark.icloud" : "arrow.triangle.2.circlepath.icloud")
-                            .font(.caption)
-                            .accessibilityLabel("Favorites waiting to sync")
-                    }
-                    if unreadCount > 0 {
-                        Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.red)
-                    }
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(title).font(.largeTitle.bold()).minimumScaleFactor(0.7).lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                if configuration.pendingFavoriteCount > 0 {
+                    Image(systemName: configuration.favoriteSyncFailed ? "exclamationmark.icloud" : "arrow.triangle.2.circlepath.icloud")
+                        .font(.caption)
+                        .accessibilityLabel("Favorites waiting to sync")
                 }
-                if configuration.completePeriodIndex {
-                    Text("\(count) items").font(.subheadline.weight(.semibold)).lineLimit(1)
-                } else {
-                    Text(configuration.controls.mediaFilter.title).font(.subheadline.weight(.semibold))
+                if unreadCount > 0 {
+                    Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.red)
                 }
             }
             .fixedSize(horizontal: true, vertical: true)
+            .overlay(alignment: .bottomLeading) {
+                if configuration.completePeriodIndex {
+                    Text("\(count) items").font(.subheadline.weight(.semibold)).lineLimit(1).offset(y: 20)
+                } else {
+                    Text(configuration.controls.mediaFilter.title).font(.subheadline.weight(.semibold)).offset(y: 20)
+                }
+            }
             .dynamicTypeSize(...DynamicTypeSize.large)
             .foregroundStyle(.primary)
             .contentShape(.rect)
@@ -113,74 +116,75 @@ struct PhotosSourceMenu: View {
     }
 }
 
-struct PhotosBrowseMenu: View {
+struct PhotosBrowseMenu: UIViewRepresentable {
     @Bindable var controls: PhotosGridControls
     var supportsDateAdded = true
     var source = "cloud"
 
-    var body: some View {
-        Menu {
-            Picker("Sort", selection: $controls.sortByAdded) {
-                Text("Date Added").tag(true)
-                    .disabled(!supportsDateAdded)
-                Text("Date Captured").tag(false)
-            }
-            .pickerStyle(.palette)
-            Section("Filter") {
-                Picker("Filter", selection: $controls.mediaFilter) {
-                    Label("All Items", systemImage: "square.grid.3x3").tag(PhotoMediaFilter.all)
-                    Label("Favorites", systemImage: "heart").tag(PhotoMediaFilter.favorites)
-                }
-                .pickerStyle(.inline)
-                Picker("Library Filters", selection: $controls.mediaFilter) {
-                    ForEach([PhotoMediaFilter.edited, .notInAlbum, .screenshots]) { type in
-                        Label(type.title, systemImage: type.symbol).tag(type)
-                            .disabled(!type.isAvailable(onDevice: source == "local"))
-                    }
-                }
-                .pickerStyle(.inline)
-                if source != "local" {
-                    Text("Screenshots are available On Device. This server does not provide screenshot classification.")
-                }
-                if controls.mediaFilter != .all {
-                    Button("Reset Filters") { controls.mediaFilter = .all }
-                        .accessibilityIdentifier("photos-reset-filters")
-                }
-                Menu("Media Types", systemImage: "photo.on.rectangle") {
-                    Picker("Media Types", selection: $controls.mediaFilter) {
-                        ForEach(PhotoMediaFilter.mediaTypes.filter { $0.isAvailable(onDevice: source == "local") }) { type in
-                            Label(type.title, systemImage: type.symbol).tag(type)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                }
-            }
-            Menu {
-                Button { controls.zoomIn(viewportWidth: controls.viewportWidth) } label: {
-                    Label("Zoom In", systemImage: "plus.magnifyingglass")
-                }
-                .accessibilityIdentifier("photos-zoom-in")
-                Button { controls.zoomOut(viewportWidth: controls.viewportWidth) } label: {
-                    Label("Zoom Out", systemImage: "minus.magnifyingglass")
-                }
-                .accessibilityIdentifier("photos-zoom-out")
-                Section {
-                    Toggle("Original Aspect Ratio Grid", isOn: $controls.usesOriginalAspectRatio)
-                    Toggle("Date Group Headers", isOn: $controls.groupsByDate)
-                    Toggle("Show All Backup Statuses", isOn: $controls.showsAllBackupStatuses)
-                        .accessibilityIdentifier("photos-show-all-backup-statuses")
-                }
-            } label: {
-                Label("View Options", systemImage: "rectangle.grid.3x3")
-            }
-            .accessibilityIdentifier("photos-display-options")
-        } label: {
-            Image(systemName: "line.3.horizontal.decrease")
-                .symbolVariant(controls.mediaFilter == .all ? .none : .circle.fill)
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.showsMenuAsPrimaryAction = true
+        button.preferredMenuElementOrder = .fixed
+        button.tintColor = .label
+        button.accessibilityLabel = String(localized: "Sort and Filter")
+        button.accessibilityIdentifier = "photos-sort-filter"
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        let symbol = controls.mediaFilter == .all ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill"
+        button.setImage(UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22)), for: .normal)
+        button.menu = makeMenu()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
+        CGSize(width: 44, height: 44)
+    }
+
+    private func makeMenu() -> UIMenu {
+        let added = UIAction(title: String(localized: "Date Added"), image: UIImage(systemName: "clock"),
+                             attributes: supportsDateAdded ? [] : .disabled,
+                             state: controls.sortByAdded ? .on : .off) { _ in controls.sortByAdded = true }
+        let captured = UIAction(title: String(localized: "Date Captured"), image: UIImage(systemName: "camera"),
+                                state: controls.sortByAdded ? .off : .on) { _ in controls.sortByAdded = false }
+        let sort = UIMenu(options: [.displayInline, .singleSelection], children: [added, captured])
+        // Medium is UIKit's icon-above-title layout. SwiftUI's palette picker
+        // reduces these choices to icon-only cells, including their selection.
+        sort.preferredElementSize = .medium
+
+        let filters = [PhotoMediaFilter.all, .favorites, .edited, .notInAlbum, .screenshots].map(filterAction)
+        var filterItems: [UIMenuElement] = filters
+        if controls.mediaFilter != .all {
+            filterItems.append(UIAction(title: String(localized: "Reset Filters")) { _ in controls.mediaFilter = .all })
         }
-        .accessibilityLabel("Sort and Filter")
-        .accessibilityIdentifier("photos-sort-filter")
-        .tint(.primary)
+        filterItems.append(UIMenu(title: String(localized: "Media Types"), image: UIImage(systemName: "photo.on.rectangle"),
+                                  options: .singleSelection,
+                                  children: PhotoMediaFilter.mediaTypes.filter { $0.isAvailable(onDevice: source == "local") }.map(filterAction)))
+        let filter = UIMenu(title: String(localized: "Filter:"), options: .displayInline, children: filterItems)
+
+        let zoomIn = UIAction(title: String(localized: "Zoom In"), image: UIImage(systemName: "plus.magnifyingglass")) { _ in
+            controls.zoomIn(viewportWidth: controls.viewportWidth)
+        }
+        let zoomOut = UIAction(title: String(localized: "Zoom Out"), image: UIImage(systemName: "minus.magnifyingglass")) { _ in
+            controls.zoomOut(viewportWidth: controls.viewportWidth)
+        }
+        let toggles = UIMenu(options: .displayInline, children: [
+            toggle(String(localized: "Original Aspect Ratio Grid"), value: controls.usesOriginalAspectRatio) { controls.usesOriginalAspectRatio.toggle() },
+            toggle(String(localized: "Date Group Headers"), value: controls.groupsByDate) { controls.groupsByDate.toggle() },
+            toggle(String(localized: "Show All Backup Statuses"), value: controls.showsAllBackupStatuses) { controls.showsAllBackupStatuses.toggle() }
+        ])
+        let options = UIMenu(title: String(localized: "View Options"), children: [zoomIn, zoomOut, toggles])
+        return UIMenu(children: [sort, filter, options])
+    }
+
+    private func filterAction(_ type: PhotoMediaFilter) -> UIAction {
+        UIAction(title: type.title, image: UIImage(systemName: type.symbol),
+                 attributes: type.isAvailable(onDevice: source == "local") ? [] : .disabled,
+                 state: controls.mediaFilter == type ? .on : .off) { _ in controls.mediaFilter = type }
+    }
+
+    private func toggle(_ title: String, value: Bool, action: @escaping () -> Void) -> UIAction {
+        UIAction(title: title, state: value ? .on : .off) { _ in action() }
     }
 }
 
@@ -252,7 +256,7 @@ struct PhotosNavigationBar: View {
                             .frame(width: 48, height: 48)
                             .contentShape(.circle)
                     }
-                    .foregroundStyle(Color.blue)
+                    .foregroundStyle(Color.accentColor)
                     .buttonStyle(.plain)
                     .glassEffect(.regular.interactive(), in: .circle)
                     .glassEffectID("navigation", in: glassNamespace)
@@ -260,10 +264,8 @@ struct PhotosNavigationBar: View {
                     .accessibilityIdentifier("photos-show-navigation")
 
                     NativePhotoPeriodPicker(selection: Binding(get: { controls.mode }, set: { mode in
-                        withAnimation(motion) {
-                            controls.selectedYear = nil
-                            controls.mode = mode
-                        }
+                        controls.selectedYear = nil
+                        controls.mode = mode
                     }))
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
@@ -274,7 +276,7 @@ struct PhotosNavigationBar: View {
                         tab(.photos, title: "Library", symbol: selection == .photos ? "photo.on.rectangle.fill" : "photo.on.rectangle")
                         tab(.albums, title: "Collections", symbol: selection == .albums ? "rectangle.stack.fill" : "rectangle.stack")
                     }
-                    .padding(4)
+                    .padding(3)
                     .glassEffect(.regular.interactive(), in: .capsule)
                     .glassEffectID("navigation", in: glassNamespace)
                     Spacer(minLength: 12)
@@ -312,8 +314,8 @@ struct PhotosNavigationBar: View {
                 Image(systemName: symbol).font(.system(size: 20, weight: .medium))
                 Text(title).font(.system(size: 10, weight: .semibold))
             }
-            .frame(width: 90, height: 54)
-            .foregroundStyle(selection == key ? Color.blue : Color.primary)
+            .frame(width: 90, height: 56)
+            .foregroundStyle(selection == key ? Color.accentColor : Color.primary)
             .background {
                 if selection == key {
                     Capsule().fill(.quaternary)
@@ -338,34 +340,28 @@ private struct NativePhotoPeriodPicker: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
 
-    func makeUIView(context: Context) -> UISegmentedControl {
-        let control = UISegmentedControl(items: PhotoBrowseMode.allCases.map(\.title))
+    func makeUIView(context: Context) -> PhotoPeriodSegmentedControl {
+        let control = PhotoPeriodSegmentedControl(items: PhotoBrowseMode.allCases.map(\.title))
         control.accessibilityIdentifier = "photos-period-picker"
         control.accessibilityLabel = String(localized: "Browse Photos")
         control.backgroundColor = .clear
-        control.selectedSegmentTintColor = .tertiarySystemFill
         let title: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 17, weight: .medium)]
         control.setTitleTextAttributes(title, for: .normal)
-        control.setTitleTextAttributes(title, for: .selected)
+        control.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 17, weight: .semibold)], for: .selected)
         control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
         return control
     }
 
-    func updateUIView(_ control: UISegmentedControl, context: Context) {
+    func updateUIView(_ control: PhotoPeriodSegmentedControl, context: Context) {
         context.coordinator.selection = $selection
+        control.reduceMotion = reduceMotion
         let index = PhotoBrowseMode.allCases.firstIndex(of: selection) ?? 2
-        guard control.selectedSegmentIndex != index else { return }
-        if reduceMotion || control.selectedSegmentIndex == UISegmentedControl.noSegment {
-            control.selectedSegmentIndex = index
-        } else {
-            UIView.animate(withDuration: 0.25) {
-                control.selectedSegmentIndex = index
-                control.layoutIfNeeded()
-            }
-        }
+        control.selectedSegmentIndex = index
+        control.setNeedsLayout()
+        control.layoutIfNeeded()
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UISegmentedControl, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PhotoPeriodSegmentedControl, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 222, height: proposal.height ?? 48)
     }
 
@@ -376,5 +372,52 @@ private struct NativePhotoPeriodPicker: UIViewRepresentable {
             guard PhotoBrowseMode.allCases.indices.contains(control.selectedSegmentIndex) else { return }
             selection.wrappedValue = PhotoBrowseMode.allCases[control.selectedSegmentIndex]
         }
+    }
+}
+
+/// Native segment backgrounds are clipped at the divider. A separate capsule
+/// keeps both rounded ends and a 3pt inset while retaining native hit testing
+/// and segmented-control accessibility.
+private final class PhotoPeriodSegmentedControl: UISegmentedControl {
+    var reduceMotion = false
+    private let selectionBackground = UIView()
+
+    override init(items: [Any]?) {
+        super.init(items: items)
+        selectedSegmentTintColor = .clear
+        let clear = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 48)).image { _ in }
+        setBackgroundImage(clear, for: .normal, barMetrics: .default)
+        setBackgroundImage(clear, for: .selected, barMetrics: .default)
+        for left in [UIControl.State.normal, .selected] {
+            for right in [UIControl.State.normal, .selected] {
+                setDividerImage(clear, forLeftSegmentState: left, rightSegmentState: right, barMetrics: .default)
+            }
+        }
+        selectionBackground.backgroundColor = .tertiarySystemFill
+        selectionBackground.isUserInteractionEnabled = false
+        selectionBackground.isAccessibilityElement = false
+        insertSubview(selectionBackground, at: 0)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        sendSubviewToBack(selectionBackground)
+        guard numberOfSegments > 0, selectedSegmentIndex != Self.noSegment else {
+            selectionBackground.isHidden = true
+            return
+        }
+        selectionBackground.isHidden = false
+        let width = bounds.width / CGFloat(numberOfSegments)
+        let target = CGRect(x: CGFloat(selectedSegmentIndex) * width, y: 0,
+                            width: width, height: bounds.height).insetBy(dx: 3, dy: 3)
+        selectionBackground.layer.cornerRadius = target.height / 2
+        if !reduceMotion, selectionBackground.frame.size == target.size,
+           selectionBackground.frame.origin != target.origin {
+            UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                self.selectionBackground.frame = target
+            }
+        } else { selectionBackground.frame = target }
     }
 }

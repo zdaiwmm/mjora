@@ -82,7 +82,6 @@ struct PhotoPeriodsView: View {
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .background(Color(.systemBackground))
-                .ignoresSafeArea(edges: .top)
                 .accessibilityIdentifier("photos-periods")
                 .onScrollPhaseChange { _, phase in
                     if phase == .tracking || phase == .interacting || phase == .decelerating {
@@ -187,7 +186,8 @@ struct PhotoPeriodsView: View {
             .frame(width: layout.photoSize.width, height: layout.photoSize.height)
             .overlay {
                 if let asset = period.cover {
-                    PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion, size: layout.photoSize)
+                    PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion, size: layout.photoSize,
+                                            gridViewportWidth: controls.viewportWidth, gridColumns: controls.columns)
                 }
             }
             .overlay {
@@ -352,7 +352,8 @@ private struct PhotoMonthSection: View {
             Color(.secondarySystemBackground)
                 .frame(width: size.width, height: size.height)
                 .overlay {
-                    PhotoPeriodCoverSurface(asset: day.cover, mode: .months, session: session, motion: motion, size: size)
+                    PhotoPeriodCoverSurface(asset: day.cover, mode: .months, session: session, motion: motion, size: size,
+                                            gridViewportWidth: controls.viewportWidth, gridColumns: controls.columns)
                 }
                 .overlay {
                     LinearGradient(colors: [.black.opacity(0.28), .clear], startPoint: .top, endPoint: .center)

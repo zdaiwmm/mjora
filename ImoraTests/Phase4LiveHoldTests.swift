@@ -20,7 +20,8 @@ final class Phase4LiveHoldTests: XCTestCase {
                 isChromeVisible: visible, isContextPreview: contextPreview,
                 isPlayable: true, isPlayerReady: false, isLivePhoto: live, isMediaZoomed: false)
         }
-        XCTAssertTrue(chrome(live: true).showsTransportControls)
+        XCTAssertFalse(chrome(live: true).reservesTransportControls, "Live modes live above the media, without resizing the thumbnail accessory")
+        XCTAssertTrue(chrome(live: true).showsCarousel)
         XCTAssertFalse(chrome(live: false).showsTransportControls)
         XCTAssertFalse(chrome(live: true, visible: false).showsTransportControls)
         XCTAssertFalse(chrome(live: true, contextPreview: true).showsTransportControls)
@@ -48,7 +49,7 @@ final class Phase4LiveHoldTests: XCTestCase {
         let token = try XCTUnwrap(controller.token)
         XCTAssertEqual(controller.handle(event: .ended, context: context), [.pause(token), .showPoster(token), .cancelLoad(token)])
         XCTAssertTrue(controller.handle(event: .recognized, context: context).isEmpty)
-        XCTAssertEqual(LiveHoldController.minimumDuration, 0.35)
+        XCTAssertLessThanOrEqual(LiveHoldController.minimumDuration, 0.18)
     }
 
     func testMoveBeyond10ptYieldsPaging() throws {
