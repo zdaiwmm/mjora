@@ -18,6 +18,11 @@ struct LivePhotoPage: View {
     let ownsLaunchMedia: Bool
     let launchMediaBridge: AssetViewerLaunchMediaBridge
     let openingMediaSurface: CommittedGridSurface?
+    let posterCacheScope: String
+    let posterFallbackPixels: CGFloat?
+    let posterFallbackScope: String?
+    let onBoundImage: (BoundRemoteImage) -> Void
+    let onBoundLocalImage: (BoundLocalImage) -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
     let onDoubleTapZoomChanged: (Bool) -> Void
@@ -57,9 +62,14 @@ struct LivePhotoPage: View {
                 posterFallbackURL: posterFallbackURL,
                 thumbhash: asset.thumbhash,
                 playback: playback,
+                posterCacheScope: posterCacheScope,
+                posterFallbackPixels: posterFallbackPixels,
+                posterFallbackScope: posterFallbackScope,
                 onPosterReady: onMediaReady,
                 onPosterImage: onImage,
-                onPosterUnavailable: { localUnavailable = true }
+                onPosterUnavailable: { localUnavailable = true },
+                onPosterBoundImage: onBoundImage,
+                onPosterBoundLocalImage: onBoundLocalImage
             )
             .modifier(
                 AssetViewerLaunchMediaModifier(

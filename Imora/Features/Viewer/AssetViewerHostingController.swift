@@ -1107,6 +1107,40 @@ final class AssetViewerDisplayState {
                 return true
             })
     }
+
+    func bindDisplayedLocalMedia(asset: Asset, delivery: BoundLocalImage, session: SessionStore) async {
+        guard asset.id == currentAssetID, !asset.isTrashed, asset.visibility != .locked, asset.visibility != .hidden,
+              let client = session.client, delivery.isCurrent, delivery.contentMode == .aspectFit,
+              delivery.cacheScope == AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey,
+                  version: asset.localImageVersion ?? asset.thumbhash, pixels: delivery.targetPixelSize) else { return }
+        let paired = asset.localIdentifier == nil
+        guard (asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id]) == delivery.localIdentifier,
+              !paired || asset.isEdited != true,
+              paired || asset.localImageVersion == delivery.modificationRevision else { return }
+        let provenance = LocalSurfaceProvenance(localIdentifier: delivery.localIdentifier,
+            modificationRevision: delivery.modificationRevision, remoteIdentifier: paired ? asset.id : nil)
+        let lifetime = surfaceLifetime
+        let access = MediaPresentationCoordinator.access(for: client)
+        let expected = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: delivery.targetPixelSize)
+        var pairIsCurrent: @Sendable () -> Bool = { true }
+        if paired {
+            guard let backup = session.backup else { return }
+            let validator = backup.launchSurfaceValidator()
+            guard await validator.prepare(), await validator.validate(provenance) else { return }
+            pairIsCurrent = validator.isCurrent
+        }
+        let pairEvidenceIsCurrent = pairIsCurrent
+        guard lifetime === surfaceLifetime, lifetime.isCurrent, currentAssetID == asset.id,
+              session.client === client, access == MediaPresentationCoordinator.access(for: client),
+              access.permission == delivery.permission, delivery.isCurrent, expected.isCurrentContent, pairEvidenceIsCurrent() else { return }
+        displayedMediaSurface = .init(image: delivery.image, key: expected, access: access, localProvenance: provenance,
+            isCurrent: { [weak session, weak client] in
+                guard lifetime.isCurrent, let session, let client, session.client === client,
+                      access == MediaPresentationCoordinator.access(for: client), delivery.isCurrent,
+                      expected.isCurrentContent, pairEvidenceIsCurrent() else { return false }
+                return !paired || (asset.isEdited != true && session.backup?.localIdentifierByRemoteId[asset.id] == delivery.localIdentifier)
+            })
+    }
 }
 
 @MainActor
@@ -2408,6 +2442,9 @@ private struct AssetViewerHostRoot: View {
                     },
                     onMediaAtTopChanged: { displayState.mediaAtTop = $0 },
                     onBoundImage: { displayState.bindDisplayedMedia(asset: $0, delivery: $1, session: session) },
+                    onBoundLocalImage: { asset, image in
+                        Task { await displayState.bindDisplayedLocalMedia(asset: asset, delivery: image, session: session) }
+                    },
                     onMediaIdentityChanged: { displayState.retireDisplayedMedia() },
                     onDismissed: {}
                 ) { change in

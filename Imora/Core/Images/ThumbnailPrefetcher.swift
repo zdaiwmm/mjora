@@ -13,7 +13,7 @@ final class ThumbnailPrefetcher {
     private enum Source: Hashable {
         case remote(URL)
         /// Device-only: warm only the locally available derivative.
-        case local(String, String)
+        case local(String, String, Bool)
         /// device copy of a server asset: rendered from the library when it
         /// has it, never downloaded for a tile the server can serve. kept
         /// apart because the caching manager only serves matching options.
@@ -158,9 +158,9 @@ final class ThumbnailPrefetcher {
 
     /// warms an explicit window, for hosts that already know theirs: the
     /// viewer pages a flat list and picks its own thumbnail size.
-    func warm(remote: Set<URL>, local: Set<String>) {
+    func warm(remote: Set<URL>, local: Set<String>, localScopes: [String: String] = [:], allowsNetwork: Bool = false) {
         let entries = remote.map { Warmed(source: .remote($0), isDecoded: true) }
-            + local.map { Warmed(source: .local($0, ""), isDecoded: true) }
+            + local.map { Warmed(source: .local($0, localScopes[$0] ?? "", allowsNetwork), isDecoded: true) }
         let (start, stop) = Self.difference(from: warmed, to: entries)
         window = nil
         windowVersion = -1
@@ -192,7 +192,7 @@ final class ThumbnailPrefetcher {
         let scope = AssetThumbnailSource.prefetchScope(accountKey: client.offlineAccountKey,
             version: asset.localImageVersion ?? asset.thumbhash, pixels: pixels)
         if let localIdentifier = asset.localIdentifier {
-            return .local(localIdentifier, scope)
+            return .local(localIdentifier, scope, false)
         }
         if asset.isEdited != true, let localIdentifier = backup?.localIdentifierByRemoteId[asset.id] {
             return .paired(localIdentifier, scope)
@@ -211,6 +211,7 @@ final class ThumbnailPrefetcher {
         var decoded: (start: [URL], stop: [URL]) = ([], [])
         var data: (start: [URL], stop: [URL]) = ([], [])
         var local: (start: [String: String], stop: [String: String]) = ([:], [:])
+        var networkLocal: (start: [String: String], stop: [String: String]) = ([:], [:])
         var paired: (start: [String: String], stop: [String: String]) = ([:], [:])
         for (entries, isStart) in [(stop, false), (start, true)] {
             for entry in entries {
@@ -221,9 +222,13 @@ final class ThumbnailPrefetcher {
                     } else {
                         isStart ? data.start.append(url) : data.stop.append(url)
                     }
-                case .local(let identifier, let scope):
+                case .local(let identifier, let scope, let allowsNetwork):
                     if entry.isDecoded {
-                        if isStart { local.start[identifier] = scope } else { local.stop[identifier] = scope }
+                        if allowsNetwork {
+                            if isStart { networkLocal.start[identifier] = scope } else { networkLocal.stop[identifier] = scope }
+                        } else {
+                            if isStart { local.start[identifier] = scope } else { local.stop[identifier] = scope }
+                        }
                     }
                 case .paired(let identifier, let scope):
                     if entry.isDecoded {
@@ -245,6 +250,7 @@ final class ThumbnailPrefetcher {
             ImageLoader.shared.startPrefetchingData(urls: data.start, ownerID: ownerID)
         }
         syncLocal(start: local.start, stop: local.stop, allowsNetwork: false)
+        syncLocal(start: networkLocal.start, stop: networkLocal.stop, allowsNetwork: true)
         syncLocal(start: paired.start, stop: paired.stop, allowsNetwork: false)
     }
 

@@ -3,8 +3,7 @@ import Photos
 import SwiftUI
 
 /// async image with thumbhash placeholder and downsampled decoding.
-/// memory-cached images render on the first frame, and fast loads skip the
-/// fade so cells never flicker when they scroll back into view.
+/// Cached and arriving pictures bind without a per-image fade.
 struct RemoteImage: View {
     @Environment(SessionStore.self) private var session: SessionStore?
     let url: URL
@@ -16,8 +15,7 @@ struct RemoteImage: View {
     var upgradeURL: URL?
     var assetAspectRatio: Double = 1
     var contentMode: ContentMode = .fill
-    /// false while the grid moves too fast for a fade per arriving tile to
-    /// read as anything but flicker. the thumbhash step goes with it.
+    /// A fast-moving grid skips the optional thumbhash decode.
     var animatesLoads = true
     var onImage: ((UIImage) -> Void)?
     var onReady: (() -> Void)?
@@ -75,15 +73,6 @@ struct RemoteImage: View {
         return nil
     }
 
-    /// the smaller render of the same photo is on screen, so the full one
-    /// replaces a picture rather than a placeholder.
-    private func showsFallback(key: String) -> Bool {
-        if placeholderImage != nil { return true }
-        if let fallbackImage, fallbackImage.key == key { return true }
-        guard let fallbackURL else { return false }
-        return ImageLoader.shared.cachedImage(for: fallbackURL, targetPixelSize: fallbackPixelSize) != nil
-    }
-
     private func signalReady(_ image: UIImage) {
         onImage?(image)
         onReady?()
@@ -107,10 +96,6 @@ struct RemoteImage: View {
                 Image(uiImage: displayImage)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
-                    // swiftui does not animate an image content swap on its
-                    // own, so without this the slow-path fade below lands as
-                    // a hard cut when the sharper render arrives.
-                    .contentTransition(.opacity)
                     .onChange(of: ObjectIdentifier(displayImage), initial: true) { _, _ in
                         guard let bound = readyBoundImage(key: key), bound.image === displayImage, bound.isCurrent else { return }
                         onBoundImage?(bound)
@@ -143,7 +128,6 @@ struct RemoteImage: View {
             }
 
             let key = requestKey
-            let start = ContinuousClock.now
             let loaded: UIImage
             var bound: BoundRemoteImage?
             do {
@@ -171,24 +155,8 @@ struct RemoteImage: View {
             failedKey = nil
             let keyed = KeyedImage(key: key, image: loaded, bound: bound)
 
-            // a fade only earns its place over a flat placeholder: over the
-            // smaller render of the same photo it reads as a pulse, and in a
-            // fast fling every arriving tile pulsing reads as flicker.
-            if !animatesLoads
-                || showsFallback(key: key)
-                || ContinuousClock.now - start < .milliseconds(120) {
-                image = keyed
-                signalReady(loaded)
-            } else {
-                withAnimation(
-                    .easeIn(duration: 0.15),
-                    completionCriteria: .logicallyComplete
-                ) {
-                    image = keyed
-                } completion: {
-                    signalReady(loaded)
-                }
-            }
+            image = keyed
+            signalReady(loaded)
         }
         .task(id: taskID) {
             guard mayPresent, !isPrivate, animatesLoads, let thumbhash, placeholder?.key != key else { return }
@@ -241,6 +209,9 @@ struct LocalPhotoImage: View {
     /// instead of a placeholder while photokit produces the big one.
     var fallbackTargetPixelSize: CGFloat?
     var fallbackRequestContentMode: PHImageContentMode = .aspectFill
+    var fallbackCoversTarget = false
+    var fallbackCacheScope: String?
+    var requiresBoundFallback = false
     var loadsFallbackIfNeeded = false
     var requestContentMode: PHImageContentMode = .aspectFill
     /// true for grid tiles: the fit render is asked for at the tile's size on
@@ -256,9 +227,6 @@ struct LocalPhotoImage: View {
     /// filling such a frame with one reads as a zoom that snaps back when the
     /// render lands, so a preview that disagrees with it is skipped.
     var expectedAspectRatio: Double?
-    /// false while the grid moves too fast for a fade per arriving tile to
-    /// read as anything but flicker.
-    var animatesLoads = true
     /// a picture of the same asset the host already had on screen - the
     /// server thumbnail a tile painted before the backup index paired it -
     /// shown until photokit answers, so the swap never passes through grey.
@@ -269,6 +237,7 @@ struct LocalPhotoImage: View {
     var onUnavailable: (() -> Void)?
     var onImage: ((UIImage) -> Void)?
     var onReady: (() -> Void)?
+    var onBoundImage: ((BoundLocalImage) -> Void)?
 
     @State private var failedKey: String?
     @State private var retryAttempt = 0
@@ -281,6 +250,7 @@ struct LocalPhotoImage: View {
     private struct KeyedImage {
         let key: String
         let image: UIImage
+        var bound: BoundLocalImage? = nil
     }
 
     private var requestKey: String {
@@ -289,25 +259,23 @@ struct LocalPhotoImage: View {
 
     private var fallbackKey: String? {
         guard let fallbackTargetPixelSize else { return nil }
-        return "\(cacheScope)|\(localIdentifier)#\(Int(fallbackTargetPixelSize))#\(fallbackRequestContentMode.rawValue)"
+        return "\(fallbackCacheScope ?? cacheScope)|\(localIdentifier)#\(Int(fallbackTargetPixelSize))#\(fallbackRequestContentMode.rawValue)\(fallbackCoversTarget ? "#cover" : "")"
     }
 
     private var cachedFallback: UIImage? {
         guard let fallbackTargetPixelSize else { return nil }
+        if requiresBoundFallback {
+            return LocalImageLoader.shared.cachedBoundImage(localIdentifier: localIdentifier,
+                targetPixelSize: fallbackTargetPixelSize, contentMode: fallbackRequestContentMode,
+                coversTarget: fallbackCoversTarget, cacheScope: fallbackCacheScope ?? cacheScope)?.image
+        }
         return LocalImageLoader.shared.cachedImage(
             localIdentifier: localIdentifier,
             targetPixelSize: fallbackTargetPixelSize,
             contentMode: fallbackRequestContentMode,
-            cacheScope: cacheScope
+            coversTarget: fallbackCoversTarget,
+            cacheScope: fallbackCacheScope ?? cacheScope
         )
-    }
-
-    /// a preview or a smaller render of the same picture is on screen, so the
-    /// sharp render replaces a picture rather than a placeholder.
-    private func showsSamePicture(key: String) -> Bool {
-        if previewImage?.key == key || placeholderImage != nil { return true }
-        if let fallbackKey, fallbackImage?.key == fallbackKey { return true }
-        return cachedFallback != nil
     }
 
     private func readyImage(key: String) -> UIImage? {
@@ -325,6 +293,16 @@ struct LocalPhotoImage: View {
             return fallbackImage.image
         }
         return cachedFallback
+    }
+
+    private func readyBoundImage(key: String) -> BoundLocalImage? {
+        if let image, image.key == key { return image.bound }
+        if let cached = LocalImageLoader.shared.cachedBoundImage(localIdentifier: localIdentifier,
+            targetPixelSize: targetPixelSize, contentMode: requestContentMode, coversTarget: coversTarget, cacheScope: cacheScope) { return cached }
+        if let fallbackKey, let fallbackImage, fallbackImage.key == fallbackKey { return fallbackImage.bound }
+        guard let fallbackTargetPixelSize else { return nil }
+        return LocalImageLoader.shared.cachedBoundImage(localIdentifier: localIdentifier, targetPixelSize: fallbackTargetPixelSize,
+            contentMode: fallbackRequestContentMode, coversTarget: fallbackCoversTarget, cacheScope: fallbackCacheScope ?? cacheScope)
     }
 
     private func signalReady(_ image: UIImage) {
@@ -367,9 +345,11 @@ struct LocalPhotoImage: View {
                 Image(uiImage: display)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
-                    // same as remoteimage: makes the slow-path fade real
-                    // instead of a hard cut on the content swap.
-                    .contentTransition(.opacity)
+                    .onChange(of: ObjectIdentifier(display), initial: true) { _, _ in
+                        guard onBoundImage != nil, let bound = readyBoundImage(key: key),
+                              bound.image === display, bound.isCurrent else { return }
+                        onBoundImage?(bound)
+                    }
             } else {
                 Color(.secondarySystemFill)
             }
@@ -390,7 +370,6 @@ struct LocalPhotoImage: View {
         }
         .task(id: "\(key)|\(allowsNetwork)|\(recoveryGeneration)|\(retryAttempt)") {
             guard image?.key != key else { return }
-            let start = ContinuousClock.now
             var receivedFinal = false
             var shouldTryAlternateSource = false
             let deliveries = LocalImageLoader.shared.deliveries(
@@ -415,26 +394,11 @@ struct LocalPhotoImage: View {
                 case .final(let loaded):
                     failedKey = nil
                     receivedFinal = true
-                    let keyed = KeyedImage(key: key, image: loaded)
-                    // the render lands in place whenever it replaces the same
-                    // picture: fading one rendition into another reads as a
-                    // glow. only a flat placeholder earns the fade, and only
-                    // while the grid is slow enough for fades to read.
-                    if !animatesLoads
-                        || showsSamePicture(key: key)
-                        || ContinuousClock.now - start < .milliseconds(120) {
-                        image = keyed
-                        signalReady(loaded)
-                    } else {
-                        withAnimation(
-                            .easeIn(duration: 0.15),
-                            completionCriteria: .logicallyComplete
-                        ) {
-                            image = keyed
-                        } completion: {
-                            signalReady(loaded)
-                        }
-                    }
+                    let bound = onBoundImage == nil ? nil : LocalImageLoader.shared.cachedBoundImage(localIdentifier: localIdentifier,
+                        targetPixelSize: targetPixelSize, contentMode: requestContentMode, coversTarget: coversTarget, cacheScope: cacheScope)
+                    let keyed = KeyedImage(key: key, image: loaded, bound: bound?.image === loaded ? bound : nil)
+                    image = keyed
+                    signalReady(loaded)
                 }
             }
             guard !Task.isCancelled, !receivedFinal, shouldTryAlternateSource else { return }
@@ -458,17 +422,22 @@ struct LocalPhotoImage: View {
                       localIdentifier: localIdentifier,
                       targetPixelSize: fallbackTargetPixelSize,
                       contentMode: fallbackRequestContentMode,
-            cacheScope: cacheScope
+                      coversTarget: fallbackCoversTarget,
+                      cacheScope: fallbackCacheScope ?? cacheScope
                   ) == nil
             else { return }
             let loaded = await LocalImageLoader.shared.image(
                 localIdentifier: localIdentifier,
                 targetPixelSize: fallbackTargetPixelSize,
                 contentMode: fallbackRequestContentMode,
-            cacheScope: cacheScope
+                coversTarget: fallbackCoversTarget,
+                cacheScope: fallbackCacheScope ?? cacheScope
             )
             guard !Task.isCancelled, let loaded, image?.key != key else { return }
-            fallbackImage = KeyedImage(key: fallbackKey, image: loaded)
+            let bound = onBoundImage == nil ? nil : LocalImageLoader.shared.cachedBoundImage(localIdentifier: localIdentifier,
+                targetPixelSize: fallbackTargetPixelSize, contentMode: fallbackRequestContentMode,
+                coversTarget: fallbackCoversTarget, cacheScope: fallbackCacheScope ?? cacheScope)
+            fallbackImage = KeyedImage(key: fallbackKey, image: loaded, bound: bound?.image === loaded ? bound : nil)
             signalReady(loaded)
         }
     }
@@ -557,7 +526,6 @@ struct AssetTile: View {
             // Grid loads stay on-device; cloud-only originals
             // keep their preview and expose a retry control.
             allowsNetwork: false,
-            animatesLoads: animatesLoads,
             placeholderImage: session.client.flatMap { serverThumbnail(client: $0, source: source) },
             onUnavailable: {
                 remoteFallbackVisible = source.remoteIdentifier != nil

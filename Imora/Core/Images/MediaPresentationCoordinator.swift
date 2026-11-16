@@ -222,7 +222,8 @@ final class MediaPresentationCoordinator {
             guard let image = images[key] else { continue }
             if let local = asset.localIdentifier {
                 LocalImageLoader.shared.installPrepared(image, localIdentifier: local, targetPixelSize: CGFloat(key.pixelBucket),
-                    cacheScope: Self.localScope(asset: asset, client: client, pixels: CGFloat(key.pixelBucket)), permission: request.access.permission)
+                    cacheScope: Self.localScope(asset: asset, client: client, pixels: CGFloat(key.pixelBucket)), permission: request.access.permission,
+                    sourceRevision: key.sourceRevision.isEmpty ? nil : key.sourceRevision)
             } else {
                 ImageLoader.shared.installPrepared(image, url: client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash),
                     targetPixelSize: CGFloat(key.pixelBucket), client: client,

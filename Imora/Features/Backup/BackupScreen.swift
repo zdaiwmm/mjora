@@ -225,8 +225,7 @@ struct BackupScreen: View {
                         LocalPhotoImage(
                             localIdentifier: failure.localIdentifier,
                             targetPixelSize: 128,
-                            allowsNetwork: false,
-                            animatesLoads: false
+                            allowsNetwork: false
                         )
                         .frame(width: 56, height: 56)
                         .clipShape(.rect(cornerRadius: 8))

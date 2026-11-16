@@ -11,6 +11,19 @@ nonisolated enum LocalImageDelivery: @unchecked Sendable {
     case terminal(LocalImageResult)
 }
 
+nonisolated struct BoundLocalImage: @unchecked Sendable {
+    let image: UIImage
+    let localIdentifier: String
+    let modificationRevision: String
+    let permission: Int
+    let cacheScope: String
+    let targetPixelSize: CGFloat
+    let contentMode: PHImageContentMode
+    let coversTarget: Bool
+    fileprivate let validate: @Sendable () -> Bool
+    var isCurrent: Bool { validate() }
+}
+
 /// how grids ask photokit for device tiles: uncropped, at the tile's own
 /// size, with the target covering the tile's short side. the tile, the
 /// opening transition and the page's first frame then all paint the same
@@ -52,7 +65,14 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     /// decoded results still get a small cache of their own so a tile
     /// scrolling back into view renders on its first frame, synchronously -
     /// photokit only ever answers through a callback.
-    private let cache: NSCache<NSString, UIImage>
+    private final class CachedImage {
+        let image: UIImage
+        let modificationRevision: String?
+        init(_ image: UIImage, modificationRevision: String?) {
+            self.image = image; self.modificationRevision = modificationRevision
+        }
+    }
+    private let cache: NSCache<NSString, CachedImage>
     /// photokit's stored previews, one per asset whatever size was asked. the
     /// opening transition needs an uncropped picture for a tile that only has
     /// its preview yet - a snapshot of the square tile is a crop the viewer
@@ -95,10 +115,14 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     }
 
     func installPrepared(_ image: UIImage, localIdentifier: String, targetPixelSize: CGFloat,
-                         cacheScope: String, permission: Int) {
+                         cacheScope: String, permission: Int, sourceRevision: String? = nil) {
         guard permission == permissionGeneration else { return }
+        let revision = sourceRevision.flatMap {
+            Self.currentModificationRevision(localIdentifier) == $0 ? $0 : nil
+        }
         store(image, localIdentifier: localIdentifier, targetPixelSize: targetPixelSize,
-              contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope)
+              contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope,
+              modificationRevision: revision)
         storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
     }
     /// exported live photo motion files in least-recently-used order.
@@ -232,10 +256,11 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         targetPixelSize: CGFloat,
         contentMode: PHImageContentMode,
         coversTarget: Bool,
-        cacheScope: String = ""
+        cacheScope: String = "",
+        modificationRevision: String? = nil
     ) {
         cache.setObject(
-            image,
+            CachedImage(image, modificationRevision: modificationRevision),
             forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope),
             cost: Self.cost(of: image)
         )
@@ -254,7 +279,21 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     ) -> UIImage? {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized || status == .limited else { return nil }
-        return cache.object(forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope))
+        return cache.object(forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope))?.image
+    }
+
+    func cachedBoundImage(localIdentifier: String, targetPixelSize: CGFloat, contentMode: PHImageContentMode,
+                          coversTarget: Bool, cacheScope: String) -> BoundLocalImage? {
+        let permission = permissionGeneration
+        guard let entry = cache.object(forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope)),
+              let revision = entry.modificationRevision,
+              Self.currentModificationRevision(localIdentifier) == revision, permissionGeneration == permission else { return nil }
+        return BoundLocalImage(image: entry.image, localIdentifier: localIdentifier, modificationRevision: revision,
+            permission: permission, cacheScope: cacheScope, targetPixelSize: targetPixelSize,
+            contentMode: contentMode, coversTarget: coversTarget, validate: { [weak self] in
+                guard let self, self.permissionGeneration == permission else { return false }
+                return Self.currentModificationRevision(localIdentifier) == revision
+            })
     }
 
     /// the last preview photokit handed over for the asset, at whatever size.
@@ -434,6 +473,8 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                             continuation.finish()
                             return
                         }
+                        let permission = self.permissionGeneration
+                        let sourceRevision = asset.modificationDate.map { String($0.timeIntervalSinceReferenceDate.bitPattern) }
                         let size = Self.targetSize(
                             for: asset,
                             pixels: targetPixelSize,
@@ -489,13 +530,17 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                                 continuation.finish()
                                 return
                             }
+                            let revision = sourceRevision.flatMap {
+                                self.permissionGeneration == permission && Self.currentModificationRevision(localIdentifier) == $0 ? $0 : nil
+                            }
                             self.store(
                                 image,
                                 localIdentifier: localIdentifier,
                                 targetPixelSize: targetPixelSize,
                                 contentMode: contentMode,
                                 coversTarget: coversTarget,
-                                cacheScope: cacheScope
+                                cacheScope: cacheScope,
+                                modificationRevision: revision
                             )
                             continuation.yield(.final(image))
                             continuation.finish()

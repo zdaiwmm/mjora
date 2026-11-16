@@ -427,6 +427,11 @@ struct VideoPlayerPage: View {
     let ownsLaunchMedia: Bool
     let launchMediaBridge: AssetViewerLaunchMediaBridge
     let openingMediaSurface: CommittedGridSurface?
+    let posterCacheScope: String
+    let posterFallbackPixels: CGFloat?
+    let posterFallbackScope: String?
+    let onBoundImage: (BoundRemoteImage) -> Void
+    let onBoundLocalImage: (BoundLocalImage) -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
     let onDoubleTapZoomChanged: (Bool) -> Void
@@ -461,11 +466,16 @@ struct VideoPlayerPage: View {
                 posterFallbackURL: posterFallbackURL,
                 thumbhash: asset.thumbhash,
                 playback: playback,
+                posterCacheScope: posterCacheScope,
+                posterFallbackPixels: posterFallbackPixels,
+                posterFallbackScope: posterFallbackScope,
                 onPosterReady: onMediaReady,
                 onPosterImage: onImage,
                 onPosterUnavailable: {
                     localUnavailable = true
-                }
+                },
+                onPosterBoundImage: onBoundImage,
+                onPosterBoundLocalImage: onBoundLocalImage
             )
             .modifier(
                 AssetViewerLaunchMediaModifier(
@@ -540,11 +550,16 @@ struct MediaSurfaceStack: View {
     let posterFallbackURL: URL?
     let thumbhash: String?
     let playback: VideoPlayback
+    var posterCacheScope = ""
+    var posterFallbackPixels: CGFloat?
+    var posterFallbackScope: String?
     var onPosterReady: (() -> Void)?
     var onPosterImage: ((UIImage) -> Void)?
     /// only a live photo needs this: its still is the asset, so losing the
     /// device copy would leave an empty page rather than a stale poster.
     var onPosterUnavailable: (() -> Void)?
+    var onPosterBoundImage: ((BoundRemoteImage) -> Void)?
+    var onPosterBoundLocalImage: ((BoundLocalImage) -> Void)?
 
     /// a live photo shows its own still until the clip actually moves, so the
     /// page renders full-resolution pixels rather than a video frame at rest.
@@ -565,14 +580,19 @@ struct MediaSurfaceStack: View {
                     LocalPhotoImage(
                         localIdentifier: posterLocalIdentifier,
                         targetPixelSize: pagePixelSize,
-                        fallbackTargetPixelSize: 640,
+                        cacheScope: posterCacheScope,
+                        fallbackTargetPixelSize: posterFallbackPixels,
                         fallbackRequestContentMode: .aspectFit,
+                        fallbackCoversTarget: true,
+                        fallbackCacheScope: posterFallbackScope,
+                        requiresBoundFallback: true,
                         requestContentMode: .aspectFit,
                         contentMode: .fit,
                         expectedAspectRatio: aspectRatio,
                         onUnavailable: { onPosterUnavailable?() },
                         onImage: { onPosterImage?($0) },
-                        onReady: { onPosterReady?() }
+                        onReady: { onPosterReady?() },
+                        onBoundImage: onPosterBoundLocalImage
                     )
                 } else if let posterURL {
                     RemoteImage(
@@ -580,10 +600,11 @@ struct MediaSurfaceStack: View {
                         targetPixelSize: pagePixelSize,
                         thumbhash: thumbhash,
                         fallbackURL: posterFallbackURL,
-                        fallbackTargetPixelSize: 640,
+                        fallbackTargetPixelSize: posterFallbackPixels ?? 640,
                         contentMode: .fit,
                         onImage: { onPosterImage?($0) },
-                        onReady: { onPosterReady?() }
+                        onReady: { onPosterReady?() },
+                        onBoundImage: onPosterBoundImage
                     )
                 }
                 if playback.ownerID == assetID, let player = playback.player {

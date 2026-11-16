@@ -859,6 +859,7 @@ struct AssetViewerScreen: View {
     /// transition only claims pans that belong to the unobstructed media.
     let onMediaAtTopChanged: (Bool) -> Void
     let onBoundImage: (Asset, BoundRemoteImage) -> Void
+    let onBoundLocalImage: (Asset, BoundLocalImage) -> Void
     let onMediaIdentityChanged: () -> Void
     let presentationID: UUID
     let zoomNamespace: Namespace.ID?
@@ -995,6 +996,7 @@ struct AssetViewerScreen: View {
         onMediaFrameSourceChanged: @escaping (String, UIView, Double, Bool) -> Void = { _, _, _, _ in },
         onMediaAtTopChanged: @escaping (Bool) -> Void = { _ in },
         onBoundImage: @escaping (Asset, BoundRemoteImage) -> Void = { _, _ in },
+        onBoundLocalImage: @escaping (Asset, BoundLocalImage) -> Void = { _, _ in },
         onMediaIdentityChanged: @escaping () -> Void = {},
         onDismissed: @escaping () -> Void,
         onChange: @escaping (AssetChange) -> Void
@@ -1040,6 +1042,7 @@ struct AssetViewerScreen: View {
         self.onMediaFrameSourceChanged = onMediaFrameSourceChanged
         self.onMediaAtTopChanged = onMediaAtTopChanged
         self.onBoundImage = onBoundImage
+        self.onBoundLocalImage = onBoundLocalImage
         self.onMediaIdentityChanged = onMediaIdentityChanged
         self.onDismissed = onDismissed
         self.onChange = onChange
@@ -1851,6 +1854,7 @@ struct AssetViewerScreen: View {
                         launchMediaBridge: launchMediaBridge,
                         openingMediaSurface: openingMediaSurface,
                         onBoundImage: onBoundImage,
+                        onBoundLocalImage: onBoundLocalImage,
                         onLaunchMediaReady: {
                             launchMediaReady = true
                             onLaunchMediaReady()
@@ -2026,17 +2030,22 @@ struct AssetViewerScreen: View {
 
         var remote: Set<URL> = []
         var local: Set<String> = []
+        var localScopes: [String: String] = [:]
         for asset in assets[lower...upper] {
-            let paired = asset.isEdited == true ? nil : session.backup?.localIdentifierByRemoteId[asset.id]
+            let paired = asset.isEdited == true || asset.visibility == .locked ? nil : session.backup?.localIdentifierByRemoteId[asset.id]
             if let localIdentifier = asset.localIdentifier ?? paired {
-                if !asset.isVideo { local.insert(localIdentifier) }
+                if !asset.isVideo {
+                    local.insert(localIdentifier)
+                    localScopes[localIdentifier] = AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey,
+                        version: asset.localImageVersion ?? asset.thumbhash, pixels: pagePixelSize)
+                }
             } else if let client = session.client {
                 remote.insert(
                     client.thumbnailURL(assetID: asset.id, size: "preview", cacheKey: asset.thumbhash)
                 )
             }
         }
-        prefetcher.warm(remote: remote, local: local)
+        prefetcher.warm(remote: remote, local: local, localScopes: localScopes, allowsNetwork: true)
     }
 
     private func toggleInfo() {
@@ -3966,6 +3975,7 @@ private struct AssetPager: View {
     let launchMediaBridge: AssetViewerLaunchMediaBridge
     let openingMediaSurface: CommittedGridSurface?
     let onBoundImage: (Asset, BoundRemoteImage) -> Void
+    let onBoundLocalImage: (Asset, BoundLocalImage) -> Void
     let onLaunchMediaReady: () -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
@@ -4013,6 +4023,7 @@ private struct AssetPager: View {
         launchMediaBridge: AssetViewerLaunchMediaBridge,
         openingMediaSurface: CommittedGridSurface?,
         onBoundImage: @escaping (Asset, BoundRemoteImage) -> Void,
+        onBoundLocalImage: @escaping (Asset, BoundLocalImage) -> Void,
         onLaunchMediaReady: @escaping () -> Void,
         allowsDoubleTapZoom: Bool,
         onMediaTap: @escaping () -> Void,
@@ -4042,6 +4053,7 @@ private struct AssetPager: View {
         self.launchMediaBridge = launchMediaBridge
         self.openingMediaSurface = openingMediaSurface
         self.onBoundImage = onBoundImage
+        self.onBoundLocalImage = onBoundLocalImage
         self.onLaunchMediaReady = onLaunchMediaReady
         self.allowsDoubleTapZoom = allowsDoubleTapZoom
         self.onMediaTap = onMediaTap
@@ -4086,6 +4098,10 @@ private struct AssetPager: View {
                         onBoundImage: { bound in
                             guard asset.id == selection, optimisticEdits[asset.id] == nil else { return }
                             onBoundImage(asset, bound)
+                        },
+                        onBoundLocalImage: { bound in
+                            guard asset.id == selection, optimisticEdits[asset.id] == nil else { return }
+                            onBoundLocalImage(asset, bound)
                         },
                         onMediaReady: {
                             guard asset.id == openingAssetID else { return }
@@ -4290,6 +4306,7 @@ private struct AssetPage: View {
     let launchMediaBridge: AssetViewerLaunchMediaBridge
     let openingMediaSurface: CommittedGridSurface?
     let onBoundImage: (BoundRemoteImage) -> Void
+    let onBoundLocalImage: (BoundLocalImage) -> Void
     let onMediaReady: () -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
@@ -4308,8 +4325,29 @@ private struct AssetPage: View {
     private var deviceIdentifier: String? {
         guard !localUnavailable else { return nil }
         if let localIdentifier = asset.localIdentifier { return localIdentifier }
-        guard asset.isEdited != true else { return nil }
+        guard asset.isEdited != true, asset.visibility != .locked else { return nil }
         return session.backup?.localIdentifierByRemoteId[asset.id]
+    }
+
+    private var localGridSurface: CommittedGridSurface? {
+        guard ownsLaunchMedia, let surface = openingMediaSurface, let client = session.client,
+              let provenance = surface.localProvenance, provenance.localIdentifier == deviceIdentifier,
+              surface.key == MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: CGFloat(surface.key.pixelBucket)),
+              surface.key.isCurrentContent, LocalImageLoader.currentModificationRevision(provenance.localIdentifier) == provenance.modificationRevision
+        else { return nil }
+        return surface
+    }
+
+    private func localScope(pixels: CGFloat) -> String {
+        AssetThumbnailSource.localCacheScope(accountKey: session.client?.offlineAccountKey,
+            version: asset.localImageVersion ?? asset.thumbhash, pixels: pixels)
+    }
+
+    private var remoteGridPixels: CGFloat? {
+        guard ownsLaunchMedia, let surface = openingMediaSurface, let client = session.client,
+              surface.key == MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: CGFloat(surface.key.pixelBucket)),
+              surface.key.isCurrentContent else { return nil }
+        return CGFloat(surface.key.pixelBucket)
     }
 
     var body: some View {
@@ -4360,6 +4398,11 @@ private struct AssetPage: View {
                 ownsLaunchMedia: ownsLaunchMedia,
                 launchMediaBridge: launchMediaBridge,
                 openingMediaSurface: openingMediaSurface,
+                posterCacheScope: localScope(pixels: pagePixelSize),
+                posterFallbackPixels: deviceIdentifier == nil ? remoteGridPixels : localGridSurface.map { CGFloat($0.key.pixelBucket) },
+                posterFallbackScope: localGridSurface.map { localScope(pixels: CGFloat($0.key.pixelBucket)) },
+                onBoundImage: onBoundImage,
+                onBoundLocalImage: onBoundLocalImage,
                 allowsDoubleTapZoom: allowsDoubleTapZoom,
                 onMediaTap: onMediaTap,
                 onDoubleTapZoomChanged: onDoubleTapZoomChanged,
@@ -4380,6 +4423,11 @@ private struct AssetPage: View {
                 ownsLaunchMedia: ownsLaunchMedia,
                 launchMediaBridge: launchMediaBridge,
                 openingMediaSurface: openingMediaSurface,
+                posterCacheScope: localScope(pixels: pagePixelSize),
+                posterFallbackPixels: deviceIdentifier == nil ? remoteGridPixels : localGridSurface.map { CGFloat($0.key.pixelBucket) },
+                posterFallbackScope: localGridSurface.map { localScope(pixels: CGFloat($0.key.pixelBucket)) },
+                onBoundImage: onBoundImage,
+                onBoundLocalImage: onBoundLocalImage,
                 allowsDoubleTapZoom: allowsDoubleTapZoom,
                 onMediaTap: onMediaTap,
                 onDoubleTapZoomChanged: onDoubleTapZoomChanged,
@@ -4403,14 +4451,19 @@ private struct AssetPage: View {
                     LocalPhotoImage(
                         localIdentifier: localId,
                         targetPixelSize: pagePixelSize,
-                        fallbackTargetPixelSize: 640,
+                        cacheScope: localScope(pixels: pagePixelSize),
+                        fallbackTargetPixelSize: localGridSurface.map { CGFloat($0.key.pixelBucket) },
                         fallbackRequestContentMode: .aspectFit,
+                        fallbackCoversTarget: true,
+                        fallbackCacheScope: localGridSurface.map { localScope(pixels: CGFloat($0.key.pixelBucket)) },
+                        requiresBoundFallback: true,
                         requestContentMode: .aspectFit,
                         contentMode: .fit,
                         expectedAspectRatio: asset.ratio,
                         onUnavailable: { localUnavailable = true },
                         onImage: onImage,
-                        onReady: onMediaReady
+                        onReady: onMediaReady,
+                        onBoundImage: onBoundLocalImage
                     )
                 }
                 .modifier(launchMediaModifier)
@@ -4435,7 +4488,7 @@ private struct AssetPage: View {
                         targetPixelSize: pagePixelSize,
                         thumbhash: asset.thumbhash,
                         fallbackURL: client.thumbnailURL(assetID: asset.id, cacheKey: cacheKey),
-                        fallbackTargetPixelSize: 640,
+                        fallbackTargetPixelSize: remoteGridPixels ?? 640,
                         contentMode: .fit,
                         onImage: onImage,
                         onReady: onMediaReady,
