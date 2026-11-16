@@ -562,6 +562,193 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         await finish()
     }
 
+    func testIndependentValidStatusAutomaticallyRebindsMountedPrivateImage() async throws {
+        let held = Mutex<CheckedContinuation<Void, Never>?>(nil), reached = Mutex(false)
+        let oldEndpointGate = DispatchSemaphore(value: 0), newEndpointGate = DispatchSemaphore(value: 0)
+        let newGridGate = DispatchSemaphore(value: 0), newGridStarted = Mutex(false)
+        let oldEndpointStarted = Mutex(false), oldEndpointReturned = Mutex(false), newEndpointStarted = Mutex(false)
+        let privateThumbnailReads = Mutex(0)
+        let deadline = Mutex("2099-01-01T00:00:00Z")
+        let userID = "automatic-status-race-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        let oldBytes = try XCTUnwrap(solidImage(pixels: 528).jpegData(compressionQuality: 0.87))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        func bytes(_ color: UIColor) throws -> Data {
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 640), format: format).image { context in
+                color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 640, height: 640))
+            }
+            return try XCTUnwrap(image.jpegData(compressionQuality: 0.87))
+        }
+        let newBytes = try bytes(.blue), lateBytes = try bytes(.green), publicBytes = try bytes(.purple)
+        func rgba(_ image: UIImage) throws -> [UInt8] {
+            let cgImage = try XCTUnwrap(image.cgImage)
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return pixel
+        }
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" { return .init(body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline.withLock { $0 })\"}".utf8)) }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") {
+                if request.path.contains("public-id") { return .init(headers: ["Content-Type": "image/jpeg"], body: publicBytes) }
+                if request.path.contains("size=preview") {
+                    if request.path.contains("edited=false") {
+                        newEndpointStarted.withLock { $0 = true }
+                        _ = newEndpointGate.wait(timeout: .now() + 25)
+                        return .init(headers: ["Content-Type": "image/jpeg"], body: newBytes)
+                    }
+                    oldEndpointStarted.withLock { $0 = true }
+                    _ = oldEndpointGate.wait(timeout: .now() + 25)
+                    oldEndpointReturned.withLock { $0 = true }
+                    return .init(headers: ["Content-Type": "image/jpeg"], body: lateBytes)
+                }
+                let read = privateThumbnailReads.withLock { $0 += 1; return $0 }
+                if read == 1 { return .init(headers: ["Content-Type": "image/jpeg"], body: oldBytes) }
+                newGridStarted.withLock { $0 = true }
+                _ = newGridGate.wait(timeout: .now() + 25)
+                return .init(headers: ["Content-Type": "image/jpeg"], body: newBytes)
+            }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { oldEndpointGate.signal(); newEndpointGate.signal(); newGridGate.signal(); server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "invalid-status-race", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        func releaseStatus() { held.withLock { value in let continuation = value; value = nil; return continuation }?.resume() }
+        defer { releaseStatus(); client.setInvalidStatusFixtureHook(nil) }
+        let host = UIViewController(), tile = TimelineTileView(frame: .init(x: 20, y: 150, width: 132, height: 132))
+        let publicTile = TimelineTileView(frame: .init(x: 170, y: 150, width: 132, height: 132))
+        let parent = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.rootViewController)
+        host.modalPresentationStyle = .fullScreen; host.view.addSubview(tile); host.view.addSubview(publicTile)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in parent.present(host, animated: false) { continuation.resume() } }
+        func finish() async {
+            tile.unregister(); publicTile.unregister()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in host.dismiss(animated: false) { continuation.resume() } }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        do {
+            var value = asset(); value.visibility = .locked
+            let publicAsset = Asset(id: "public-id", ownerId: "alice", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "revision-one", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+            ImageLoader.shared.markEphemeral(assetIDs: [value.id])
+            let registry = AssetTileRegistry()
+            tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            publicTile.configure(asset: publicAsset, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+            await locked.refreshStatus()
+            let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+            let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+            let publicKey = MediaPresentationCoordinator.gridKey(asset: publicAsset, client: client, pixels: 416)
+            for _ in 0..<200 {
+                if tile.checkpointSurface(for: key, client: client) != nil && publicTile.checkpointSurface(for: publicKey, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let oldSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+            let publicSurface = try XCTUnwrap(publicTile.checkpointSurface(for: publicKey, client: client))
+            let oldLease = try XCTUnwrap(client.lockedMediaLease)
+            let oldBitmap = try XCTUnwrap((tile.makeZoomReplica() as? UIImageView)?.image)
+            let oldColor = try rgba(oldBitmap)
+            XCTAssertGreaterThan(oldColor[0], oldColor[2], "E1 must be a real red endpoint bitmap mounted on screen")
+            let privateURL = client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash)
+            let oldPreviewURL = client.thumbnailURL(assetID: value.id, size: "preview", cacheKey: value.thumbhash)
+            let oldEndpoint = Task { try await ImageLoader.shared.image(for: oldPreviewURL, targetPixelSize: 416) }
+            for _ in 0..<200 {
+                if oldEndpointStarted.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard oldEndpointStarted.withLock({ $0 }) else { XCTFail("E1 must reach the real held thumbnail endpoint"); throw CocoaError(.fileReadUnknown) }
+            client.setInvalidStatusFixtureHook {
+                await withCheckedContinuation { continuation in
+                    held.withLock { $0 = continuation }
+                    reached.withLock { $0 = true }
+                }
+            }
+            deadline.withLock { $0 = "not-a-date" }
+            let older = Task { try? await client.authStatus() }
+            for _ in 0..<200 {
+                if reached.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard reached.withLock({ $0 }) else { XCTFail("The accepted invalid status must pause before cleanup"); throw CocoaError(.fileReadUnknown) }
+            XCTAssertNil(client.lockedMediaLease)
+            XCTAssertFalse(oldLease.isCurrent)
+            XCTAssertFalse(oldSurface.isCurrent())
+            XCTAssertNil(tile.checkpointSurface(for: key, client: client), "The still-mounted E1 bitmap is denied during the invalid gap")
+            if let gapBitmap = (tile.makeZoomReplica() as? UIImageView)?.image {
+                XCTAssertTrue(gapBitmap === oldBitmap, "An unqualified replacement must not appear during the invalid gap")
+            }
+            client.setInvalidStatusFixtureHook(nil)
+            deadline.withLock { $0 = "2099-01-01T00:00:00Z" }
+            _ = try await client.authStatus() // Independent account-security caller, not the folder refresh path.
+            let newLease = try XCTUnwrap(client.lockedMediaLease)
+            XCTAssertTrue(locked.isUnlocked)
+            XCTAssertNotEqual(oldLease.identity, newLease.identity)
+            XCTAssertFalse(oldLease.isCurrent, "A later valid status cannot revive E1")
+            XCTAssertFalse(oldSurface.isCurrent(), "The mounted E1 surface cannot become authorized again")
+            for _ in 0..<200 {
+                if newGridStarted.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard newGridStarted.withLock({ $0 }) else {
+                XCTFail("The mounted tile did not automatically start a fresh E2 endpoint request")
+                throw CocoaError(.fileReadUnknown)
+            }
+            XCTAssertNil((tile.makeZoomReplica() as? UIImageView)?.image,
+                "Retired E1 pixels must clear while the fresh E2 endpoint is held")
+            XCTAssertTrue((publicTile.makeZoomReplica() as? UIImageView)?.image === publicSurface.image)
+            newGridGate.signal()
+            for _ in 0..<200 {
+                if privateThumbnailReads.withLock({ $0 }) >= 2,
+                   tile.checkpointSurface(for: key, client: client) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let newSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+            let newColor = try rgba(newSurface.image)
+            XCTAssertGreaterThanOrEqual(privateThumbnailReads.withLock { $0 }, 2, "E2 must fetch its own actual endpoint bitmap")
+            XCTAssertGreaterThan(newColor[2], newColor[0], "Observed mounted tile must automatically display fresh E2 endpoint pixels")
+            XCTAssertFalse(oldSurface.isCurrent())
+
+            let newPreviewURL = client.thumbnailURL(assetID: value.id, size: "preview", edited: false, cacheKey: value.thumbhash)
+            let newEndpoint = Task { try await ImageLoader.shared.image(for: newPreviewURL, targetPixelSize: 416) }
+            for _ in 0..<200 {
+                if newEndpointStarted.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard newEndpointStarted.withLock({ $0 }) else { XCTFail("E2 must reach its separately held endpoint"); throw CocoaError(.fileReadUnknown) }
+            oldEndpointGate.signal()
+            do {
+                let image = try await oldEndpoint.value
+                XCTFail("A held E1 endpoint delivered a bitmap after E2: \(String(describing: image.cgImage))")
+            } catch { }
+            XCTAssertTrue(oldEndpointReturned.withLock { $0 }, "The E1 server returned its actual late response")
+            XCTAssertFalse(oldLease.isCurrent); XCTAssertFalse(oldSurface.isCurrent())
+            XCTAssertTrue(newLease.isCurrent); XCTAssertTrue(newSurface.isCurrent())
+            XCTAssertTrue((tile.makeZoomReplica() as? UIImageView)?.image === newSurface.image)
+            releaseStatus(); _ = await older.value
+            XCTAssertTrue(newLease.isCurrent, "Delayed E1 cleanup cannot revoke E2")
+            XCTAssertTrue(newSurface.isCurrent())
+            XCTAssertNotNil(ImageLoader.shared.cachedImage(for: privateURL, targetPixelSize: 416), "Delayed E1 cleanup cannot purge E2 cached bytes")
+            XCTAssertTrue((tile.makeZoomReplica() as? UIImageView)?.image === newSurface.image)
+            newEndpointGate.signal()
+            let newEndpointImage = try await newEndpoint.value
+            let endpointColor = try rgba(newEndpointImage)
+            XCTAssertGreaterThan(endpointColor[2], endpointColor[0], "Delayed E1 cleanup cannot cancel E2 endpoint work")
+            XCTAssertTrue(publicKey.isCurrentContent); XCTAssertTrue(publicSurface.isCurrent())
+            XCTAssertTrue((publicTile.makeZoomReplica() as? UIImageView)?.image === publicSurface.image)
+        } catch { oldEndpointGate.signal(); newEndpointGate.signal(); newGridGate.signal(); releaseStatus(); await finish(); throw error }
+        await finish()
+    }
+
     func testNewerStatusIssuedBeforeInvalidAcceptanceGrantsNewProducer() async throws {
         let invalidGate = DispatchSemaphore(value: 0), newerGate = DispatchSemaphore(value: 0)
         let reads = Mutex(0), held = Mutex<CheckedContinuation<Void, Never>?>(nil), reached = Mutex(false)

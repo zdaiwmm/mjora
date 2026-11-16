@@ -62,13 +62,16 @@ final class LockedFolderSession {
         biometricsEnabled = LockedPinStore.exists(account: account)
         client.setLockedMediaObserver { [weak self] in
             guard let self else { return }
+            // A valid status can replace a producer whose denial notification
+            // was superseded. Mounted private tiles must observe that change
+            // even when the folder remains unlocked with the same deadline.
+            self.publicationGeneration &+= 1
             if let lease = self.client.lockedMediaLease {
                 if self.phase == .unlocked, self.elevatedUntil != lease.deadline {
                     self.elevatedUntil = lease.deadline
                     self.scheduleExpiry()
                 }
             } else {
-                self.publicationGeneration &+= 1
                 if self.phase == .unlocked { self.enterLockedState() }
             }
         }
