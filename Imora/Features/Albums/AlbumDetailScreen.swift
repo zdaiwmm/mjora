@@ -105,7 +105,7 @@ struct AlbumDetailScreen: View {
                     .accessibilityIdentifier("album-feedback")
             }
         }
-        .animation(.smooth(duration: 0.25), value: feedback)
+        .animation(PhotosMotion.layout, value: feedback)
         .task {
             await refreshAlbum()
             await refreshActivityStatistics()

@@ -42,7 +42,7 @@ struct FilterChipsRow: View {
                 }
             }
             .padding(.horizontal)
-            .animation(.snappy, value: visibleFilters)
+            .animation(PhotosMotion.layout, value: visibleFilters)
         }
         .scrollIndicators(.hidden)
         .accessibilityIdentifier("filter-chips")
@@ -135,7 +135,7 @@ private struct FilterSheetScaffold<Content: View>: View {
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                                 .contentTransition(.numericText())
-                                .animation(.snappy, value: total)
+                                .animation(PhotosMotion.layout, value: total)
                                 .accessibilityIdentifier("filter-total")
                         }
                     }
@@ -244,7 +244,7 @@ struct PeoplePickerSheet: View {
                     }
                 }
                 .padding()
-                .animation(.snappy, value: selected)
+                .animation(PhotosMotion.layout, value: selected)
             }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter people")
             .overlay {
@@ -755,7 +755,7 @@ struct DatePickerSheet: View {
                 }
 
                 Section {
-                    Toggle("Custom Range", isOn: $showCustomRange.animation(.snappy))
+                    Toggle("Custom Range", isOn: $showCustomRange.animation(PhotosMotion.layout))
                     if showCustomRange {
                         DatePicker("Start", selection: $customStart, in: ...customEnd, displayedComponents: .date)
                         DatePicker("End", selection: $customEnd, in: customStart...max(customStart, Date()),
@@ -1026,7 +1026,7 @@ struct TagsPickerSheet: View {
             List {
                 if searchText.isEmpty {
                     Section {
-                        Toggle(isOn: $isUntagged.animation(.snappy)) {
+                        Toggle(isOn: $isUntagged.animation(PhotosMotion.layout)) {
                             Label("Untagged Only", systemImage: "tag.slash")
                         }
                         .accessibilityIdentifier("tags-untagged")

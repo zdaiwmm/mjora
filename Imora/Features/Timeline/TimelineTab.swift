@@ -46,7 +46,7 @@ struct TimelineTab: View {
         }
         .background(Color(.systemBackground))
         .onAppear { visitedSources.insert(source) }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: source)
+        .animation(reduceMotion ? nil : PhotosMotion.controls, value: source)
         .onChange(of: source) { oldSource, newSource in
             visitedSources.formUnion([oldSource, newSource])
             if session.cachedLaunchHandle?.source != (newSource == "local" ? "device" : "cloud") {

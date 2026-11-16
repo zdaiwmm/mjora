@@ -160,7 +160,7 @@ final class TimelineGridZoomTransition {
         }
         // The real destination grid is already laid out under the replicas.
         // Crossfade after most of the travel so the final handoff stays continuous.
-        let animator = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 1) { [tiles] in
+        let animator = PhotosMotion.springAnimator(duration: PhotosMotion.layoutDuration) { [tiles] in
             for tile in tiles {
                 if let target = targets[tile.id] { tile.view.frame = target }
                 else { tile.view.alpha = 0 }

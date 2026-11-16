@@ -123,8 +123,7 @@ final class PhotoPeriodMotion {
         // Keep the same crop while the bounds change. UIImageView's default
         // scaleToFill stretched the travelling photo until the final handoff.
         replica.contentMode = .scaleAspectFill
-        let animator = UIViewPropertyAnimator(duration: 0.32, controlPoint1: CGPoint(x: 0.2, y: 0.8),
-                                              controlPoint2: CGPoint(x: 0.2, y: 1)) {
+        let animator = PhotosMotion.springAnimator(duration: PhotosMotion.layoutDuration) {
             replica.frame = target
             replica.layer.cornerRadius = mode == .all ? 2 : 10
         }

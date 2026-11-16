@@ -243,7 +243,7 @@ private struct CleanupNoticeBanner: View {
                 }
             }
         }
-        .animation(.smooth(duration: 0.3), value: notice)
+        .animation(PhotosMotion.layout, value: notice)
     }
 }
 

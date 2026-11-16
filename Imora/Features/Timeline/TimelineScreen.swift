@@ -1060,7 +1060,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     if reduceMotion {
                         apply()
                     } else {
-                        withAnimation(.easeOut(duration: 0.15)) { apply() }
+                        withAnimation(PhotosMotion.controls) { apply() }
                     }
                     if !scrubbing { updateVisibleRows() }
                 }
@@ -1272,7 +1272,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     PhotoPeriodControls(controls: configuration.controls, onSearch: configuration.onSearch)
                 }
             }
-            .animation(.smooth(duration: 0.25), value: isSelecting)
+            .animation(PhotosMotion.layout, value: isSelecting)
         }
         .deviceCopyRemovalPresentation(deviceCopyRemoval)
         .task(id: initialPhotosAttempt) {
@@ -1595,7 +1595,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             // the animations run before this returns, so the swap never
             // outlives the call that owns it.
             withoutActuallyEscaping(apply) { apply in
-                UIView.animate(springDuration: 0.3, bounce: 0) {
+                UIView.animate(withDuration: PhotosMotion.layoutDuration, delay: 0,
+                               usingSpringWithDamping: 1, initialSpringVelocity: 0,
+                               options: [.allowUserInteraction, .beginFromCurrentState]) {
                     apply()
                     grid.reloadRows(animated: true)
                 }
@@ -2009,14 +2011,14 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     /// entry and exit run inside one animation so the toolbar swap, the tab
     /// bar fade and the bottom controls fade move together.
     private func enterSelection() {
-        withAnimation(.smooth(duration: 0.25)) {
+        withAnimation(PhotosMotion.layout) {
             isSelecting = true
         }
     }
 
     private func exitSelection() {
         showsSelectedSheet = false
-        withAnimation(.smooth(duration: 0.25)) {
+        withAnimation(PhotosMotion.layout) {
             isSelecting = false
             selection.removeAll()
         }
@@ -3227,7 +3229,9 @@ private final class TimelineScrollIndicatorView: UIView {
             if reduceMotion {
                 restyle()
             } else {
-                UIView.animate(springDuration: 0.18, bounce: 0.15, animations: restyle)
+                UIView.animate(withDuration: PhotosMotion.layoutDuration, delay: 0,
+                               usingSpringWithDamping: 1, initialSpringVelocity: 0,
+                               options: [.allowUserInteraction, .beginFromCurrentState], animations: restyle)
             }
         } else {
             if thumb.frame != frame { thumb.frame = frame }

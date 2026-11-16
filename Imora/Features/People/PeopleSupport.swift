@@ -121,7 +121,7 @@ struct SelectableUserRow: View {
                     .font(.title3)
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
                     .contentTransition(.symbolEffect(.replace))
-                    .animation(.snappy(duration: 0.22), value: isSelected)
+                    .animation(PhotosMotion.layout, value: isSelected)
             }
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])

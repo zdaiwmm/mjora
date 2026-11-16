@@ -113,7 +113,7 @@ struct CleanupDeck<Info: View>: View {
                 if let mark {
                     decide(asset, mark, size: size)
                 } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { offset = .zero }
+                    withAnimation(PhotosMotion.layout) { offset = .zero }
                 }
             }
     }
@@ -135,12 +135,12 @@ struct CleanupDeck<Info: View>: View {
                 throwing = nil
             }
             decisions += 1
-            withAnimation(.snappy(duration: 0.25)) { onMark(asset, mark) }
+            withAnimation(PhotosMotion.layout) { onMark(asset, mark) }
         }
         if reduceMotion {
             finish()
         } else {
-            withAnimation(.easeIn(duration: 0.22)) {
+            withAnimation(PhotosMotion.removal) {
                 offset = target
             } completion: {
                 finish()
@@ -161,7 +161,7 @@ struct CleanupDeck<Info: View>: View {
             }
             controlButton(String(localized: "Undo"), stableID: "undo", systemImage: "arrow.uturn.backward", tint: .secondary, size: 46) {
                 undos += 1
-                withAnimation(.snappy(duration: 0.25)) { onUndo() }
+                withAnimation(PhotosMotion.layout) { onUndo() }
             }
             .disabled(!canUndo || throwing != nil)
             .opacity(canUndo ? 1 : 0.4)
