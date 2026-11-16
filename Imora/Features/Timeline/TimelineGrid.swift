@@ -1081,7 +1081,7 @@ final class TimelineGridView: UIScrollView {
         let view = entry.view
         if animatesLayout, !UIAccessibility.isReduceMotionEnabled {
             // fades where it stood; the pool takes it once it is gone.
-            UIView.animate(withDuration: 0.2, animations: {
+            UIView.animate(withDuration: PhotosMotion.removalDuration, animations: {
                 view.alpha = 0
             }, completion: { [weak self] _ in
                 self?.pool(view, kind: entry.kind)
@@ -1247,7 +1247,7 @@ final class TimelineDayTitleView: UIView {
         let tint: UIColor = allSelected ? UIColor(resource: .brandTint) : .secondaryLabel
         if animated, self.allSelected != nil, let image {
             toggleImage.setSymbolImage(image, contentTransition: .replace)
-            UIView.animate(withDuration: 0.22) { self.toggleImage.tintColor = tint }
+            UIView.animate(withDuration: PhotosMotion.chromeDuration) { self.toggleImage.tintColor = tint }
         } else {
             toggleImage.image = image
             toggleImage.tintColor = tint

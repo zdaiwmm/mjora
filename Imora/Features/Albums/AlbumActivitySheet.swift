@@ -105,7 +105,7 @@ struct AlbumActivitySheet: View {
                 .onChange(of: activities.last?.id) { _, id in
                     guard let id else { return }
                     if hasScrolled {
-                        withAnimation(.smooth(duration: 0.3)) { proxy.scrollTo(id, anchor: .bottom) }
+                        withAnimation(PhotosMotion.layout) { proxy.scrollTo(id, anchor: .bottom) }
                     } else {
                         hasScrolled = true
                         proxy.scrollTo(id, anchor: .bottom)

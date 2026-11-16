@@ -166,7 +166,7 @@ struct MainTabView: View {
                !hidesCompactNavigation, !(selection == .photos && photoControls.isSelecting) {
                 PhotosNavigationBar(controls: photoControls, showsPeriods: showsDateNavigation,
                     selection: tabSelection, onSearch: {
-                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                        withAnimation(reduceMotion ? nil : PhotosMotion.layout) {
                             activateSearch()
                         }
                     })
@@ -183,7 +183,7 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
         }
-        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: showsDateNavigation)
+        .animation(reduceMotion ? nil : PhotosMotion.layout, value: showsDateNavigation)
         .tabBarMinimizeBehavior(.never)
         .onChange(of: showsLibrarySection) { _, shows in
             // a section tab selected at regular width has nowhere to go once

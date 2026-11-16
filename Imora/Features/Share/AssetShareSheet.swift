@@ -1004,7 +1004,7 @@ private final class AssetSharePreparationDialog {
         let card = card
         let scrim = scrim
         UIView.animate(
-            withDuration: 0.2,
+            withDuration: PhotosMotion.chromeDuration,
             animations: {
                 card.alpha = 0
                 scrim.alpha = 0
@@ -1034,7 +1034,7 @@ private final class AssetSharePreparationDialog {
         card.onCancel = { [weak self] in self?.onCancel?() }
         card.translatesAutoresizingMaskIntoConstraints = false
         card.alpha = 0
-        card.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+        card.transform = UIAccessibility.isReduceMotionEnabled ? .identity : CGAffineTransform(scaleX: 1.1, y: 1.1)
         card.accessibilityViewIsModal = true
         root.view.addSubview(card)
         NSLayoutConstraint.activate([
@@ -1043,9 +1043,9 @@ private final class AssetSharePreparationDialog {
             card.widthAnchor.constraint(equalToConstant: 288),
         ])
         UIView.animate(
-            withDuration: 0.35,
+            withDuration: UIAccessibility.isReduceMotionEnabled ? 0.12 : PhotosMotion.layoutDuration,
             delay: 0,
-            usingSpringWithDamping: 0.9,
+            usingSpringWithDamping: 1,
             initialSpringVelocity: 0
         ) {
             self.scrim.alpha = 1

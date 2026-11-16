@@ -183,7 +183,7 @@ struct SearchTab: View {
                 }
             }
         }
-        .animation(.snappy, value: suggestions.isEmpty)
+        .animation(PhotosMotion.layout, value: suggestions.isEmpty)
     }
 
     private var clearFiltersAction: (() -> Void)? {

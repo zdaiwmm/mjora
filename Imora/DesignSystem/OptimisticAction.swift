@@ -125,7 +125,7 @@ private struct ErrorToastHost: View {
             }
         }
         .safeAreaPadding(.top)
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.3), value: center.current?.id)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : PhotosMotion.layout, value: center.current?.id)
         .allowsHitTesting(false)
         .ignoresSafeArea(edges: [.horizontal, .bottom])
     }

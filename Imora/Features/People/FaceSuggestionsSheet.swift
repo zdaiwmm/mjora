@@ -101,7 +101,7 @@ struct FaceSuggestionsSheet: View {
         let snapshot = suggestions
         await OptimisticAction.perform(
             errorMessage: String(localized: "Couldn't save your answer."),
-            apply: { withAnimation { suggestions.removeAll { $0.id == suggestion.id } } },
+            apply: { withAnimation(PhotosMotion.layout) { suggestions.removeAll { $0.id == suggestion.id } } },
             rollback: { suggestions = snapshot },
             request: {
                 if confirm {

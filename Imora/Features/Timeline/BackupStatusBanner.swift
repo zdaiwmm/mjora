@@ -42,7 +42,7 @@ struct BackupStatusBanner: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
                 Button {
-                    withAnimation(.smooth) { backup.dismissRepeatedFailureBanner() }
+                    withAnimation(PhotosMotion.layout) { backup.dismissRepeatedFailureBanner() }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.subheadline.weight(.semibold))

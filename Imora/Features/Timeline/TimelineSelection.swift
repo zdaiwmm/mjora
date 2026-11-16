@@ -320,7 +320,7 @@ struct SelectionControlBar: View {
                 .accessibilityIdentifier("selection-show-selected")
             }
         }
-        .animation(.snappy(duration: 0.2), value: count)
+        .animation(PhotosMotion.controls, value: count)
     }
 
     private func circleButton(
@@ -414,7 +414,7 @@ struct SelectedAssetsSheet: View {
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.white, isSelected ? Color.accentColor : .black.opacity(0.25))
                     .contentTransition(.symbolEffect(.replace))
-                    .animation(.snappy(duration: 0.22), value: isSelected)
+                    .animation(PhotosMotion.controls, value: isSelected)
                     .padding(6)
             }
             .contentShape(.rect)

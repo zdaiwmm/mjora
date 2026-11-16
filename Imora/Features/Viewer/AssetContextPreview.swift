@@ -96,7 +96,7 @@ private struct PlayerLayerView: UIViewRepresentable {
                 Task { @MainActor [weak self] in
                     guard let self, self.alpha == 0 else { return }
                     self.readyObservation = nil
-                    UIView.animate(withDuration: 0.18) { self.alpha = 1 }
+                    UIView.animate(withDuration: PhotosMotion.chromeDuration) { self.alpha = 1 }
                 }
             }
         }

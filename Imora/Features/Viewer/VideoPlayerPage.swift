@@ -867,7 +867,7 @@ struct VideoPlayerSurface: UIViewRepresentable {
                     guard let self, self.alpha == 0 else { return }
                     self.readyObservation = nil
                     self.isFadingIn = true
-                    UIView.animate(withDuration: 0.18) {
+                    UIView.animate(withDuration: PhotosMotion.chromeDuration) {
                         self.alpha = 1
                     } completion: { [weak self] finished in
                         guard let self else { return }
@@ -1010,7 +1010,7 @@ struct VideoScrubber: View {
             }
             .frame(height: playback.isScrubbing ? 12 : 8)
             .frame(width: width, height: geometry.size.height)
-            .animation(.smooth(duration: 0.18), value: playback.isScrubbing)
+            .animation(PhotosMotion.controls, value: playback.isScrubbing)
             .contentShape(.rect)
             .gesture(
                 DragGesture(minimumDistance: 0)

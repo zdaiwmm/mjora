@@ -114,7 +114,7 @@ final class PhotoPeriodMotion {
         destination = view
         destinationAlpha = view.alpha
         view.alpha = 0
-        let animator = UIViewPropertyAnimator(duration: 0.32, curve: .easeOut) {
+        let animator = PhotosMotion.springAnimator(duration: PhotosMotion.layoutDuration) {
             replica.frame = target
             replica.layer.cornerRadius = mode == .all ? 2 : 10
         }

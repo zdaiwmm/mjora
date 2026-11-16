@@ -77,7 +77,7 @@ struct AssetViewerCarousel: View {
                 selection = asset.id
             }
             .animation(
-                reduceMotion ? nil : .spring(duration: 0.3, bounce: 0),
+                reduceMotion ? nil : PhotosMotion.layout,
                 value: isExpanded
             )
             .accessibilityAddTraits(asset.id == selection ? .isSelected : [])
@@ -93,7 +93,7 @@ struct AssetViewerCarousel: View {
     private func scroll(to id: String?, animated: Bool = true) {
         guard let id else { return }
         if animated, !reduceMotion {
-            withAnimation(.spring(duration: 0.3, bounce: 0)) { scrolledID = id }
+            withAnimation(PhotosMotion.layout) { scrolledID = id }
         } else {
             scrolledID = id
         }

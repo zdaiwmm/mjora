@@ -174,12 +174,12 @@ struct MemoryLane: View {
               let index = memories.firstIndex(where: { $0.id == memory.id })
         else { return }
         let saved = memory.isSaved != true
-        withAnimation(.snappy) { memories[index].isSaved = saved }
+        withAnimation(PhotosMotion.layout) { memories[index].isSaved = saved }
         do {
             try await client.setMemorySaved(id: memory.id, isSaved: saved)
         } catch {
             if let index = memories.firstIndex(where: { $0.id == memory.id }) {
-                withAnimation(.snappy) { memories[index].isSaved = !saved }
+                withAnimation(PhotosMotion.layout) { memories[index].isSaved = !saved }
             }
             ErrorToastCenter.shared.show(saved ? String(localized: "Couldn't save the memory.") : String(localized: "Couldn't remove the memory from saved."),
                                          error: error)
@@ -191,7 +191,7 @@ struct MemoryLane: View {
         let snapshot = memories
         await OptimisticAction.perform(
             errorMessage: String(localized: "Couldn't remove the memory."),
-            apply: { withAnimation(.snappy) { memories.removeAll { $0.id == memory.id } } },
+            apply: { withAnimation(PhotosMotion.layout) { memories.removeAll { $0.id == memory.id } } },
             rollback: { memories = snapshot },
             request: { try await client.deleteMemory(id: memory.id) }
         )

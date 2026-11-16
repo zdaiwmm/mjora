@@ -136,7 +136,7 @@ struct AlbumAddAssetsSheet: View {
                     .padding(6)
                     .accessibilityIdentifier(isMember ? "album-picker-member" : "album-picker-tick")
             }
-            .animation(.snappy(duration: 0.22), value: isTicked)
+            .animation(PhotosMotion.layout, value: isTicked)
             .contentShape(.rect)
             .onTapGesture {
                 guard !isMember else { return }

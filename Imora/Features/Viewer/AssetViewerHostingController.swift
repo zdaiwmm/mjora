@@ -8,15 +8,15 @@ private func assetViewerDismissalDistance(for height: CGFloat) -> CGFloat {
 }
 
 private var assetViewerPresentationDuration: TimeInterval {
-    UIAccessibility.isReduceMotionEnabled ? 0.1 : 0.32
+    UIAccessibility.isReduceMotionEnabled ? 0.1 : PhotosMotion.viewerOpenDuration
 }
 
 private var assetViewerDismissalDuration: TimeInterval {
-    UIAccessibility.isReduceMotionEnabled ? 0.09 : 0.3
+    UIAccessibility.isReduceMotionEnabled ? 0.09 : PhotosMotion.viewerCloseDuration
 }
 
 private var assetViewerChromeTransitionDuration: TimeInterval {
-    UIAccessibility.isReduceMotionEnabled ? 0.12 : 0.22
+    UIAccessibility.isReduceMotionEnabled ? 0.12 : PhotosMotion.chromeDuration
 }
 
 @MainActor
@@ -585,7 +585,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
         if let openingChrome {
             container.addSubview(openingChrome)
         }
-        let animator = UIViewPropertyAnimator(duration: duration, dampingRatio: 1) {
+        let animator = PhotosMotion.springAnimator(duration: duration) {
             toView.alpha = 1
             zoomView.frame = targetFrame
             zoomView.layer.cornerRadius = 0
@@ -626,7 +626,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
                 }
                 return (animator, nil, zoomView, nil)
             }
-            let animator = UIViewPropertyAnimator(duration: duration, dampingRatio: 1) {
+            let animator = PhotosMotion.springAnimator(duration: duration) {
                 fromView.alpha = 0
                 zoomView.frame = source.frame
                 zoomView.layer.cornerRadius = 0
@@ -648,7 +648,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
             source.hide()
             let zoomView = source.makeZoomView(surface: prepared.surface, frame: mediaFrame, cornerRadius: 0)
             container.addSubview(zoomView)
-            let animator = UIViewPropertyAnimator(duration: duration, dampingRatio: 1) {
+            let animator = PhotosMotion.springAnimator(duration: duration) {
                 fromView.alpha = 0
                 zoomView.frame = source.frame
                 zoomView.layer.cornerRadius = 0
@@ -1582,7 +1582,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         UIView.animate(
             withDuration: duration,
             delay: 0,
-            options: [.beginFromCurrentState, .curveEaseOut]
+            options: [.beginFromCurrentState, .curveEaseInOut]
         ) {
             zoomView.frame = targetFrame
             zoomView.layer.cornerRadius = 0
@@ -1881,12 +1881,12 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
                 )
             }
             ?? swipeDismissal.mediaFrame
-        let minimumDuration: TimeInterval = UIAccessibility.isReduceMotionEnabled ? 0.08 : 0.14
+        let minimumDuration: TimeInterval = UIAccessibility.isReduceMotionEnabled ? 0.08 : PhotosMotion.layoutDuration
         let duration = max(
             minimumDuration,
             chromeTransitionDeadline - CACurrentMediaTime()
         )
-        let animator = UIViewPropertyAnimator(duration: duration, dampingRatio: 1) {
+        let animator = PhotosMotion.springAnimator(duration: duration) {
             self.view.alpha = 1
             self.view.transform = .identity
             swipeDismissal.chromeSnapshot?.setAlpha(1)
@@ -2175,7 +2175,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         openingChromeHandoffGeneration &+= 1
         let handoffGeneration = openingChromeHandoffGeneration
         withAnimation(
-            .easeOut(duration: duration),
+            .easeInOut(duration: duration),
             completionCriteria: .removed
         ) {
             displayState.viewerChromeRevealed = true

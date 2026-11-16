@@ -65,7 +65,7 @@ struct PeopleScreen: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
                 if hasPets {
-                    Picker("Show", selection: $showsPets.animation(.smooth(duration: 0.25))) {
+                    Picker("Show", selection: $showsPets.animation(PhotosMotion.layout)) {
                         Text("People").tag(false)
                         Text("Pets").tag(true)
                     }
@@ -95,7 +95,7 @@ struct PeopleScreen: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Toggle(isOn: $showHidden.animation(.smooth(duration: 0.25))) {
+                    Toggle(isOn: $showHidden.animation(PhotosMotion.layout)) {
                         Label("Show Hidden People", systemImage: "eye.slash")
                     }
                     .accessibilityIdentifier("people-show-hidden")

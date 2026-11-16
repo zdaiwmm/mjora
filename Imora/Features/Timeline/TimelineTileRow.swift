@@ -122,7 +122,7 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
         for tile in leftovers {
             tile.unregister()
             if animated {
-                UIView.animate(withDuration: 0.2, animations: {
+                UIView.animate(withDuration: PhotosMotion.removalDuration, animations: {
                     tile.alpha = 0
                 }, completion: { _ in
                     tile.recycle()
@@ -1237,7 +1237,7 @@ final class TimelineTileView: UIView {
         selectionIndicator?.alpha = removed ? 0 : 1
         let apply = { self.content.alpha = removed ? 0 : 1 }
         if animated {
-            UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut], animations: apply)
+            UIView.animate(withDuration: PhotosMotion.removalDuration, delay: 0, options: [.curveEaseOut], animations: apply)
         } else {
             apply()
         }

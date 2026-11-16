@@ -115,7 +115,7 @@ struct MapScreen: View {
         .onChange(of: locator.fix) { _, fix in
             guard let fix else { return }
             locator.fix = nil
-            withAnimation(.easeInOut(duration: 0.35)) {
+            withAnimation(PhotosMotion.layout) {
                 camera = .region(MKCoordinateRegion(
                     center: fix.coordinate,
                     span: MKCoordinateSpan(latitudeDelta: 0.15, longitudeDelta: 0.15)
@@ -225,7 +225,7 @@ struct MapScreen: View {
             )
             return
         }
-        withAnimation(.easeInOut(duration: 0.35)) {
+        withAnimation(PhotosMotion.layout) {
             camera = .rect(cluster.bounds.scaled(by: 1.6).mapRect)
         }
     }

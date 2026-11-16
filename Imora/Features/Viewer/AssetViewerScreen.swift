@@ -623,19 +623,6 @@ extension EnvironmentValues {
     }
 }
 
-/// the spring photos' info button moves its information with, read from the
-/// running app.
-private enum AssetInformationSpring {
-    /// the info button: UIKit's default damped spring, mass 3, stiffness
-    /// 1000, damping 500, which core animation clamps to critical damping
-    /// since `allowsOverdamping` is off.
-    static let toggle = Animation.interpolatingSpring(
-        mass: 1,
-        stiffness: 1000.0 / 3,
-        damping: 2 * (1000.0 / 3).squareRoot()
-    )
-}
-
 /// the album a grid belongs to, when it belongs to one. carries the owner so
 /// the viewer can offer removal to the same people the server accepts it from.
 nonisolated struct AlbumContext: Equatable {
@@ -1148,7 +1135,7 @@ struct AssetViewerScreen: View {
         if needsSpatialScene { spatialSceneOffered[asset.id] = detail.spatialScene == true }
         if needsScreenCapture {
             let isScreenCapture = AssetScreenCapture.record(detail)
-            withAnimation(reduceMotion ? nil : AssetInformationSpring.toggle) {
+            withAnimation(reduceMotion ? nil : PhotosMotion.information) {
                 serverScreenCaptures[asset.id] = isScreenCapture
             }
         }
@@ -1427,7 +1414,7 @@ struct AssetViewerScreen: View {
                 // photos shows its chrome with the information, which also puts
                 // the media in the frame the information stop is measured from.
                 if visible, !chromeVisible { setChromeVisible(true) }
-                withAnimation(reduceMotion ? nil : AssetInformationSpring.toggle) {
+                withAnimation(reduceMotion ? nil : PhotosMotion.information) {
                     informationAppearance = visible ? 1 : 0
                 }
             }
@@ -1573,7 +1560,7 @@ struct AssetViewerScreen: View {
             }
         }
         .animation(
-            reduceMotion ? nil : .easeOut(duration: 0.2),
+            reduceMotion ? nil : PhotosMotion.controls,
             value: showsSpatialSceneToggle
         )
         // measured outside the full bleed stage, so it still carries the
@@ -1869,7 +1856,7 @@ struct AssetViewerScreen: View {
                             withAnimation(
                                 reduceMotion
                                     ? .linear(duration: 0.12)
-                                    : .smooth(duration: 0.22)
+                                    : PhotosMotion.controls
                             ) {
                                 mediaPresentationZoomed = isZoomed
                             }
@@ -1994,7 +1981,7 @@ struct AssetViewerScreen: View {
                 .allowsHitTesting(chromePresentation.showsTransportControls)
                 .accessibilityHidden(!chromePresentation.showsTransportControls)
                 .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.16),
+                    reduceMotion ? nil : PhotosMotion.controls,
                     value: chromePresentation.showsTransportControls
                 )
             }
@@ -2009,7 +1996,7 @@ struct AssetViewerScreen: View {
                 .allowsHitTesting(chromePresentation.showsCarousel)
                 .accessibilityHidden(!chromePresentation.showsCarousel)
                 .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.16),
+                    reduceMotion ? nil : PhotosMotion.controls,
                     value: chromePresentation.showsCarousel
                 )
             }
@@ -2220,7 +2207,7 @@ struct AssetViewerScreen: View {
             return
         }
         guard let velocity else {
-            withAnimation(AssetInformationSpring.toggle, action)
+            withAnimation(PhotosMotion.information, action)
             return
         }
         let release = AccessoryReleaseSpring(
@@ -2234,7 +2221,7 @@ struct AssetViewerScreen: View {
             showInfo = target > 0
         }
         if !scrollMotionDriver.isRunning {
-            withAnimation(AssetInformationSpring.toggle, action)
+            withAnimation(PhotosMotion.information, action)
         }
     }
 
@@ -2366,7 +2353,7 @@ struct AssetViewerScreen: View {
             setInfoVisible(false)
             return
         }
-        withAnimation(reduceMotion ? .linear(duration: 0.12) : .smooth(duration: 0.22)) {
+        withAnimation(reduceMotion ? .linear(duration: 0.12) : PhotosMotion.controls) {
             setChromeVisible(!chromeVisible)
         }
     }
@@ -2378,7 +2365,7 @@ struct AssetViewerScreen: View {
 
     private func handleDoubleTapZoomChange(_ isZoomingIn: Bool) {
         claimInteractiveMedia()
-        withAnimation(reduceMotion ? .linear(duration: 0.12) : .smooth(duration: 0.22)) {
+        withAnimation(reduceMotion ? .linear(duration: 0.12) : PhotosMotion.controls) {
             mediaPresentationZoomed = isZoomingIn
             setChromeVisible(!isZoomingIn)
         }
@@ -2684,7 +2671,7 @@ struct AssetViewerScreen: View {
                 } label: {
                     Image(systemName: current.isFavorite ? "heart.fill" : "heart")
                         .contentTransition(.symbolEffect(.replace))
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: current.isFavorite)
+                        .animation(reduceMotion ? nil : PhotosMotion.layout, value: current.isFavorite)
                 }
                 .accessibilityLabel(current.isFavorite ? "Remove from Favorites" : "Add to Favorites")
                 .accessibilityIdentifier("viewer-favorite")
@@ -2785,7 +2772,7 @@ struct AssetViewerScreen: View {
                 } label: {
                     Image(systemName: current.isFavorite ? "heart.fill" : "heart")
                         .contentTransition(.symbolEffect(.replace))
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: current.isFavorite)
+                        .animation(reduceMotion ? nil : PhotosMotion.layout, value: current.isFavorite)
                 }
                 .accessibilityLabel(current.isFavorite ? "Remove from Favorites" : "Add to Favorites")
                 .accessibilityIdentifier("viewer-favorite")
@@ -3058,7 +3045,7 @@ struct AssetViewerScreen: View {
 
     private var spatialSceneToggle: some View {
         Button {
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            withAnimation(reduceMotion ? nil : PhotosMotion.controls) {
                 spatialSceneAssetID = showsSpatialScene ? nil : current?.id
             }
         } label: {
@@ -3909,7 +3896,7 @@ struct ToastBanner: View {
             .transition(.move(edge: .top).combined(with: .opacity))
             .task {
                 try? await Task.sleep(for: .seconds(2.2))
-                withAnimation(.smooth(duration: 0.3)) { onDone() }
+                withAnimation(PhotosMotion.layout) { onDone() }
             }
     }
 }
