@@ -38,8 +38,16 @@
 
 在本次 SDK/runtime 上，`UISpringTimingParameters(duration: 0.35, bounce: 0)` 配合 animator 实际生成约 514ms、刚度约 322.273 的动画，不能用入参数值推断最终节奏。最终使用 duration/damping-ratio initializer，单元测试直接检查实际发出的 `CASpringAnimation` 与系统参考匹配。
 
-新增回归还覆盖：更慢的缩放释放途中开始下一次缩放，旧 completion 不能清除新 overlay。原有年/月图片连续性测试从固定等待 500ms 改为有界等待实际交接完成，避免将新的正常时长误报为残留。
+新增回归还覆盖：更慢的缩放释放途中开始下一次缩放，旧 completion 不能清除新 overlay。两条原有年/月图片连续性测试从固定等待 500ms 改为有界等待实际交接完成，避免将新的正常时长误报为残留。
 
 ## 验证与发布
 
-验证与签名结果在最终交付前填写；本地原始证据目录：`/Users/achilles/mjora/execution/photos-motion-20261117`。中断或环境错误批次保留用于诊断，不计为通过证据。
+- 完整原生单元/集成回归：644 项、2 项环境限制跳过、0 失败，`unit-final.xcresult`。跳过项为需另次进程运行的草稿恢复阶段和模拟器不提供的真机 Data Protection 元数据。
+- 五项 UI 验收分批通过：重复双指缩放、编辑历史/比例/保存/还原、详情立即交互/图片条/搜索/年/月/地图、精选集选择底栏、实际系统 Reduce Motion。
+- `ui-verified.xcresult` 中的编辑、缩放、Reduce Motion 三条用例通过；同批另外两条失败不计通过。来源与就绪前提明确后，精选集选择在 `ui-readiness.xcresult` 通过，综合详情流程在 `ui-reboot-verified.xcresult` 通过，保留原一秒内出现详情控件的断言。
+- 综合详情验收使用项目已有的可选像素探针，选择当前、分辨率覆盖的真实照片；不使用空白、重试或占位表面作为“一秒打开”的起点。探针不修改 App 就绪条件。
+- 检查了缩放完成、编辑器及 Reduce Motion 的原始截图，保留 UI 录像。参数比对检查的是实际发出的 CA spring，截图/普通模拟器录像不证明真机 60/120Hz 帧间隔。
+- 英文/简体中文 1,906 条资源覆盖、占位符及换行校验通过；`git diff --check` 通过。
+- 模拟器采用 Xcode 的标准签名结构：模拟器 entitlement 位于 Mach-O 的 `__TEXT` 中，实际签名 entitlement 为空。旧辅助脚本签入受限权限导致的启动失败、旧安装状态及运行器中断批次仅保留诊断记录，不计通过。
+
+本地原始证据目录：`/Users/achilles/mjora/execution/photos-motion-20261117`。本次公开动效分支不包含尚未获公开推送授权的其他本地功能；私有发布保持已经本地整合的功能。公开推送曾被自动审批拒绝，需明确授权具体公开仓库后才能执行。

@@ -3,11 +3,12 @@ import XCTest
 
 @MainActor
 final class PhotosCollectionsFlowTests: XCTestCase {
-    private func launch() throws -> XCUIApplication {
+    private func launch(tracesLaunch: Bool = false) throws -> XCUIApplication {
         continueAfterFailure = false
         let fixture = try OwnedUIFixture.load()
         let app = XCUIApplication()
         OwnedUIFixture.configure(app)
+        if tracesLaunch { app.launchEnvironment["IMORA_LAUNCH_TRACE"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
@@ -375,27 +376,36 @@ final class PhotosCollectionsFlowTests: XCTestCase {
     }
 
     func testPolishedViewerSearchMenuPeriodsAndFullScreenMap() throws {
-        let app = try launch()
+        let app = try launch(tracesLaunch: true)
         defer { app.terminate() }
         app.buttons["photos-source-menu"].tap()
         chooseSourceItem(app, "云端照片")
         XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 25))
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 20))
-        // A retry control consumes the tap instead of presenting a photo.
-        // Keep the one-second opening requirement, starting from ready pixels.
+        // The existing opt-in bitmap probe distinguishes current, covering
+        // pixels from retry/placeholder surfaces without changing app readiness.
+        let probe = app.scrollViews["phase4-launch-grid-probe"]
+        var chosenFrame: CGRect?
         let readyTile = NSPredicate { _, _ in
-            tiles.allElementsBoundByIndex.contains {
-                $0.isHittable && $0.frame.midY > 200 && $0.frame.midY < 600
-                    && !$0.buttons["thumbnail-retry"].isHittable
-            }
+            guard let text = probe.value as? String, let data = text.data(using: .utf8),
+                  let summary = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let latest = summary["latest"] as? [String: Any],
+                  let observed = latest["tiles"] as? [[String: Any]] else { return false }
+            chosenFrame = observed.compactMap { item -> CGRect? in
+                guard item["realBitmap"] as? Bool == true, item["adequatePixels"] as? Bool == true,
+                      let rect = item["rect"] as? [Double], rect.count == 4 else { return nil }
+                let frame = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
+                return frame.midY > 200 && frame.midY < 600 ? frame : nil
+            }.first
+            return chosenFrame != nil
         }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: readyTile, object: nil)], timeout: 10), .completed)
-        let tile = try XCTUnwrap(tiles.allElementsBoundByIndex.first {
-            $0.isHittable && $0.frame.midY > 200 && $0.frame.midY < 600
-                && !$0.buttons["thumbnail-retry"].isHittable
-        })
-        tile.tap()
+        let readiness = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: readyTile, object: nil)], timeout: 10)
+        let diagnostic = XCTAttachment(string: probe.value as? String ?? "No bitmap probe")
+        diagnostic.name = "polish-opening-qualified-bitmap"; diagnostic.lifetime = .keepAlways; add(diagnostic)
+        XCTAssertEqual(readiness, .completed)
+        let frame = try XCTUnwrap(chosenFrame)
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
         let close = app.buttons["viewer-close"].firstMatch
         XCTAssertTrue(close.waitForExistence(timeout: 1))
         let viewer = app.descendants(matching: .any)["asset-viewer"].firstMatch
