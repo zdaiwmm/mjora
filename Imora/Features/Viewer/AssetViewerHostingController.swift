@@ -40,11 +40,12 @@ private func makeAssetViewerZoomView(
 /// Keep the proof captured with the original pixels, and never revive it after
 /// it has been retired by content, permission or private-lease changes.
 @MainActor
-private final class AssetViewerBoundImageView: UIImageView {
+final class AssetViewerBoundImageView: UIImageView {
     private let surface: CommittedGridSurface
     private weak var session: SessionStore?
     private let isPrivate: Bool
     private var retired: Bool
+    var onRetired: (() -> Void)?
 
     init(surface: CommittedGridSurface, session: SessionStore?, isPrivate: Bool) {
         self.surface = surface
@@ -61,8 +62,16 @@ private final class AssetViewerBoundImageView: UIImageView {
         super.updateProperties()
         _ = ImageLoadRecovery.shared.generation
         if isPrivate { _ = session?.lockedFolder?.publicationGeneration }
+        let wasRetired = retired
         if !surface.isCurrent() { retired = true }
-        if retired { image = nil }
+        if retired {
+            image = nil
+            if !wasRetired {
+                let callback = onRetired
+                onRetired = nil
+                callback?()
+            }
+        }
     }
 }
 

@@ -6,6 +6,30 @@ import XCTest
 
 @MainActor
 final class PhotosPresentationTests: XCTestCase {
+    private func periodFixture() async throws -> (SessionStore, LocalHTTPServer, Asset) {
+        let userID = "period-motion-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 1024, height: 1024), format: format).image { context in
+            UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+        }
+        let bytes = try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start()
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "period-motion-fixture", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let asset = Asset(id: "period-fixture-\(UUID())", ownerId: userID, isImage: true, isFavorite: false,
+            isTrashed: false, visibility: .timeline, thumbhash: "period-r1", fileCreatedAt: .now,
+            localOffsetHours: 0, duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+        return (session, server, asset)
+    }
+
     func testPeriodSurfaceKeepsTheCardBoundsAfterAThumbnailWithDifferentIntrinsicSizeArrives() async throws {
         let expected = CGSize(width: 179, height: 241.3333333333333)
         let asset = Asset(id: "surface-size-fixture", ownerId: "fixture", isImage: true, isFavorite: false,
@@ -41,24 +65,32 @@ final class PhotosPresentationTests: XCTestCase {
     }
 
     func testReleasingPeriodOwnerCannotLeaveItsPhotoOverTheNextScreen() async throws {
+        let (session, server, asset) = try await periodFixture()
+        defer { server.stop() }
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         let controller = UIViewController()
         window.rootViewController = controller
         window.isHidden = false
         defer { window.isHidden = true }
-        let cover = UIImageView(image: UIImage(systemName: "photo"))
+        let cover = PeriodPhotoImageView(frame: .zero)
         cover.frame = CGRect(x: 16, y: 150, width: 358, height: 224)
         controller.view.addSubview(cover)
         var motion: PhotoPeriodMotion? = PhotoPeriodMotion()
-        motion?.register(cover, assetID: "period-owner-fixture", mode: .years)
-        motion?.begin(assetID: "period-owner-fixture", from: .years, to: .months,
-                      gridSource: nil, reduceMotion: false)
+        cover.configure(asset: asset, mode: .years, session: session, motion: try XCTUnwrap(motion))
+        for _ in 0..<200 {
+            if cover.preparedSurfaceForMotion() != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(cover.preparedSurfaceForMotion())
+        motion?.begin(assetID: asset.id, from: .years, to: .months,
+                      gridSource: nil, session: session, reduceMotion: false)
         XCTAssertEqual(window.subviews.filter { $0.tag == PhotoPeriodMotion.replicaTag }.count, 1)
         motion = nil
         try await Task.sleep(for: .seconds(1.8))
         XCTAssertTrue(window.subviews.allSatisfy { $0.tag != PhotoPeriodMotion.replicaTag },
                       "The window must not retain a photo after its period owner is released")
         XCTAssertEqual(cover.alpha, 1)
+        await session.logOut(reportRemoteFailure: false)
     }
 
     func testLegacyCollectionLayoutMigratesPreviewWithoutLosingCustomization() throws {
@@ -150,41 +182,46 @@ final class PhotosPresentationTests: XCTestCase {
     }
 
     func testInterruptedPeriodGeometryRestoresBothSurfacesAndRemovesReplica() async throws {
+        let (session, server, asset) = try await periodFixture()
+        defer { server.stop() }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
         let host = UIViewController()
         window.rootViewController = host
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16)).image { ctx in
-            UIColor.systemBlue.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
-        }
-        let year = UIImageView(image: image), month = UIImageView(image: image)
+        let year = PeriodPhotoImageView(frame: .zero), month = PeriodPhotoImageView(frame: .zero)
         year.frame = CGRect(x: 16, y: 100, width: 330, height: 224)
         month.frame = CGRect(x: 16, y: 360, width: 330, height: 224)
         host.view.addSubview(year); host.view.addSubview(month)
         let originalCount = window.subviews.count
         let motion = PhotoPeriodMotion()
-        motion.register(year, assetID: "same-photo", mode: .years)
-        motion.register(month, assetID: "same-photo", mode: .months)
-        motion.begin(assetID: "same-photo", from: .years, to: .months, gridSource: nil, reduceMotion: false)
+        year.configure(asset: asset, mode: .years, session: session, motion: motion)
+        month.configure(asset: asset, mode: .months, session: session, motion: motion)
+        for _ in 0..<200 {
+            if year.preparedSurfaceForMotion() != nil, month.preparedSurfaceForMotion() != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(year.preparedSurfaceForMotion()); XCTAssertNotNil(month.preparedSurfaceForMotion())
+        motion.begin(assetID: asset.id, from: .years, to: .months, gridSource: nil, session: session, reduceMotion: false)
         let first = try XCTUnwrap(motion.transitionID)
         for _ in 0..<5 { await Task.yield() }
         XCTAssertEqual(year.alpha, 0)
         XCTAssertEqual(month.alpha, 0)
         XCTAssertEqual(window.subviews.count, originalCount + 1)
-        motion.begin(assetID: "same-photo", from: .months, to: .years, gridSource: nil, reduceMotion: false)
+        motion.begin(assetID: asset.id, from: .months, to: .years, gridSource: nil, session: session, reduceMotion: false)
         XCTAssertNotEqual(motion.transitionID, first)
         motion.cancel()
         XCTAssertEqual(year.alpha, 1)
         XCTAssertEqual(month.alpha, 1)
         XCTAssertNil(motion.transitionID)
         XCTAssertEqual(window.subviews.count, originalCount)
-        motion.begin(assetID: "same-photo", from: .years, to: .months, gridSource: nil, reduceMotion: true)
+        motion.begin(assetID: asset.id, from: .years, to: .months, gridSource: nil, session: session, reduceMotion: true)
         XCTAssertNil(motion.transitionID)
         XCTAssertEqual(year.alpha, 1)
         XCTAssertEqual(month.alpha, 1)
         XCTAssertEqual(window.subviews.count, originalCount)
+        await session.logOut(reportRemoteFailure: false)
     }
 
 }

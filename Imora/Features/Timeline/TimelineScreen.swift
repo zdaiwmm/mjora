@@ -1410,7 +1410,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
         }
         guard let anchor = controls.periodAnchor else { periodMotion.cancel(); return }
-        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile, reduceMotion: periodMotion.reducesMotion)
+        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile, session: session, reduceMotion: periodMotion.reducesMotion)
         if to == .all {
             controls.scrollRequest = PhotoScrollRequest(bucketID: anchor.bucketID, assetID: anchor.asset.id)
         }

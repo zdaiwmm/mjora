@@ -1174,6 +1174,227 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             "The sweep must resume after both actual visible images bind")
     }
 
+    func testLaunchAndCacheHitHaveNoPerTileFade() async throws {
+        func jpeg(_ color: UIColor) throws -> Data {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 512, height: 512), format: format).image { context in
+                color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 512, height: 512))
+            }
+            return try XCTUnwrap(image.jpegData(compressionQuality: 0.95))
+        }
+        let black = try jpeg(.black), white = try jpeg(.white), requests = Mutex(0)
+        let server = try LocalHTTPServer { request in
+            requests.withLock { $0 += 1 }
+            return .init(headers: ["Content-Type": "image/jpeg"], body: request.path.contains("/black-") ? black : white)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "monochrome-\(UUID())")
+        client.confirmMediaAccount("monochrome-\(UUID())"); ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        func value(_ id: String) -> Asset {
+            Asset(id: id, ownerId: "fixture", isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "monochrome-r1", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+        }
+        let values = [value("black-\(UUID())"), value("white-\(UUID())")]
+        let keys = values.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: 416) }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        controller.view.backgroundColor = .systemRed
+        window.rootViewController = controller; window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(120))
+        func tiles() -> [TimelineTileView] {
+            [TimelineTileView(frame: .init(x: 20, y: 100, width: 132, height: 132)),
+             TimelineTileView(frame: .init(x: 160, y: 100, width: 132, height: 132))]
+        }
+        func bind(_ tiles: [TimelineTileView]) {
+            for (index, tile) in tiles.enumerated() {
+                controller.view.addSubview(tile)
+                let asset = values[index]
+                tile.projectImage(asset: asset, source: .init(assetID: asset.id, localIdentifier: nil,
+                    pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+                    client: client, generation: 0, targetPixelSize: 416)
+            }
+        }
+        func rendered(_ tiles: [TimelineTileView], name: String) throws -> [[UInt8]] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            var didRender = false
+            let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                didRender = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            XCTAssertTrue(didRender)
+            let attachment = XCTAttachment(data: try XCTUnwrap(frame.pngData()), uniformTypeIdentifier: "public.png")
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            return try tiles.map { tile in
+                let point = tile.convert(CGPoint(x: 66, y: 66), to: window)
+                let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+                var pixel = [UInt8](repeating: 0, count: 4)
+                pixel.withUnsafeMutableBytes { buffer in
+                    let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                        bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                    context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+                }
+                return pixel
+            }
+        }
+        func assertMonochrome(_ pixels: [[UInt8]]) {
+            XCTAssertTrue(pixels[0].prefix(3).allSatisfy { $0 < 15 }, "A real black photo must remain black")
+            XCTAssertTrue(pixels[1].prefix(3).allSatisfy { $0 > 240 }, "A real white photo must remain white")
+        }
+        let initial = tiles(); bind(initial)
+        for _ in 0..<200 {
+            if zip(initial, keys).allSatisfy({ $0.0.checkpointSurface(for: $0.1, client: client) != nil }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(zip(initial, keys).allSatisfy { $0.0.checkpointSurface(for: $0.1, client: client) != nil })
+        assertMonochrome(try rendered(initial, name: "monochrome-network-window"))
+        initial.forEach { $0.removeFromSuperview() }
+        let cacheHits = tiles(); bind(cacheHits)
+        XCTAssertTrue(zip(cacheHits, keys).allSatisfy { $0.0.checkpointSurface(for: $0.1, client: client) != nil },
+            "A cache hit must bind on the same projection")
+        assertMonochrome(try rendered(cacheHits, name: "monochrome-cache-hit-first-window"))
+        XCTAssertEqual(requests.withLock { $0 }, 2, "The cached projection must not request either image again")
+        cacheHits.forEach { $0.removeFromSuperview() }
+    }
+
+    func testPeriodTransitionKeepsQualifiedPixelsAndClearsRetiredSource() async throws {
+        let userID = "period-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let red = try XCTUnwrap(solidImage(pixels: 1024).jpegData(compressionQuality: 0.9))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: red) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "period-fixture", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), value = asset()
+        let restoreJournal = try MediaContentGenerations.shared.isolatedFixtureRestorer(scopes: [client.mediaDisplayScope])
+        var didRestoreJournal = false
+        defer { if !didRestoreJournal { try? restoreJournal() } }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        controller.view.backgroundColor = .blue; window.rootViewController = controller; window.makeKeyAndVisible()
+        let motion = PhotoPeriodMotion(), gridMotion = GridMotion(), registry = AssetTileRegistry()
+        let tile = TimelineTileView(frame: CGRect(x: 20, y: 100, width: 132, height: 132))
+        let card = PeriodPhotoImageView(frame: CGRect(x: 200, y: 330, width: 132, height: 132))
+        defer { motion.cancel(); tile.unregister(); window.isHidden = true }
+        controller.view.addSubview(tile); controller.view.addSubview(card)
+        tile.configure(asset: value, session: session, motion: gridMotion, showsBackupBadge: false,
+            targetPixelSize: 416, registry: registry)
+        card.configure(asset: value, mode: .months, session: session, motion: motion)
+        try await Task.sleep(for: .milliseconds(120))
+        let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        for _ in 0..<200 {
+            if tile.checkpointSurface(for: key, client: client) != nil, card.image != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(tile.checkpointSurface(for: key, client: client)); XCTAssertNotNil(card.image)
+        func redPixels(_ name: String) throws -> Int {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            var drawn = false
+            let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                drawn = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            XCTAssertTrue(drawn)
+            let attachment = XCTAttachment(data: try XCTUnwrap(frame.pngData()), uniformTypeIdentifier: "public.png")
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            let cg = try XCTUnwrap(frame.cgImage), width = cg.width, height = cg.height
+            var pixels = [UInt8](repeating: 0, count: width * height * 4)
+            pixels.withUnsafeMutableBytes { data in
+                let context = CGContext(data: data.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                    bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            }
+            return stride(from: 0, to: height, by: 8).reduce(0) { total, y in
+                total + stride(from: 0, to: width, by: 8).filter { x in
+                    let i = (y * width + x) * 4
+                    return pixels[i] > 180 && pixels[i + 2] < 80
+                }.count
+            }
+        }
+        motion.begin(assetID: value.id, from: .all, to: .months, gridSource: tile, session: session, reduceMotion: false)
+        XCTAssertNotNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
+        XCTAssertGreaterThan(try redPixels("period-normal-transition"), 100)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
+        XCTAssertGreaterThan(try redPixels("period-normal-destination"), 100)
+        motion.begin(assetID: value.id, from: .months, to: .all, gridSource: tile, session: session, reduceMotion: false)
+        motion.arrive(at: tile, mode: .all)
+        XCTAssertNotNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
+        XCTAssertNil(ImageLoader.shared.invalidateSubjects(client: client, subjects: [.remoteAsset(value.id)]))
+        ImageLoadRecovery.shared.contentChanged()
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(try redPixels("period-retired-transition"), 0, "Retired pixels must leave the real transition window")
+        motion.cancel(); tile.unregister(); window.isHidden = true
+        try restoreJournal(); didRestoreJournal = true
+        await session.logOut(reportRemoteFailure: false)
+    }
+
+    func testLocalPeriodUsesQualifiedCoveringSurface() async throws {
+        let (localID, _) = try await createSurfaceFixture()
+        let revision = try XCTUnwrap(LocalImageLoader.currentModificationRevision(localID))
+        let userID = "local-period-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let server = try LocalHTTPServer { request in
+            request.path == "/api/users/me" ? .init(body: user) : .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "local-period", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client)
+        var value = asset(); value.localIdentifier = localID; value.localImageVersion = revision
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        controller.view.backgroundColor = .blue; window.rootViewController = controller; window.makeKeyAndVisible()
+        let motion = PhotoPeriodMotion(), gridMotion = GridMotion(), registry = AssetTileRegistry()
+        let tile = TimelineTileView(frame: CGRect(x: 20, y: 100, width: 132, height: 132))
+        let card = PeriodPhotoImageView(frame: CGRect(x: 200, y: 330, width: 132, height: 132))
+        controller.view.addSubview(tile); controller.view.addSubview(card)
+        defer { motion.cancel(); tile.unregister(); window.isHidden = true }
+        tile.configure(asset: value, session: session, motion: gridMotion, showsBackupBadge: false,
+            targetPixelSize: 416, registry: registry)
+        card.configure(asset: value, mode: .months, session: session, motion: motion)
+        let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        for _ in 0..<300 {
+            if tile.checkpointSurface(for: key, client: client) != nil, card.preparedSurfaceForMotion() != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let surface = try XCTUnwrap(card.preparedSurfaceForMotion())
+        XCTAssertEqual(surface.localProvenance?.localIdentifier, localID)
+        XCTAssertEqual(surface.localProvenance?.modificationRevision, revision)
+        XCTAssertNotNil(tile.checkpointSurface(for: key, client: client))
+        motion.begin(assetID: value.id, from: .all, to: .months, gridSource: tile, session: session, reduceMotion: false)
+        XCTAssertNotNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        var drawn = false
+        let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            drawn = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        XCTAssertTrue(drawn)
+        let attachment = XCTAttachment(data: try XCTUnwrap(frame.pngData()), uniformTypeIdentifier: "public.png")
+        attachment.name = "local-period-qualified-destination"; attachment.lifetime = .keepAlways; add(attachment)
+        let point = card.convert(CGPoint(x: 66, y: 66), to: window)
+        let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { data in
+            let context = CGContext(data: data.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        XCTAssertGreaterThan(pixel[0], 180); XCTAssertLessThan(pixel[2], 80)
+        motion.cancel(); tile.unregister(); window.isHidden = true
+        await session.logOut(reportRemoteFailure: false)
+    }
+
     func testMemoryPressureKeepsW0BeforeOffscreenHighRes() async throws {
         let client = client("memory-\(UUID())")
         client.confirmMediaAccount("memory-\(UUID())"); ImageLoader.shared.configure(client: client)

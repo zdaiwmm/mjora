@@ -358,6 +358,9 @@ final class TimelineTileView: UIView {
     private var requestBinding: SurfaceBinding?
     private var boundSurface: CommittedGridSurface?
     private var boundSurfaceID: UUID?
+    #if DEBUG && targetEnvironment(simulator)
+    private var phase4OracleTask: Task<Void, Never>?
+    #endif
     private weak var projectionClient: ImoraClient?
     private var projectionSource: AssetThumbnailSource?
     private var visibleLocalIdentifier: String?
@@ -568,6 +571,11 @@ final class TimelineTileView: UIView {
         return surface
     }
 
+    func preparedSurfaceForMotion() -> CommittedGridSurface? {
+        guard let surface = boundSurface, surface.isCurrent(), imageView.image === surface.image else { return nil }
+        return surface
+    }
+
     /// A viewer can hand its displayed bitmap to the matching destination
     /// before detaching. The captured proof remains part of the tile proof.
     func prepareReturnSurface(_ surface: CommittedGridSurface, client: ImoraClient) -> Bool {
@@ -678,6 +686,9 @@ final class TimelineTileView: UIView {
     }
 
     private func cancelLoads() {
+        #if DEBUG && targetEnvironment(simulator)
+        phase4OracleTask?.cancel(); phase4OracleTask = nil
+        #endif
         loadTask?.cancel()
         loadTask = nil
         placeholderTask?.cancel()
@@ -785,6 +796,9 @@ final class TimelineTileView: UIView {
                 return true
             })
         MediaPresentationCoordinator.shared.imageArrived(binding.key)
+        #if DEBUG && targetEnvironment(simulator)
+        if phase4InjectOracleFault(key: key, binding: binding) { return }
+        #endif
         guard fading else {
             imageView.image = image
             return
@@ -797,6 +811,53 @@ final class TimelineTileView: UIView {
             self.imageView.image = image
         }
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+    /// Calibration only: corrupt the final on-screen pixels after a real,
+    /// current entry-fixture binding. Never publish an injected surface.
+    private func phase4InjectOracleFault(key: String, binding: SurfaceBinding) -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        guard Phase4OwnedFixture.automaticPreparationName == "entry",
+              let kind = env["IMORA_PHASE4_FAULT_KIND"], ["missing", "black", "wrong-subject"].contains(kind),
+              let target = env["IMORA_PHASE4_FAULT_ASSET_ID"], target == asset?.id,
+              let fixture = try? Phase4OwnedFixture.load("entry"), fixture.assets?.count == 96,
+              fixture.assets?.contains(where: { $0.id == target }) == true,
+              fixture.ownerID == binding.client.mediaDisplayScope.accountID,
+              fixture.apiURL == binding.client.mediaDisplayScope.serverIdentity,
+              !binding.requiresElevation, binding.isCurrent else { return false }
+        func publish(_ image: UIImage?) {
+            guard binding.isCurrent, projectionClient === binding.client, loadKey == key,
+                  asset?.id == target, requestBinding?.key == binding.key else { return }
+            imageView.image = image
+            boundSurface = nil; boundSurfaceID = nil; shownDisplayKey = nil; showsPicture = false
+            accessibilityValue = "phase4-oracle-\(kind)"
+        }
+        switch kind {
+        case "missing": publish(nil)
+        case "black":
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+                UIColor.black.setFill(); context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+            }
+            publish(image)
+        default:
+            guard let wrong = env["IMORA_PHASE4_FAULT_WRONG_ID"], wrong != target,
+                  fixture.assets?.contains(where: { $0.id == wrong }) == true else { return false }
+            phase4OracleTask?.cancel()
+            phase4OracleTask = Task { [weak self] in
+                let url = binding.client.thumbnailURL(assetID: wrong)
+                guard let surface = try? await ImageLoader.shared.boundImage(for: url, targetPixelSize: self?.targetPixelSize ?? 0),
+                      !Task.isCancelled, surface.isCurrent, surface.key.scope == binding.key.scope,
+                      surface.key.subject == .remoteAsset(wrong), let self else { return }
+                guard binding.isCurrent, self.projectionClient === binding.client, self.loadKey == key,
+                      self.asset?.id == target, self.requestBinding?.key == binding.key else { return }
+                self.imageView.image = surface.image
+                self.boundSurface = nil; self.boundSurfaceID = nil; self.shownDisplayKey = nil; self.showsPicture = false
+                self.accessibilityValue = "phase4-oracle-\(kind)"
+            }
+        }
+        return true
+    }
+    #endif
 
     private func reprojectAfterAccessChange(binding: SurfaceBinding, key: String) {
         guard projectionClient === binding.client, binding.client.context.isActive, loadKey == key,
