@@ -415,7 +415,9 @@ private final class PhotoPeriodSegmentedControl: UISegmentedControl {
         selectionBackground.layer.cornerRadius = target.height / 2
         if !reduceMotion, selectionBackground.frame.size == target.size,
            selectionBackground.frame.origin != target.origin {
-            UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            UIView.animate(withDuration: PhotosMotion.layoutDuration, delay: 0,
+                           usingSpringWithDamping: 1, initialSpringVelocity: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) {
                 self.selectionBackground.frame = target
             }
         } else { selectionBackground.frame = target }

@@ -1617,7 +1617,9 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         XCTAssertNotNil(tile.checkpointSurface(for: key, client: client))
         motion.begin(assetID: value.id, from: .all, to: .months, gridSource: tile, session: session, reduceMotion: false)
         XCTAssertNotNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
-        try await Task.sleep(for: .milliseconds(500))
+        for _ in 0..<100 where window.viewWithTag(PhotoPeriodMotion.replicaTag) != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
         var drawn = false
