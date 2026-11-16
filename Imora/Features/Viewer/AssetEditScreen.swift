@@ -569,25 +569,18 @@ struct AssetEditScreen: View {
     }
 
     private var moreMenu: some View {
-        Menu {
-            Button("Undo", systemImage: "arrow.uturn.backward", action: undo)
-                .disabled(!canUndo)
-            Button("Redo", systemImage: "arrow.uturn.forward", action: redo)
-                .disabled(redoStack.isEmpty)
-            Button(showsOriginal ? String(localized: "Show Edits") : String(localized: "Show Original"), systemImage: "photo") {
-                showsOriginal.toggle()
-            }
-            .accessibilityIdentifier("edit-compare-original")
-            Button("Revert to Original", systemImage: "arrow.uturn.backward.circle") {
-                showsRevertConfirmation = true
-            }
-            .disabled(!hadServerEdits && initialAdjust.isNeutral && !hasChanges)
-        } label: {
-            EditorGlassGlyphLabel(systemImage: "ellipsis")
-        }
-        .foregroundStyle(.primary)
-        .accessibilityLabel("More")
-        .accessibilityIdentifier("edit-more")
+        EditorMenuButton(systemImage: "ellipsis", label: String(localized: "More"), accessibilityIdentifier: "edit-more", actions: [
+            EditorMenuAction(identifier: "edit-undo", title: String(localized: "Undo"),
+                             systemImage: "arrow.uturn.backward", isEnabled: canUndo, action: undo),
+            EditorMenuAction(identifier: "edit-redo", title: String(localized: "Redo"),
+                             systemImage: "arrow.uturn.forward", isEnabled: !redoStack.isEmpty, action: redo),
+            EditorMenuAction(identifier: "edit-compare-original", title: showsOriginal ? String(localized: "Show Edits") : String(localized: "Show Original"),
+                             systemImage: "photo", action: { showsOriginal.toggle() }),
+            EditorMenuAction(identifier: "edit-revert", title: String(localized: "Revert to Original"),
+                             systemImage: "arrow.uturn.backward.circle", isEnabled: hadServerEdits || !initialAdjust.isNeutral || hasChanges,
+                             action: { showsRevertConfirmation = true }),
+        ])
+        .frame(width: 40, height: 44)
         .confirmationDialog("Revert to Original", isPresented: $showsRevertConfirmation, titleVisibility: .visible) {
             Button("Revert to Original", role: .destructive) {
                 recordCurrentEdit()

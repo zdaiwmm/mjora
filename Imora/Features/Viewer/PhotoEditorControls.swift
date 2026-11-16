@@ -318,6 +318,55 @@ struct EditorGlassGlyphLabel: View {
     }
 }
 
+@MainActor
+struct EditorMenuAction {
+    let identifier: String
+    let title: String
+    let systemImage: String
+    var isEnabled = true
+    let action: () -> Void
+}
+
+/// A real button owns the menu's accessibility bounds. SwiftUI Menu can
+/// otherwise adopt the whole shared glass capsule, including sibling glyphs.
+@MainActor
+struct EditorMenuButton: UIViewRepresentable {
+    let systemImage: String
+    let label: String
+    let accessibilityIdentifier: String
+    let actions: [EditorMenuAction]
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        var configuration = UIButton.Configuration.plain()
+        configuration.contentInsets = .zero
+        configuration.baseForegroundColor = .label
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)
+        button.configuration = configuration
+        button.tintColor = .label
+        button.showsMenuAsPrimaryAction = true
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
+        updateUIView(button, context: context)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        button.configuration?.image = UIImage(systemName: systemImage)
+        button.accessibilityIdentifier = accessibilityIdentifier
+        button.accessibilityLabel = label
+        button.menu = UIMenu(children: actions.map { item in
+            UIAction(title: item.title, image: UIImage(systemName: item.systemImage),
+                     identifier: UIAction.Identifier(rawValue: item.identifier),
+                     attributes: item.isEnabled ? [] : [.disabled]) { _ in item.action() }
+        })
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
+        CGSize(width: 40, height: 44)
+    }
+}
+
 /// the tool's name in the middle of the glass row, as photos titles its nav
 /// bar: 14pt semibold caps in the secondary label colour.
 struct EditorBarTitle: View {

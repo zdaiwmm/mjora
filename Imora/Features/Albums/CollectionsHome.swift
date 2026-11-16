@@ -66,6 +66,8 @@ struct CollectionsHome: View {
             if section == .pinned {
                 Button("Edit", action: onEditPins)
                     .font(.subheadline.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
                     .accessibilityIdentifier("collections-edit-pins")
             }
             Button {

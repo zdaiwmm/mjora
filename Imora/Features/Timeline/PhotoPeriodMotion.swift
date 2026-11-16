@@ -5,6 +5,7 @@ import UIKit
 /// so the grid's continuous pinch and the viewer keep their gesture ownership.
 @MainActor
 final class PhotoPeriodMotion {
+    static let replicaTag = 0xF0123
     private final class Surface {
         weak var view: UIImageView?
         init(_ view: UIImageView) { self.view = view }
@@ -65,14 +66,17 @@ final class PhotoPeriodMotion {
         sourceView?.alpha = 0
         imageView.frame = start
         imageView.clipsToBounds = true
-        imageView.layer.cornerRadius = from == .all ? 2 : 26
+        imageView.layer.cornerRadius = from == .all ? 2 : 10
         imageView.isUserInteractionEnabled = false
         imageView.accessibilityElementsHidden = true
+        imageView.tag = Self.replicaTag
         window.addSubview(imageView)
-        timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled, self?.transitionID == ticket else { return }
-            self?.cancel()
+        timeout = Task { [self] in
+            // Keep cleanup alive even if SwiftUI replaces the period owner.
+            // cancel() breaks this bounded lifetime and removes the window view.
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            guard !Task.isCancelled, transitionID == ticket else { return }
+            cancel()
         }
         if to != .all, let target = surfaces[to]?[assetID]?.view { register(target, assetID: assetID, mode: to) }
     }
@@ -89,7 +93,7 @@ final class PhotoPeriodMotion {
         view.alpha = 0
         let animator = UIViewPropertyAnimator(duration: 0.32, curve: .easeOut) {
             replica.frame = target
-            replica.layer.cornerRadius = mode == .all ? 2 : 26
+            replica.layer.cornerRadius = mode == .all ? 2 : 10
         }
         self.animator = animator
         animator.addCompletion { [weak self] _ in
@@ -125,6 +129,12 @@ struct PhotoPeriodCoverSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> PeriodPhotoImageView { PeriodPhotoImageView(frame: .zero) }
     func updateUIView(_ view: PeriodPhotoImageView, context: Context) {
         view.configure(asset: asset, mode: mode, session: session, motion: motion)
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PeriodPhotoImageView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        // A decoded UIImage has its own intrinsic size. The real UIKit
+        // transition surface and AX bounds must stay inside the day card.
+        return CGSize(width: width, height: height)
     }
     static func dismantleUIView(_ view: PeriodPhotoImageView, coordinator: ()) { view.cancelLoad() }
 }

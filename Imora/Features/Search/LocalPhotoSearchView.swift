@@ -1,6 +1,5 @@
 import Photos
 import SwiftUI
-import Photos
 
 struct PhotoSearchSourcePicker: View {
     @Binding var source: PhotoSearchSource

@@ -1,10 +1,66 @@
 import Foundation
+import SwiftUI
 import UIKit
 import XCTest
 @testable import Imora
 
 @MainActor
 final class PhotosPresentationTests: XCTestCase {
+    func testPeriodSurfaceKeepsTheCardBoundsAfterAThumbnailWithDifferentIntrinsicSizeArrives() async throws {
+        let expected = CGSize(width: 179, height: 241.3333333333333)
+        let asset = Asset(id: "surface-size-fixture", ownerId: "fixture", isImage: true, isFavorite: false,
+                          isTrashed: false, visibility: .timeline, thumbhash: nil,
+                          fileCreatedAt: Date(timeIntervalSince1970: 1_735_689_600), localOffsetHours: 0,
+                          duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil, createdAt: nil)
+        let session = SessionStore()
+        let motion = PhotoPeriodMotion()
+        let host = UIHostingController(rootView: Color.clear.frame(width: expected.width, height: expected.height)
+            .overlay { PhotoPeriodCoverSurface(asset: asset, mode: .months, session: session, motion: motion) }
+            .clipped())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = host; window.isHidden = false
+        defer { window.isHidden = true }
+        func surface(in view: UIView) -> PeriodPhotoImageView? {
+            if let image = view as? PeriodPhotoImageView { return image }
+            return view.subviews.lazy.compactMap { surface(in: $0) }.first
+        }
+        for _ in 0..<20 where surface(in: host.view) == nil {
+            window.layoutIfNeeded(); host.view.layoutIfNeeded(); await Task.yield()
+        }
+        let image = try XCTUnwrap(surface(in: host.view))
+        for intrinsic in [CGSize(width: 288, height: 240), CGSize(width: 900, height: 600)] {
+            image.image = UIGraphicsImageRenderer(size: intrinsic).image { context in
+                UIColor.blue.setFill(); context.fill(CGRect(origin: .zero, size: intrinsic))
+            }
+            host.view.setNeedsLayout()
+            for _ in 0..<6 { await Task.yield(); window.layoutIfNeeded(); host.view.layoutIfNeeded() }
+            XCTAssertEqual(image.bounds.width, expected.width, accuracy: 0.5,
+                           "The image's real motion surface must match its day card, not its decoded thumbnail width")
+            XCTAssertEqual(image.bounds.height, expected.height, accuracy: 0.5)
+        }
+    }
+
+    func testReleasingPeriodOwnerCannotLeaveItsPhotoOverTheNextScreen() async throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let cover = UIImageView(image: UIImage(systemName: "photo"))
+        cover.frame = CGRect(x: 16, y: 150, width: 358, height: 224)
+        controller.view.addSubview(cover)
+        var motion: PhotoPeriodMotion? = PhotoPeriodMotion()
+        motion?.register(cover, assetID: "period-owner-fixture", mode: .years)
+        motion?.begin(assetID: "period-owner-fixture", from: .years, to: .months,
+                      gridSource: nil, reduceMotion: false)
+        XCTAssertEqual(window.subviews.filter { $0.tag == PhotoPeriodMotion.replicaTag }.count, 1)
+        motion = nil
+        try await Task.sleep(for: .seconds(1.8))
+        XCTAssertTrue(window.subviews.allSatisfy { $0.tag != PhotoPeriodMotion.replicaTag },
+                      "The window must not retain a photo after its period owner is released")
+        XCTAssertEqual(cover.alpha, 1)
+    }
+
     func testLegacyCollectionLayoutMigratesPreviewWithoutLosingCustomization() throws {
         let legacy = Data(#"{"sectionIDs":["albums","pinned"],"collapsedIDs":["people"],"pinnedIDs":["album:family"]}"#.utf8)
         let layout = CollectionsLayout.decode(legacy)

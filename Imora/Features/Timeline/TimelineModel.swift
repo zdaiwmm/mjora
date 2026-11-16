@@ -1786,8 +1786,8 @@ final class TimelineModel {
                    let resolution = mutationOverlay.resolve(fetched.assets, for: fetch),
                    let index = sections.firstIndex(where: { $0.id == id }) {
                     staleBucketIDs.remove(id)
-                            let days = Self.groupByDay(
-                        resolution.assets,
+                    let days = Self.groupByDay(
+                        resolution.assets.map(assetProjection),
                         byUploadDate: filter.groupsByUploadDate
                     )
                     if sections[index].days != days {
