@@ -1443,10 +1443,13 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
               let assetID = request.assetID ?? model.sections.first(where: { $0.id == bucketID })?.days?.first?.assets.first?.id,
               let rowIndex = model.rowIndex(containingAnyOf: [assetID]) else { return }
         let layout = rowLayout(side: tileSide(for: scrollContext.viewportWidth))
-        guard layout.starts.indices.contains(rowIndex) else { return }
+        guard layout.starts.indices.contains(rowIndex), model.rows.indices.contains(rowIndex) else { return }
         gridController.reloadRows(animated: false)
         let sourceOffset = controls.periodAnchor.flatMap { $0.asset.id == assetID ? $0.scrollOffset : nil }
-        gridController.scrollTo(y: sourceOffset ?? (scrub.headerHeight + layout.starts[rowIndex]))
+        let rowHeight = model.rows[rowIndex].height(tileSide: tileSide(for: scrollContext.viewportWidth))
+        let centeringInset = max(0, (scrollContext.viewportHeight - rowHeight) / 2)
+        let targetOffset = max(0, scrub.headerHeight + layout.starts[rowIndex] - centeringInset)
+        gridController.scrollTo(y: sourceOffset ?? targetOffset)
         await Task.yield()
         guard controls.scrollRequest == request, controls.mode == .all else { return }
         if let tile = gridController.periodTile(assetID: assetID) { periodMotion.arrive(at: tile, mode: .all) }
