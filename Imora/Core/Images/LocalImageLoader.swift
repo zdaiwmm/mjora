@@ -741,45 +741,43 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     /// export are both blocking photokit work.
     @concurrent
     private func motionFile(localIdentifier: String, allowsNetwork: Bool) async -> URL? {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited,
+              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+              !asset.isHidden, asset.mediaSubtypes.contains(.photoLive),
+              let modified = asset.modificationDate else { return nil }
         let directory = motionDirectory
         // localidentifiers carry a "uuid/L0/001" shape that cannot be a path.
-        let name = localIdentifier.replacingOccurrences(of: "/", with: "_")
+        let name = localIdentifier.replacingOccurrences(of: "/", with: "_") + "-\(modified.timeIntervalSinceReferenceDate.bitPattern)"
         let destination = directory.appending(path: "\(name).mov")
         if FileManager.default.fileExists(atPath: destination.path) {
             noteMotionUse(destination)
             return destination
         }
 
-        guard let asset = fetchAsset(localIdentifier) else { return nil }
         let resources = PHAssetResource.assetResources(for: asset)
         guard let resource = resources.first(where: { $0.type == .fullSizePairedVideo })
             ?? resources.first(where: { $0.type == .pairedVideo })
         else { return nil }
 
-        let options = PHAssetResourceRequestOptions()
-        options.isNetworkAccessAllowed = allowsNetwork
         // written to a unique path first: an interrupted write would otherwise
         // leave a truncated file that every later play would trust.
-        let staging = directory.appending(path: "staging-\(UUID().uuidString).mov")
+        var staging: URL?
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                PHAssetResourceManager.default().writeData(for: resource, toFile: staging, options: options) { error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume()
-                    }
-                }
-            }
+            let exported = try await PhotoLibraryService.export(resource, to: directory, form: nil,
+                progress: nil, onResourceProgress: nil, allowsNetwork: allowsNetwork)
+            staging = exported.fileURL
+            try Task.checkCancellation()
+            guard Self.currentModificationRevision(localIdentifier) == String(modified.timeIntervalSinceReferenceDate.bitPattern)
+            else { throw CancellationError() }
             // a concurrent export of the same asset may have landed first.
             if FileManager.default.fileExists(atPath: destination.path) {
-                try? FileManager.default.removeItem(at: staging)
+                try? FileManager.default.removeItem(at: exported.fileURL)
             } else {
-                try FileManager.default.moveItem(at: staging, to: destination)
+                try FileManager.default.moveItem(at: exported.fileURL, to: destination)
             }
         } catch {
-            try? FileManager.default.removeItem(at: staging)
+            if let staging { try? FileManager.default.removeItem(at: staging) }
             return nil
         }
         noteMotionUse(destination)

@@ -3,6 +3,17 @@ import XCTest
 
 @MainActor
 final class Phase4LiveHoldTests: XCTestCase {
+    func testOldMotionCacheCannotAuthorizeAnInaccessiblePhoto() async throws {
+        let identifier = "\(UUID().uuidString)/L0/001"
+        let directory = FileManager.default.temporaryDirectory.appending(path: "live-photo-motion")
+        let oldFile = directory.appending(path: identifier.replacingOccurrences(of: "/", with: "_") + ".mov")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("owned-stale-motion-fixture".utf8).write(to: oldFile, options: .withoutOverwriting)
+        defer { try? FileManager.default.removeItem(at: oldFile) }
+        let item = await LocalImageLoader.shared.motionPlayerItem(localIdentifier: identifier, allowsNetwork: false)
+        XCTAssertNil(item, "A leftover file is neither PhotoKit access nor a current Live source")
+    }
+
     func testDeferredLiveControlsRemainAvailableBeforeThePlayerLoads() {
         func chrome(live: Bool, visible: Bool = true, contextPreview: Bool = false, atMedia: Bool = true) -> AssetViewerChromePresentation {
             .init(isCompact: true, isAtMedia: atMedia, isInformationPresented: !atMedia,

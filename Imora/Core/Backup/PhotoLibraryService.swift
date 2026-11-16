@@ -442,12 +442,13 @@ nonisolated enum PhotoLibraryService {
 
     /// streams the resource into a temp file through the same cancellable
     /// requestData path used for hashing - writeData offers no cancellation.
-    private static func export(
+    static func export(
         _ resource: PHAssetResource,
         to directory: URL,
         form: MultipartBody.Form?,
         progress: (@Sendable (Double) -> Void)?,
-        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)?
+        onResourceProgress: (@Sendable (BackupResourceProgress) -> Void)?,
+        allowsNetwork: Bool = true
     ) async throws -> ExportedResource {
         // created first: capacity cannot be read for a missing directory.
         try ProtectedTemporaryFiles.prepareDirectory(directory)
@@ -463,7 +464,7 @@ nonisolated enum PhotoLibraryService {
         let handle = try FileHandle(forWritingTo: fileURL)
 
         let options = PHAssetResourceRequestOptions()
-        options.isNetworkAccessAllowed = true
+        options.isNetworkAccessAllowed = allowsNetwork
         options.progressHandler = { fraction in
             progress?(fraction)
             resourceProgress.downloading(fraction)
