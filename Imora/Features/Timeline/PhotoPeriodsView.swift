@@ -187,7 +187,7 @@ struct PhotoPeriodsView: View {
             .frame(width: layout.photoSize.width, height: layout.photoSize.height)
             .overlay {
                 if let asset = period.cover {
-                    PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion)
+                    PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion, size: layout.photoSize)
                 }
             }
             .overlay {
@@ -352,7 +352,7 @@ private struct PhotoMonthSection: View {
             Color(.secondarySystemBackground)
                 .frame(width: size.width, height: size.height)
                 .overlay {
-                    PhotoPeriodCoverSurface(asset: day.cover, mode: .months, session: session, motion: motion)
+                    PhotoPeriodCoverSurface(asset: day.cover, mode: .months, session: session, motion: motion, size: size)
                 }
                 .overlay {
                     LinearGradient(colors: [.black.opacity(0.28), .clear], startPoint: .top, endPoint: .center)

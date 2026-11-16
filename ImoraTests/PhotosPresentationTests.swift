@@ -10,8 +10,8 @@ final class PhotosPresentationTests: XCTestCase {
         let userID = "period-motion-\(UUID())"
         let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 1024, height: 1024), format: format).image { context in
-            UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 1536, height: 1536), format: format).image { context in
+            UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 1536, height: 1536))
         }
         let bytes = try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
         let server = try LocalHTTPServer { request in
@@ -39,7 +39,7 @@ final class PhotosPresentationTests: XCTestCase {
         let session = SessionStore()
         let motion = PhotoPeriodMotion()
         let host = UIHostingController(rootView: Color.clear.frame(width: expected.width, height: expected.height)
-            .overlay { PhotoPeriodCoverSurface(asset: asset, mode: .months, session: session, motion: motion) }
+            .overlay { PhotoPeriodCoverSurface(asset: asset, mode: .months, session: session, motion: motion, size: expected) }
             .clipped())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
         window.rootViewController = host; window.isHidden = false
@@ -76,7 +76,7 @@ final class PhotosPresentationTests: XCTestCase {
         cover.frame = CGRect(x: 16, y: 150, width: 358, height: 224)
         controller.view.addSubview(cover)
         var motion: PhotoPeriodMotion? = PhotoPeriodMotion()
-        cover.configure(asset: asset, mode: .years, session: session, motion: try XCTUnwrap(motion))
+        cover.configure(asset: asset, mode: .years, session: session, motion: try XCTUnwrap(motion), targetPixelSize: 1152)
         for _ in 0..<200 {
             if cover.preparedSurfaceForMotion() != nil { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -196,8 +196,8 @@ final class PhotosPresentationTests: XCTestCase {
         host.view.addSubview(year); host.view.addSubview(month)
         let originalCount = window.subviews.count
         let motion = PhotoPeriodMotion()
-        year.configure(asset: asset, mode: .years, session: session, motion: motion)
-        month.configure(asset: asset, mode: .months, session: session, motion: motion)
+        year.configure(asset: asset, mode: .years, session: session, motion: motion, targetPixelSize: 1024)
+        month.configure(asset: asset, mode: .months, session: session, motion: motion, targetPixelSize: 1024)
         for _ in 0..<200 {
             if year.preparedSurfaceForMotion() != nil, month.preparedSurfaceForMotion() != nil { break }
             try await Task.sleep(for: .milliseconds(10))

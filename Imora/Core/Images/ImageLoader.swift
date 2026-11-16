@@ -154,6 +154,20 @@ nonisolated final class ImageLoader: Sendable {
         cachedSurface(for: url, targetPixelSize: targetPixelSize)?.image
     }
 
+    #if DEBUG
+    /// Evict only a synthetic loopback request for mounted-surface tests.
+    func evictLoopbackFixture(for url: URL, targetPixelSize: CGFloat, client: ImoraClient) {
+        guard url.host == "127.0.0.1", authorization.client.withLock({ $0 === client }),
+              (try? client.authorizedRequest(url: url)) != nil else { return }
+        let request = request(for: url, targetPixelSize: targetPixelSize)
+        pipeline.cache.removeCachedImage(for: request)
+        var original = request
+        original.thumbnail = nil; original.processors = []
+        pipeline.cache.removeCachedData(for: original)
+        dataCache?.flush()
+    }
+    #endif
+
     func cachedSurface(for url: URL, targetPixelSize: CGFloat) -> (image: UIImage, localProvenance: LocalSurfaceProvenance?)? {
         guard let client = authorization.client.withLock({ $0 }),
               (try? client.authorizedRequest(url: url)) != nil else { return nil }

@@ -9,9 +9,11 @@ final class PhotoPeriodMotion {
     static let replicaTag = 0xF0123
     private final class Surface {
         weak var view: PeriodPhotoImageView?
-        let prepared: CommittedGridSurface
+        weak var image: UIImage?
+        let key: MediaDisplayKeyV1
+        let access: MediaAccessGeneration
         init(_ view: PeriodPhotoImageView, prepared: CommittedGridSurface) {
-            self.view = view; self.prepared = prepared
+            self.view = view; image = prepared.image; key = prepared.key; access = prepared.access
         }
     }
     var reducesMotion = false
@@ -57,9 +59,9 @@ final class PhotoPeriodMotion {
         let sourceView: UIView? = from == .all ? gridSource : surfaces[from]?[assetID]?.view
         let periodEntry = surfaces[from]?[assetID]
         let periodSurface = periodEntry.flatMap { entry -> CommittedGridSurface? in
-            guard let current = entry.view?.registeredSurface, current.image === entry.prepared.image,
-                  Self.matches(current, entry.prepared) else { return nil }
-            return entry.prepared
+            guard let image = entry.image, let current = entry.view?.preparedSurfaceForMotion(),
+                  current.image === image, current.key == entry.key, current.access == entry.access else { return nil }
+            return current
         }
         let prepared = carriedSurface ?? (from == .all ? gridSource?.preparedSurfaceForMotion() : periodSurface)
         guard let prepared, prepared.isCurrent(), let window = carriedWindow ?? sourceView?.window else { return }
@@ -152,14 +154,31 @@ final class PhotoPeriodMotion {
 }
 
 struct PhotoPeriodCoverSurface: UIViewRepresentable {
+    @Environment(\.displayScale) private var displayScale
     let asset: Asset
     let mode: PhotoBrowseMode
     let session: SessionStore
     let motion: PhotoPeriodMotion
+    let size: CGSize
+
+    static func targetPixels(asset: Asset, size: CGSize, scale: CGFloat) -> CGFloat {
+        guard size.width.isFinite, size.height.isFinite, scale.isFinite,
+              size.width > 0, size.height > 0, scale > 0,
+              asset.ratio.isFinite, asset.ratio > 0 else { return 900 }
+        let ratio = CGFloat(asset.ratio)
+        let height = max(size.height, size.width / ratio) * scale
+        let width = height * ratio
+        // The local provider's covering target describes the short side;
+        // ImageIO's remote thumbnail target describes the longest side.
+        let dimension = asset.localIdentifier != nil && asset.visibility != .locked
+            ? min(width, height) : max(width, height)
+        return min(4096, max(32, (dimension / 32).rounded(.up) * 32))
+    }
 
     func makeUIView(context: Context) -> PeriodPhotoImageView { PeriodPhotoImageView(frame: .zero) }
     func updateUIView(_ view: PeriodPhotoImageView, context: Context) {
-        view.configure(asset: asset, mode: mode, session: session, motion: motion)
+        view.configure(asset: asset, mode: mode, session: session, motion: motion,
+                       targetPixelSize: Self.targetPixels(asset: asset, size: size, scale: displayScale))
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PeriodPhotoImageView, context: Context) -> CGSize? {
         guard let width = proposal.width, let height = proposal.height else { return nil }
@@ -172,8 +191,27 @@ struct PhotoPeriodCoverSurface: UIViewRepresentable {
 
 final class PeriodPhotoImageView: UIImageView {
     private final class Lifetime { var current = true }
+    private struct SourceIdentity: Equatable {
+        let session: UUID?
+        let assetID: String
+        let localID: String?
+        let localRevision: String?
+        let thumbnailRevision: String?
+        let visibility: String
+        let isEdited: Bool?
+        let isTrashed: Bool
+        let ratio: UInt64
+    }
+    private struct Attempt: Equatable {
+        let source: SourceIdentity
+        let pixels: Int
+        let recovery: Int
+        let privateGeneration: Int?
+    }
     private var load: Task<Void, Never>?
-    private var key: String?
+    private var key: Attempt?
+    private var sourceIdentity: SourceIdentity?
+    private var targetPixelSize: CGFloat = 900
     private var asset: Asset?
     private var mode: PhotoBrowseMode = .years
     private weak var motion: PhotoPeriodMotion?
@@ -197,7 +235,11 @@ final class PeriodPhotoImageView: UIImageView {
     }
 
     func preparedSurfaceForMotion() -> CommittedGridSurface? {
-        guard let surface = registeredSurface, surface.isCurrent() else { return nil }
+        guard let asset, let surface = registeredSurface, surface.isCurrent(),
+              bounds.width > 0, bounds.height > 0, AssetTileRegistry.aspectMatches(surface.image, asset: asset) else { return nil }
+        let scale = traitCollection.displayScale
+        guard surface.image.size.width * surface.image.scale >= bounds.width * scale * 0.95,
+              surface.image.size.height * surface.image.scale >= bounds.height * scale * 0.95 else { return nil }
         return surface
     }
 
@@ -211,61 +253,76 @@ final class PeriodPhotoImageView: UIImageView {
             lifetime.current = false
             boundSurface = nil; image = nil; key = nil
         }
-        configure(asset: asset, mode: mode, session: session, motion: motion)
+        configure(asset: asset, mode: mode, session: session, motion: motion, targetPixelSize: targetPixelSize)
     }
 
-    func configure(asset: Asset, mode: PhotoBrowseMode, session: SessionStore, motion: PhotoPeriodMotion) {
+    func configure(asset: Asset, mode: PhotoBrowseMode, session: SessionStore, motion: PhotoPeriodMotion,
+                   targetPixelSize: CGFloat = 900) {
         self.asset = asset
         self.mode = mode
         self.motion = motion
         self.session = session
+        self.targetPixelSize = targetPixelSize
         let client = session.client
         let privateGeneration = asset.visibility == .locked ? session.lockedFolder?.publicationGeneration : nil
-        let key = "\(client?.context.id.uuidString ?? "none")|\(asset.id)|\(asset.localImageVersion ?? asset.thumbhash ?? "")|\(asset.visibility.rawValue)|\(String(describing: asset.isEdited))|\(ImageLoadRecovery.shared.generation)|\(privateGeneration.map(String.init) ?? "")"
+        let identity = SourceIdentity(session: client?.context.id, assetID: asset.id, localID: asset.localIdentifier,
+            localRevision: asset.localImageVersion, thumbnailRevision: asset.thumbhash, visibility: asset.visibility.rawValue,
+            isEdited: asset.isEdited, isTrashed: asset.isTrashed, ratio: asset.ratio.bitPattern)
+        let key = Attempt(source: identity, pixels: Int(targetPixelSize.rounded(.up)),
+                          recovery: ImageLoadRecovery.shared.generation, privateGeneration: privateGeneration)
         let localScope = AssetThumbnailSource.localCacheScope(accountKey: client?.offlineAccountKey,
-            version: asset.localImageVersion ?? asset.thumbhash, pixels: 900)
+            version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize)
         defer { motion.register(self, assetID: asset.id, mode: mode) }
         guard self.key != key else { return }
+        let current = sourceIdentity == identity ? registeredSurface : nil
+        let keepCurrent = current?.isCurrent() == true
+        if keepCurrent, current?.key.pixelBucket == key.pixels {
+            self.key = key
+            return
+        }
         cancelLoad()
-        lifetime.current = false; lifetime = Lifetime()
+        if !keepCurrent {
+            lifetime.current = false; lifetime = Lifetime()
+            image = nil; boundSurface = nil
+        }
+        sourceIdentity = identity
         self.key = key
-        image = nil; boundSurface = nil
         setNeedsUpdateProperties()
         guard let client else { return }
         if let localID = asset.localIdentifier, asset.visibility != .locked {
-            if let cached = LocalImageLoader.shared.cachedBoundImage(localIdentifier: localID, targetPixelSize: 900,
+            if let cached = LocalImageLoader.shared.cachedBoundImage(localIdentifier: localID, targetPixelSize: targetPixelSize,
                 contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: localScope),
-               bindLocal(cached, asset: asset, client: client, session: session, scope: localScope) { return }
+               bindLocal(cached, asset: asset, client: client, session: session, scope: localScope, pixels: targetPixelSize) { return }
         } else if asset.localIdentifier == nil {
             let url = client.thumbnailURL(assetID: asset.id, size: "preview", cacheKey: asset.thumbhash)
-            if let cached = ImageLoader.shared.cachedBoundImage(for: url, targetPixelSize: 900),
-               bindRemote(cached, asset: asset, client: client, session: session) { return }
+            if let cached = ImageLoader.shared.cachedBoundImage(for: url, targetPixelSize: targetPixelSize),
+               bindRemote(cached, asset: asset, client: client, session: session, pixels: targetPixelSize) { return }
         }
         load = Task { [weak self] in
             if let localID = asset.localIdentifier, asset.visibility != .locked {
-                let loaded = await LocalImageLoader.shared.image(localIdentifier: localID, targetPixelSize: 900,
+                let loaded = await LocalImageLoader.shared.image(localIdentifier: localID, targetPixelSize: targetPixelSize,
                     contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile,
                     allowsNetwork: false, cacheScope: localScope)
                 guard !Task.isCancelled, let self, self.key == key, session.client === client,
                       let loaded, let bound = LocalImageLoader.shared.cachedBoundImage(localIdentifier: localID,
-                        targetPixelSize: 900, contentMode: DeviceTileRender.contentMode,
+                        targetPixelSize: targetPixelSize, contentMode: DeviceTileRender.contentMode,
                         coversTarget: DeviceTileRender.coversTile, cacheScope: localScope),
                       bound.image === loaded else { return }
-                _ = self.bindLocal(bound, asset: asset, client: client, session: session, scope: localScope)
+                _ = self.bindLocal(bound, asset: asset, client: client, session: session, scope: localScope, pixels: targetPixelSize)
                 motion.register(self, assetID: asset.id, mode: mode)
             } else if asset.localIdentifier == nil {
                 let url = client.thumbnailURL(assetID: asset.id, size: "preview", cacheKey: asset.thumbhash)
-                guard let bound = try? await ImageLoader.shared.boundImage(for: url, targetPixelSize: 900),
+                guard let bound = try? await ImageLoader.shared.boundImage(for: url, targetPixelSize: targetPixelSize),
                       !Task.isCancelled, let self, self.key == key, session.client === client else { return }
-                _ = self.bindRemote(bound, asset: asset, client: client, session: session)
+                _ = self.bindRemote(bound, asset: asset, client: client, session: session, pixels: targetPixelSize)
                 motion.register(self, assetID: asset.id, mode: mode)
             }
         }
     }
 
-    private func bindRemote(_ delivery: BoundRemoteImage, asset: Asset, client: ImoraClient, session: SessionStore) -> Bool {
+    private func bindRemote(_ delivery: BoundRemoteImage, asset: Asset, client: ImoraClient, session: SessionStore, pixels: CGFloat) -> Bool {
         guard !asset.isTrashed, delivery.isCurrent, session.client === client else { return false }
-        let expected = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 900)
+        let expected = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: pixels)
         let actual = delivery.key, paired = session.backup?.localIdentifierByRemoteId[asset.id]
         guard expected.isCurrentContent, actual.scope == expected.scope, actual.subject == expected.subject,
               actual.sourceRevision == expected.sourceRevision, actual.presentationRevision == expected.presentationRevision,
@@ -294,12 +351,12 @@ final class PeriodPhotoImageView: UIImageView {
     }
 
     private func bindLocal(_ delivery: BoundLocalImage, asset: Asset, client: ImoraClient,
-                           session: SessionStore, scope: String) -> Bool {
+                           session: SessionStore, scope: String, pixels: CGFloat) -> Bool {
         let access = MediaPresentationCoordinator.access(for: client)
-        let expected = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: 900)
+        let expected = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: pixels)
         guard !asset.isTrashed, asset.visibility != .locked, session.client === client,
               asset.localIdentifier == delivery.localIdentifier, asset.localImageVersion == delivery.modificationRevision,
-              delivery.cacheScope == scope, delivery.contentMode == DeviceTileRender.contentMode,
+              delivery.cacheScope == scope, delivery.targetPixelSize == pixels, delivery.contentMode == DeviceTileRender.contentMode,
               delivery.coversTarget == DeviceTileRender.coversTile,
               delivery.permission == access.permission, delivery.isCurrent, expected.isCurrentContent else { return false }
         let provenance = LocalSurfaceProvenance(localIdentifier: delivery.localIdentifier,

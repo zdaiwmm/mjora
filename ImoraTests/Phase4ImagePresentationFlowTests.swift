@@ -1335,6 +1335,189 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         await session.logOut(reportRemoteFailure: false)
     }
 
+    #if DEBUG
+    func testPeriodForegroundKeepsDisplayedPixelsWhenCacheIsEvicted() async throws {
+        let userID = "period-resume-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 1024).jpegData(compressionQuality: 0.9))
+        let reads = Mutex(0), gate = DispatchSemaphore(value: 0)
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") {
+                if reads.withLock({ $0 += 1; return $0 }) > 1 { _ = gate.wait(timeout: .now() + 15) }
+                return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+            }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { gate.signal(); server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "period-resume-fixture", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), value = asset()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        controller.view.backgroundColor = .blue; window.rootViewController = controller; window.makeKeyAndVisible()
+        let motion = PhotoPeriodMotion(), card = PeriodPhotoImageView(frame: CGRect(x: 40, y: 150, width: 132, height: 132))
+        controller.view.addSubview(card); defer { motion.cancel(); window.isHidden = true }
+        card.configure(asset: value, mode: .months, session: session, motion: motion)
+        for _ in 0..<200 {
+            if card.preparedSurfaceForMotion() != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let displayed = try XCTUnwrap(card.image), original = try XCTUnwrap(card.preparedSurfaceForMotion())
+        func centerPixel(_ name: String) throws -> [UInt8] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            var drawn = false
+            let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                drawn = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            XCTAssertTrue(drawn)
+            let attachment = XCTAttachment(data: try XCTUnwrap(frame.pngData()), uniformTypeIdentifier: "public.png")
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            let point = card.convert(CGPoint(x: card.bounds.midX, y: card.bounds.midY), to: window)
+            let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { data in
+                let context = CGContext(data: data.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return pixel
+        }
+        let before = try centerPixel("period-resume-before")
+        XCTAssertGreaterThan(before[0], 180); XCTAssertLessThan(before[2], 80)
+        let url = client.thumbnailURL(assetID: value.id, size: "preview", cacheKey: value.thumbhash)
+        ImageLoader.shared.evictLoopbackFixture(for: url, targetPixelSize: 900, client: client)
+        XCTAssertNil(ImageLoader.shared.cachedImage(for: url, targetPixelSize: 900))
+        let disk = await ImageLoader.shared.diskImage(for: url, targetPixelSize: 900)
+        XCTAssertNil(disk); XCTAssertTrue(original.isCurrent())
+        ImageLoadRecovery.shared.becameActive()
+        try await Task.sleep(for: .milliseconds(200))
+        let after = try centerPixel("period-resume-after")
+        XCTAssertGreaterThan(after[0], 180, "Foreground must preserve the displayed red pixels while a replacement is unavailable")
+        XCTAssertLessThan(after[2], 80)
+        XCTAssertTrue(card.image === displayed)
+        XCTAssertEqual(reads.withLock { $0 }, 1, "A current bound surface needs no new transfer on ordinary foreground")
+        await session.logOut(reportRemoteFailure: false)
+    }
+
+    func testPeriodMotionRequiresPixelsThatCoverTheActualCard() async throws {
+        let userID = "period-size-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let large = try XCTUnwrap(solidImage(pixels: 1536).jpegData(compressionQuality: 0.9))
+        let small = try XCTUnwrap(solidImage(pixels: 32).jpegData(compressionQuality: 0.9))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") {
+                return .init(headers: ["Content-Type": "image/jpeg"], body: request.path.contains("small-period") ? small : large)
+            }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "period-size-fixture", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        func fixture(_ id: String) -> Asset {
+            Asset(id: id, ownerId: userID, isImage: true, isFavorite: false, isTrashed: false,
+                visibility: .timeline, thumbhash: "r1", fileCreatedAt: .now, localOffsetHours: 0,
+                duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+        }
+        let tiny = fixture("small-period"), healthy = fixture("large-period")
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        controller.view.backgroundColor = .blue; window.rootViewController = controller; window.makeKeyAndVisible()
+        let motion = PhotoPeriodMotion()
+        let smallCard = PeriodPhotoImageView(frame: CGRect(x: 20, y: 150, width: 132, height: 132))
+        let largeCard = PeriodPhotoImageView(frame: CGRect(x: 20, y: 350, width: 358, height: 238))
+        controller.view.addSubview(smallCard); controller.view.addSubview(largeCard)
+        defer { motion.cancel(); window.isHidden = true }
+        smallCard.configure(asset: tiny, mode: .months, session: session, motion: motion)
+        let pixels = PhotoPeriodCoverSurface.targetPixels(asset: healthy, size: largeCard.bounds.size,
+                                                          scale: window.traitCollection.displayScale)
+        XCTAssertGreaterThanOrEqual(pixels, 358 * window.traitCollection.displayScale)
+        largeCard.configure(asset: healthy, mode: .months, session: session, motion: motion, targetPixelSize: pixels)
+        for _ in 0..<200 {
+            if smallCard.image != nil, largeCard.image != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(smallCard.image); XCTAssertNotNil(largeCard.image)
+        XCTAssertNil(smallCard.preparedSurfaceForMotion(), "A 32-pixel bitmap cannot qualify for a 132-point card")
+        motion.begin(assetID: tiny.id, from: .months, to: .all, gridSource: nil, session: session, reduceMotion: false)
+        XCTAssertNil(window.viewWithTag(PhotoPeriodMotion.replicaTag), "Keep the real image visible and use ordinary navigation")
+        XCTAssertEqual(smallCard.alpha, 1)
+        motion.cancel()
+        XCTAssertNotNil(largeCard.preparedSurfaceForMotion())
+        XCTAssertEqual(largeCard.preparedSurfaceForMotion()?.key.pixelBucket, Int(pixels))
+        motion.begin(assetID: healthy.id, from: .months, to: .all, gridSource: nil, session: session, reduceMotion: false)
+        XCTAssertNotNil(window.viewWithTag(PhotoPeriodMotion.replicaTag))
+        var drawn = false
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            drawn = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        XCTAssertTrue(drawn)
+        let attachment = XCTAttachment(data: try XCTUnwrap(frame.pngData()), uniformTypeIdentifier: "public.png")
+        attachment.name = "period-size-current-and-motion"; attachment.lifetime = .keepAlways; add(attachment)
+        for card in [smallCard, largeCard] {
+            let point = card.convert(CGPoint(x: card.bounds.midX, y: card.bounds.midY), to: window)
+            let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { data in
+                let context = CGContext(data: data.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            XCTAssertGreaterThan(pixel[0], 180); XCTAssertLessThan(pixel[2], 80)
+        }
+        motion.cancel(); await session.logOut(reportRemoteFailure: false)
+    }
+
+    func testDetachedPeriodCardDoesNotRetainItsDecodedImage() async throws {
+        let userID = "period-release-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let bytes = try XCTUnwrap(solidImage(pixels: 1024).jpegData(compressionQuality: 0.9))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") { return .init(headers: ["Content-Type": "image/jpeg"], body: bytes) }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "period-release-fixture", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), value = asset()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), controller = UIViewController()
+        window.rootViewController = controller; window.makeKeyAndVisible(); defer { window.isHidden = true }
+        let motion = PhotoPeriodMotion()
+        var card: PeriodPhotoImageView? = PeriodPhotoImageView(frame: CGRect(x: 40, y: 150, width: 132, height: 132))
+        controller.view.addSubview(try XCTUnwrap(card))
+        card?.configure(asset: value, mode: .months, session: session, motion: motion)
+        for _ in 0..<200 {
+            if card?.preparedSurfaceForMotion() != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(card?.preparedSurfaceForMotion())
+        weak var releasedView = card
+        weak var releasedImage = card?.image
+        XCTAssertNotNil(releasedImage)
+        let url = client.thumbnailURL(assetID: value.id, size: "preview", cacheKey: value.thumbhash)
+        ImageLoader.shared.evictLoopbackFixture(for: url, targetPixelSize: 900, client: client)
+        XCTAssertNil(ImageLoader.shared.cachedImage(for: url, targetPixelSize: 900))
+        card?.cancelLoad(); card?.removeFromSuperview(); card = nil
+        for _ in 0..<100 {
+            if releasedView == nil, releasedImage == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(releasedView)
+        XCTAssertNil(releasedImage, "An offscreen registry entry must not hold decoded pixels outside the caches")
+        await session.logOut(reportRemoteFailure: false)
+    }
+    #endif
+
     func testLocalPeriodUsesQualifiedCoveringSurface() async throws {
         let (localID, _) = try await createSurfaceFixture()
         let revision = try XCTUnwrap(LocalImageLoader.currentModificationRevision(localID))
