@@ -9,7 +9,7 @@ import XCTest
 // XCTest's teardown closure is Sendable; all test state and cleanup are
 // confined to MainActor, including the explicit MainActor.run below.
 final class PhotosReducedMotionTests: XCTestCase, @unchecked Sendable {
-    private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String }
+    private typealias Fixture = OwnedUIFixture
     private var systemMotion: SystemReduceMotionControl?
     private var imora: XCUIApplication?
     private var originalDeviceSource: Bool?
@@ -79,25 +79,20 @@ final class PhotosReducedMotionTests: XCTestCase, @unchecked Sendable {
     }
 
     private func loadFixture() throws -> Fixture {
-        let url = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("Prepare the dedicated synthetic fixture first.") }
-        let value = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        guard value.apiURL == "http://127.0.0.1:32283/api", value.email.hasSuffix("@imora-fixture.invalid") else {
-            throw NSError(domain: "Unsafe fixture destination", code: 1)
-        }
-        return value
+        try OwnedUIFixture.load()
     }
 
     private func launchImora(_ fixture: Fixture) throws -> XCUIApplication {
         let app = XCUIApplication()
+        OwnedUIFixture.configure(app)
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
             app.textFields["auth-server"].tap(); app.textFields["auth-server"].typeText(fixture.apiURL)
             app.buttons["auth-continue"].tap()
             XCTAssertTrue(app.textFields["auth-email"].waitForExistence(timeout: 20))
-            app.textFields["auth-email"].tap(); app.textFields["auth-email"].typeText(fixture.email)
-            app.secureTextFields["auth-password"].tap(); app.secureTextFields["auth-password"].typeText(fixture.password)
+            app.textFields["auth-email"].tap(); app.textFields["auth-email"].typeText(OwnedUIFixture.placeholderEmail)
+            app.secureTextFields["auth-password"].tap(); app.secureTextFields["auth-password"].typeText(OwnedUIFixture.placeholderPassword)
             app.buttons["auth-sign-in"].tap()
         }
         let ready = NSPredicate { _, _ in

@@ -89,6 +89,10 @@ final class SessionStore {
 
     /// retries a keychain read that was blocked while protected data was unavailable.
     func restoreSessionIfAvailable() {
+        #if DEBUG && targetEnvironment(simulator)
+        // Do not adopt the previous fixture account before the selected one.
+        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        #endif
         guard state == .restoring else { return }
         guard let apiURL = serverURL else {
             state = .loggedOut

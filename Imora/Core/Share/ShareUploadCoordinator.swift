@@ -48,6 +48,9 @@ nonisolated final class ShareUploadCoordinator: Sendable {
 
     @discardableResult
     func resumePending() -> Task<Void, Never>? {
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName != nil { return nil }
+        #endif
         guard let credentials = credentials(), let store = queueStore(),
               let records = try? store.pending().filter({ $0.identity == credentials.identity }), !records.isEmpty else { return nil }
         return current.withLock { value in

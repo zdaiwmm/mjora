@@ -26,8 +26,15 @@ struct ImoraApp: App {
         session.backup?.scheduleRecovery()
         // Retire legacy daemon sessions and resume protected, account-bound
         // recovery queues while this process receives execution time.
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName == nil {
+            BackgroundUploader.shared.attach()
+            ShareUploadCoordinator.shared.attach()
+        }
+        #else
         BackgroundUploader.shared.attach()
         ShareUploadCoordinator.shared.attach()
+        #endif
     }
 
     var body: some Scene {
@@ -85,6 +92,12 @@ struct RootView: View {
     @Environment(AppUpdateStore.self) private var appUpdates
     @Environment(\.scenePhase) private var scenePhase
 
+    #if DEBUG && targetEnvironment(simulator)
+    private var automaticFixture: String? {
+        Phase4OwnedFixture.automaticPreparationName
+    }
+    #endif
+
     var body: some View {
         Group {
             switch session.state {
@@ -98,6 +111,16 @@ struct RootView: View {
         }
         .animation(.smooth, value: session.state)
         .task {
+            #if DEBUG && targetEnvironment(simulator)
+            if let name = automaticFixture {
+                if let fixture = try? Phase4OwnedFixture.load(name), let url = URL(string: fixture.apiURL),
+                   let login = try? await ImoraClient.login(apiURL: url, email: Phase4OwnedFixture.placeholderEmail,
+                                                            password: Phase4OwnedFixture.placeholderPassword) {
+                    await session.logIn(apiURL: url, response: login)
+                }
+                return
+            }
+            #endif
             session.restoreSessionIfAvailable()
             // never prompts at launch - access is asked from the timeline
             // banner or the backup settings instead. an already granted
@@ -139,7 +162,11 @@ struct RootView: View {
                 ShareUploadCoordinator.shared.resumePending()
                 // returning to the foreground picks up photos taken meanwhile
                 // and reconnects the realtime channel, which resyncs grids.
+                #if DEBUG && targetEnvironment(simulator)
+                if automaticFixture == nil { session.backup?.startIfIdle() }
+                #else
                 session.backup?.startIfIdle()
+                #endif
                 session.realtime?.setActive(true)
                 Task { await session.favorites?.flush() }
                 // the socket is down while backgrounded, so the inbox fetch is

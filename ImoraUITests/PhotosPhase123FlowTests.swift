@@ -9,32 +9,25 @@ import XCTest
 /// once in Light and once in Dark. Each case restores the Library cloud source.
 @MainActor
 final class PhotosPhase123FlowTests: XCTestCase {
-    private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String }
+    private typealias Fixture = OwnedUIFixture
     private enum Failure: Error { case invalidScreenshot, invalidFixtureResponse }
 
     private func fixture() throws -> Fixture {
-        let url = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw XCTSkip("Prepare the dedicated synthetic fixture and PhotoKit seeds first.")
-        }
-        let value = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        guard value.apiURL == "http://127.0.0.1:32283/api", value.email.hasSuffix("@imora-fixture.invalid") else {
-            throw NSError(domain: "Unsafe fixture destination", code: 1)
-        }
-        return value
+        try OwnedUIFixture.load()
     }
 
     private func launch() throws -> XCUIApplication {
         continueAfterFailure = false
         let fixture = try fixture()
         let app = XCUIApplication()
+        OwnedUIFixture.configure(app)
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
             enter(fixture.apiURL, in: app.textFields["auth-server"], app: app)
             app.buttons["auth-continue"].tap()
-            enter(fixture.email, in: app.textFields["auth-email"], app: app)
-            enter(fixture.password, in: app.secureTextFields["auth-password"], app: app)
+            enter(OwnedUIFixture.placeholderEmail, in: app.textFields["auth-email"], app: app)
+            enter(OwnedUIFixture.placeholderPassword, in: app.secureTextFields["auth-password"], app: app)
             app.buttons["auth-sign-in"].tap()
         }
         let environment = XCTAttachment(string: "Runner reducedMotion=\(UIAccessibility.isReduceMotionEnabled), interfaceStyle=\(UITraitCollection.current.userInterfaceStyle.rawValue). App appearance is verified by its captured pixels.")
@@ -130,7 +123,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
 
     private func visibleTiles(_ app: XCUIApplication) -> [XCUIElement] {
         app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex.filter {
-            $0.isHittable && $0.frame.midY > 120 && $0.frame.midY < app.frame.height - 100
+            $0.frame.midY > 120 && $0.frame.midY < app.frame.height - 100 && $0.isHittable
         }
     }
 
@@ -147,7 +140,10 @@ final class PhotosPhase123FlowTests: XCTestCase {
         }
         enter(filename, in: field, app: app)
         field.typeText("\n")
-        waitUntil("Exact seeded filename has one accessible result") { self.visibleTiles(app).count == 1 }
+        let exactResult = NSPredicate { _, _ in self.visibleTiles(app).count == 1 }
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: exactResult, object: nil)], timeout: 25)
+        if result != .completed { snapshot(app, "phase123-filename-search-failed") }
+        XCTAssertEqual(result, .completed, "Exact seeded filename has one accessible result")
         XCTAssertTrue(app.descendants(matching: .any)["local-search-results"].exists)
     }
 
@@ -517,7 +513,8 @@ final class PhotosPhase123FlowTests: XCTestCase {
         private let session: URLSession
         private var token: String?
         init(fixture: Fixture) throws {
-            guard fixture.apiURL == "http://127.0.0.1:32283/api", fixture.email.hasSuffix("@imora-fixture.invalid") else {
+            guard fixture.apiURL == "http://127.0.0.1:33284/api", fixture.email.hasSuffix("@imora-phase4-fixture.invalid"),
+                  UUID(uuidString: fixture.ownerID) != nil else {
                 throw Failure.invalidFixtureResponse
             }
             self.fixture = fixture
@@ -529,6 +526,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
         }
         func login() async throws {
             let response = try await request("auth/login", method: "POST", body: ["email": fixture.email, "password": fixture.password])
+            guard (response as? [String: Any])?["userId"] as? String == fixture.ownerID else { throw Failure.invalidFixtureResponse }
             token = try XCTUnwrap((response as? [String: Any])?["accessToken"] as? String)
         }
         func albums() async throws -> [[String: Any]] {
@@ -555,9 +553,9 @@ final class PhotosPhase123FlowTests: XCTestCase {
             return filename.map { name in items.filter { $0["originalFileName"] as? String == name } } ?? items
         }
         private func request(_ path: String, method: String, body: [String: Any]?) async throws -> Any {
-            guard !path.contains(".."), let base = URL(string: "http://127.0.0.1:32283/api/") else { throw Failure.invalidFixtureResponse }
+            guard !path.contains(".."), let base = URL(string: "http://127.0.0.1:33284/api/") else { throw Failure.invalidFixtureResponse }
             let url = base.appendingPathComponent(path)
-            guard url.scheme == "http", url.host == "127.0.0.1", url.port == 32283, url.path.hasPrefix("/api/") else {
+            guard url.scheme == "http", url.host == "127.0.0.1", url.port == 33284, url.path.hasPrefix("/api/") else {
                 throw Failure.invalidFixtureResponse
             }
             var request = URLRequest(url: url); request.httpMethod = method

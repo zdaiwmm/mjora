@@ -7,7 +7,6 @@ import XCTest
 /// this target never imports or calls the production composition helper.
 @MainActor
 final class PhotosMonthCompositionFlowTests: XCTestCase {
-    private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String }
     private struct Month {
         let id: String
         let count: Int
@@ -16,22 +15,16 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
 
     private func launchCloudCapture() throws -> XCUIApplication {
         continueAfterFailure = false
-        let fixtureURL = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
-        guard FileManager.default.fileExists(atPath: fixtureURL.path) else {
-            throw XCTSkip("Prepare the dedicated month-composition fixture first.")
-        }
-        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: fixtureURL))
-        guard fixture.apiURL == "http://127.0.0.1:32283/api", fixture.email.hasSuffix("@imora-fixture.invalid") else {
-            throw NSError(domain: "Unsafe fixture destination", code: 1)
-        }
+        let fixture = try OwnedUIFixture.load()
         let app = XCUIApplication()
+        OwnedUIFixture.configure(app)
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
             enter(fixture.apiURL, in: app.textFields["auth-server"], app: app)
             app.buttons["auth-continue"].tap()
-            enter(fixture.email, in: app.textFields["auth-email"], app: app)
-            enter(fixture.password, in: app.secureTextFields["auth-password"], app: app)
+            enter(OwnedUIFixture.placeholderEmail, in: app.textFields["auth-email"], app: app)
+            enter(OwnedUIFixture.placeholderPassword, in: app.secureTextFields["auth-password"], app: app)
             app.buttons["auth-sign-in"].tap()
         }
         wait(app, "Signed-in cloud navigation") {
@@ -289,7 +282,7 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         let tiles = app.buttons.matching(identifier: "asset-tile")
         wait(app, "All reveals the displayed day's exact photographer date/time") {
             tiles.allElementsBoundByIndex.contains {
-                $0.isHittable && $0.frame.midY > 120 && $0.frame.midY < app.frame.height - 100
+                $0.frame.midY > 120 && $0.frame.midY < app.frame.height - 100 && $0.isHittable
                     && $0.label.contains(exactCaptureDateTime)
             }
         }

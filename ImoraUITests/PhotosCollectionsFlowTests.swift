@@ -3,17 +3,11 @@ import XCTest
 
 @MainActor
 final class PhotosCollectionsFlowTests: XCTestCase {
-    private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String }
-
     private func launch() throws -> XCUIApplication {
         continueAfterFailure = false
-        let url = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("Prepare the dedicated local fixture first.") }
-        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        guard fixture.apiURL == "http://127.0.0.1:32283/api", fixture.email.hasSuffix("@imora-fixture.invalid") else {
-            throw NSError(domain: "Unsafe fixture destination", code: 1)
-        }
+        let fixture = try OwnedUIFixture.load()
         let app = XCUIApplication()
+        OwnedUIFixture.configure(app)
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
@@ -21,8 +15,8 @@ final class PhotosCollectionsFlowTests: XCTestCase {
             field.tap(); field.typeText(fixture.apiURL)
             app.buttons["auth-continue"].tap()
             XCTAssertTrue(app.textFields["auth-email"].waitForExistence(timeout: 20))
-            app.textFields["auth-email"].tap(); app.textFields["auth-email"].typeText(fixture.email)
-            app.secureTextFields["auth-password"].tap(); app.secureTextFields["auth-password"].typeText(fixture.password)
+            app.textFields["auth-email"].tap(); app.textFields["auth-email"].typeText(OwnedUIFixture.placeholderEmail)
+            app.secureTextFields["auth-password"].tap(); app.secureTextFields["auth-password"].typeText(OwnedUIFixture.placeholderPassword)
             app.buttons["auth-sign-in"].tap()
         }
         let later = app.buttons.matching(NSPredicate(format: "label IN %@", ["以后", "Not Now", "Later"])).firstMatch
@@ -149,22 +143,38 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         app.buttons["云端照片"].tap()
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
-        let grid = app.scrollViews.firstMatch
+        func mediaTile() throws -> XCUIElement {
+            try XCTUnwrap(tiles.allElementsBoundByIndex.first {
+                $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140 && $0.isHittable
+            })
+        }
         func tileWidth() -> CGFloat {
             tiles.allElementsBoundByIndex.first {
-                $0.isHittable && $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140
+                $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140 && $0.isHittable
             }?.frame.width ?? 0
         }
         // First establish the small-tile endpoint, then test a real reflow.
-        grid.pinch(withScale: 0.5, velocity: -1)
+        try mediaTile().pinch(withScale: 0.5, velocity: -1)
         let small = tileWidth()
-        grid.pinch(withScale: 1.8, velocity: 1)
+        try mediaTile().pinch(withScale: 1.8, velocity: 1)
         let large = tileWidth()
         XCTAssertGreaterThan(large, small + 15)
         snapshot(app, "grid-pinch-enlarged")
-        grid.pinch(withScale: 0.65, velocity: -1)
+        try mediaTile().pinch(withScale: 0.65, velocity: -1)
+        let start = Date()
+        var observedMS: Double?
+        let contracted = NSPredicate { _, _ in
+            guard tileWidth() < large else { return false }
+            observedMS = Date().timeIntervalSince(start) * 1000
+            return true
+        }
+        let contraction = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: contracted, object: nil)], timeout: 3)
+        snapshot(app, "grid-pinch-contracted")
+        let timing = XCTAttachment(string: "Milliseconds from pinch return to observed smaller tile: \(observedMS.map { String(format: "%.1f", $0) } ?? "not observed"); wait result: \(contraction.rawValue)")
+        timing.name = "grid-pinch-contraction-timing"; timing.lifetime = .keepAlways; add(timing)
+        XCTAssertEqual(contraction, .completed)
         XCTAssertLessThan(tileWidth(), large)
-        grid.pinch(withScale: 1.4, velocity: 1)
+        try mediaTile().pinch(withScale: 1.4, velocity: 1)
         try XCTUnwrap(tiles.allElementsBoundByIndex.first {
             $0.isHittable && $0.frame.midY > 170 && $0.frame.midY < app.frame.height - 140
         }).tap()

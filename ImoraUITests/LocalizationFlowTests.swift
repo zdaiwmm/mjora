@@ -3,15 +3,9 @@ import XCTest
 
 @MainActor
 final class LocalizationFlowTests: XCTestCase {
-    private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String }
+    private typealias Fixture = OwnedUIFixture
     private func fixture() throws -> Fixture {
-        let url = URL(fileURLWithPath: "/private/tmp/imora-341-ios-fixture.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("Prepare the dedicated local fixture first.") }
-        let value = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        guard value.apiURL == "http://127.0.0.1:32283/api", value.email.hasSuffix("@imora-fixture.invalid") else {
-            throw NSError(domain: "Unsafe fixture destination", code: 1)
-        }
-        return value
+        try OwnedUIFixture.load()
     }
     private func snapshot(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -60,6 +54,7 @@ final class LocalizationFlowTests: XCTestCase {
         continueAfterFailure = false
         let fixture = try fixture()
         let app = XCUIApplication()
+        OwnedUIFixture.configure(app)
         app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", chinese ? "zh_CN" : "en_US"]
         app.launch()
         if app.buttons["photos-source-menu"].waitForExistence(timeout: 3) {
@@ -79,9 +74,9 @@ final class LocalizationFlowTests: XCTestCase {
         app.buttons["auth-continue"].tap()
         let email = app.textFields["auth-email"]
         XCTAssertTrue(email.waitForExistence(timeout: 20))
-        enter(fixture.email, in: email, app: app)
+        enter(OwnedUIFixture.placeholderEmail, in: email, app: app)
         let password = app.secureTextFields["auth-password"]
-        enter(fixture.password, in: password, app: app)
+        enter(OwnedUIFixture.placeholderPassword, in: password, app: app)
         app.buttons["auth-sign-in"].tap()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
         dismissSyntheticPasswordPrompt(app, wait: 3)
@@ -149,7 +144,7 @@ final class LocalizationFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["server-route-use-local"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.buttons["server-route-use-local"].label, chinese ? "立即使用局域网地址" : "Use Local Now")
         XCTAssertEqual(app.buttons["server-route-use-external"].label, chinese ? "使用外网地址" : "Use External Address")
-        XCTAssertTrue(app.staticTexts["server-route-endpoint"].label.contains("127.0.0.1:32283"))
+        XCTAssertTrue(app.staticTexts["server-route-endpoint"].label.contains("127.0.0.1:33284"))
         snapshot(app, "\(language)-backup-advanced")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app, "backup-cleanup")
@@ -179,14 +174,15 @@ final class LocalizationFlowTests: XCTestCase {
         continueAfterFailure = false
         let fixture = try fixture()
         let app = XCUIApplication()
+        OwnedUIFixture.configure(app)
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         let server = app.textFields["auth-server"]
         if server.waitForExistence(timeout: 5) {
             enter(fixture.apiURL, in: server, app: app)
             app.buttons["auth-continue"].tap()
-            enter(fixture.email, in: app.textFields["auth-email"], app: app)
-            enter(fixture.password, in: app.secureTextFields["auth-password"], app: app)
+            enter(OwnedUIFixture.placeholderEmail, in: app.textFields["auth-email"], app: app)
+            enter(OwnedUIFixture.placeholderPassword, in: app.secureTextFields["auth-password"], app: app)
             app.buttons["auth-sign-in"].tap()
         }
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))

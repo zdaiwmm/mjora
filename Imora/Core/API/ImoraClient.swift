@@ -347,19 +347,34 @@ nonisolated final class ImoraClient: Sendable {
     // MARK: - auth
 
     static func login(apiURL: URL, email: String, password: String) async throws -> LoginResponse {
+        var credentials = LoginCredentials(email: email, password: password)
+        var fixtureOwner: String?
+        #if DEBUG && targetEnvironment(simulator)
+        if let name = ProcessInfo.processInfo.environment["IMORA_PHASE4_OWNED_FIXTURE"] {
+            guard email == Phase4OwnedFixture.placeholderEmail, password == Phase4OwnedFixture.placeholderPassword else {
+                throw ServerTrustError.untrustedTarget
+            }
+            let fixture = try Phase4OwnedFixture.load(name)
+            guard apiURL.absoluteString == fixture.apiURL else { throw ServerTrustError.untrustedTarget }
+            credentials = LoginCredentials(email: fixture.email, password: fixture.password)
+            fixtureOwner = fixture.ownerID
+        }
+        #endif
         var request = URLRequest(url: apiURL.appending(path: "auth/login"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("iOS", forHTTPHeaderField: "deviceType")
         request.setValue(deviceModel(), forHTTPHeaderField: "deviceModel")
-        request.httpBody = try JSONEncoder().encode(LoginCredentials(email: email, password: password))
+        request.httpBody = try JSONEncoder().encode(credentials)
         guard ServerTrustPolicy.validServerURL(apiURL) else { throw ImoraError.invalidURL }
         let (data, response) = try await ControlledSession.noRedirect.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ImoraError.unreachable }
         guard http.statusCode == 201 || http.statusCode == 200 else {
             throw ImoraError.http(http.statusCode, Self.serverMessage(from: data))
         }
-        return try JSONDecoder().decode(LoginResponse.self, from: data)
+        let login = try JSONDecoder().decode(LoginResponse.self, from: data)
+        guard fixtureOwner == nil || fixtureOwner == login.userId else { throw ServerTrustError.untrustedTarget }
+        return login
     }
 
     func logout() async throws {

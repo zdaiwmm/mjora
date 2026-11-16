@@ -196,6 +196,9 @@ final class BackupManager {
     }
 
     func request(_ reason: ReconcileReason, localIDs: Set<String> = [], remoteIDs: Set<String> = [], generation: UUID? = nil) {
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        #endif
         guard !isShutDown,
               reconcileCoordinator.request(reason, localIDs: localIDs, remoteIDs: remoteIDs, generation: generation) else { return }
         uploadAuthorityPause = nil
@@ -706,6 +709,11 @@ final class BackupManager {
         self.index = index
         self.dateOrder = BackupDateOrder(rawValue: UserDefaults.standard.string(forKey: Self.dateOrderKey) ?? "") ?? .newestFirst
         self.mediaPriority = BackupMediaPriority(rawValue: UserDefaults.standard.string(forKey: Self.mediaPriorityKey) ?? "") ?? .together
+        #if DEBUG && targetEnvironment(simulator)
+        // Preparation needs the read-only launch validator, not backup
+        // recovery, PhotoKit observers, or account-crossing upload work.
+        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        #endif
         if repeatedFailureLedger.removeLegacySizeLimitFailures() {
             repeatedFailureLedger.save()
         }
@@ -901,6 +909,9 @@ final class BackupManager {
     }
 
     func scheduleRecovery() {
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        #endif
         BackupProcessing.shared.schedule(needed: !isShutDown && (!isStopping || recoverAfterExpiration) && automaticBackupMayResume)
     }
 
@@ -922,6 +933,9 @@ final class BackupManager {
     }
 
     func runScheduledBackup() async -> Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName != nil { return false }
+        #endif
         guard !isShutDown, !requiresExplicitResume, PhotoLibraryService.hasFullAccess else { return false }
         if userId == nil {
             do { userId = try await client.currentUser().id }
@@ -951,6 +965,9 @@ final class BackupManager {
     /// otherwise, so assets already on the server are recognized - after a
     /// reinstall or an upload from another device - without sending anything.
     func startIfIdle() {
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        #endif
         networkWatcher?.refresh()
         guard PhotoLibraryService.hasFullAccess, !requiresExplicitResume else { return }
         localChanged()
@@ -1389,6 +1406,9 @@ final class BackupManager {
     /// loads the index for the signed-in account so badges and the merged
     /// timeline are right from the first frame.
     func primeLocalState() async {
+        #if DEBUG && targetEnvironment(simulator)
+        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        #endif
         await cachedLaunchHandle?.waitUntilReleased()
         guard !Task.isCancelled, !isShutDown else { return }
         guard let userId else { return }

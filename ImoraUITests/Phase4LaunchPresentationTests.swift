@@ -5,7 +5,7 @@ import XCTest
 /// primes, allowing root to pause that server while recording the framebuffer.
 @MainActor
 final class Phase4LaunchPresentationTests: XCTestCase {
-    private struct Fixture: Decodable { let apiURL: String; let email: String; let password: String; let ownerID: String }
+    private struct Fixture: Decodable { let apiURL: String; let email: String; let ownerID: String }
     private struct Tile: Decodable {
         let assetID: String; let rect: [Double]; let bitmapPixels: [Int]
         let requestedPixels: Int; let realBitmap: Bool; let adequatePixels: Bool
@@ -28,9 +28,21 @@ final class Phase4LaunchPresentationTests: XCTestCase {
     private func fixture() throws -> Fixture {
         let url = URL(fileURLWithPath: "/Users/achilles/mjora/execution/photos-phase4/ui-fixture.json")
         guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("Prepare the owned phase4 synthetic fixture") }
+        let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        guard ProcessInfo.processInfo.environment["SIMULATOR_UDID"] == "E30E1970-2CBA-44E4-BDAC-6B8EFD9F2558",
+              url.resolvingSymlinksInPath().path == url.path, permissions?.intValue == 0o600 else {
+            throw NSError(domain: "Unsafe phase4 simulator or fixture path", code: 1)
+        }
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
-        guard fixture.apiURL == "http://127.0.0.1:33284/api", fixture.email.hasSuffix("@imora-phase4-fixture.invalid") else {
+        guard fixture.apiURL == "http://127.0.0.1:33284/api", fixture.email.hasSuffix("@imora-phase4-fixture.invalid"),
+              UUID(uuidString: fixture.ownerID) != nil else {
             throw NSError(domain: "Unsafe phase4 fixture", code: 1)
+        }
+        for name in ["entry-ui-fixture.json", "legacy-ui-fixture.json", "native-integration-fixture.json"] {
+            let other = try JSONSerialization.jsonObject(with: Data(contentsOf: url.deletingLastPathComponent().appending(path: name))) as? [String: Any]
+            guard let owner = other?["ownerID"] as? String, UUID(uuidString: owner) != nil, owner != fixture.ownerID else {
+                throw NSError(domain: "Unsafe phase4 fixture owner", code: 1)
+            }
         }
         return fixture
     }
@@ -57,12 +69,7 @@ final class Phase4LaunchPresentationTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.1)
         }
         let image = XCTAttachment(screenshot: app.screenshot()); image.name = "phase4-probe-timeout"; image.lifetime = .keepAlways; add(image)
-        var hierarchy = app.debugDescription
-        if let owned = try? fixture() {
-            hierarchy = hierarchy.replacingOccurrences(of: owned.email, with: "[synthetic email]")
-                .replacingOccurrences(of: owned.password, with: "[synthetic password]")
-        }
-        let tree = XCTAttachment(string: hierarchy); tree.name = "phase4-probe-timeout-hierarchy"; tree.lifetime = .keepAlways; add(tree)
+        let tree = XCTAttachment(string: app.debugDescription); tree.name = "phase4-probe-timeout-hierarchy"; tree.lifetime = .keepAlways; add(tree)
         if let latest = element.value as? String {
             let state = XCTAttachment(string: latest); state.name = "phase4-probe-timeout-state"; state.lifetime = .keepAlways; add(state)
         }
@@ -83,15 +90,10 @@ final class Phase4LaunchPresentationTests: XCTestCase {
     private func prime(source: String, expectedCount: Int) throws {
         continueAfterFailure = false
         let fixture = try fixture(), app = application()
+        // Preparation alone may adopt the guarded synthetic owner. Cached
+        // launch and timing selectors use application() with this unset.
+        app.launchEnvironment["IMORA_PHASE4_OWNED_FIXTURE"] = "benchmark"
         app.launch()
-        let server = app.textFields["auth-server"]
-        if server.waitForExistence(timeout: 3) {
-            server.tap(); server.typeText(fixture.apiURL); app.buttons["auth-continue"].tap()
-            XCTAssertTrue(app.textFields["auth-email"].waitForExistence(timeout: 20))
-            app.textFields["auth-email"].tap(); app.textFields["auth-email"].typeText(fixture.email)
-            app.secureTextFields["auth-password"].tap(); app.secureTextFields["auth-password"].typeText(fixture.password)
-            app.buttons["auth-sign-in"].tap()
-        }
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 30))
         dismissPrompts(app)
         app.buttons["photos-source-menu"].tap()
@@ -170,6 +172,13 @@ final class Phase4LaunchPresentationTests: XCTestCase {
         let app = application(trace: false)
         app.terminate(); app.launch()
         try openPhotoAndReturn(app, source: "device")
+    }
+
+    func testCachedCloudWithoutTraceOpensPhotoAndReturnsToGallery() throws {
+        _ = try fixture()
+        let app = application(trace: false)
+        app.terminate(); app.launch()
+        try openPhotoAndReturn(app, source: "cloud")
     }
 
     private func measureWithoutTrace(source: String) throws {
