@@ -88,6 +88,9 @@ final class PhotosFeedbackTests: XCTestCase {
     private func ownedMotionURL() throws -> URL {
         let root = URL(fileURLWithPath: "/Users/achilles/mjora/execution/photos-phase4", isDirectory: true)
         let manifest = root.appending(path: "native-integration-fixture.json")
+        guard FileManager.default.fileExists(atPath: manifest.path) else {
+            throw XCTSkip("Prepare the dedicated local Immich 3.4.1 iOS fixture first.")
+        }
         let permissions = try FileManager.default.attributesOfItem(atPath: manifest.path)[.posixPermissions] as? NSNumber
         guard manifest.resolvingSymlinksInPath().path == manifest.path, permissions?.intValue == 0o600,
               let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any],
