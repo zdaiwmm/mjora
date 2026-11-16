@@ -134,6 +134,92 @@ final class Phase4ImageDemandTests: XCTestCase {
             "Promotion must reuse the same endpoint work")
     }
 
+    #if DEBUG
+    func testSameURLNewGenerationDoesNotJoinRetiredTransfer() async throws {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        func bytes(_ color: UIColor) throws -> Data {
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 640), format: format).image { context in
+                color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 640, height: 640))
+            }
+            return try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+        }
+        let red = try bytes(.red), blue = try bytes(.blue)
+        let oldGate = DispatchSemaphore(value: 0), newGate = DispatchSemaphore(value: 0)
+        let reads = Mutex(0), oldStarted = Mutex(false), newStarted = Mutex(false), wireOK = Mutex(true)
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            guard request.path.contains("/thumbnail") else { return .init(status: 503) }
+            if request.path.contains("imora-content-generation") || request.path.contains("imora-work-session")
+                || request.path.contains("imora-private-producer")
+                || request.headers["authorization"] != "Bearer generation-fixture" { wireOK.withLock { $0 = false } }
+            let read = reads.withLock { $0 += 1; return $0 }
+            if read == 1 {
+                oldStarted.withLock { $0 = true }; _ = oldGate.wait(timeout: .now() + 20)
+                return .init(headers: ["Content-Type": "image/jpeg"], body: red)
+            }
+            newStarted.withLock { $0 = true }; _ = newGate.wait(timeout: .now() + 20)
+            return .init(headers: ["Content-Type": "image/jpeg"], body: blue)
+        }
+        try await server.start(); defer { oldGate.signal(); newGate.signal(); server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "generation-fixture")
+        client.confirmMediaAccount("generation-\(UUID())")
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let scope = client.mediaDisplayScope, generations = MediaContentGenerations.shared
+        let journal = LaunchPreviewStore.rootDirectory.appending(path: "content-generations.json")
+        let before = try? Data(contentsOf: journal)
+        let restore = try generations.isolatedFixtureRestorer(scopes: [scope])
+        var restored = false
+        defer { if !restored { try? restore() } }
+        let id = "generation-asset-\(UUID())"
+        let url = client.thumbnailURL(assetID: id, cacheKey: "same-opaque-revision")
+        let oldKey = ImageLoader.shared.requestKey(for: url, targetPixelSize: 416)
+        let old = Task { try await ImageLoader.shared.image(for: url, targetPixelSize: 416) }
+        defer { old.cancel() }
+        for _ in 0..<200 {
+            if oldStarted.withLock({ $0 }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard oldStarted.withLock({ $0 }) else { XCTFail("The old endpoint must be held"); throw CocoaError(.fileReadUnknown) }
+        _ = try generations.retire(scope: scope, subjects: [.remoteAsset(id)], retiresSourceRevisions: false)
+        XCTAssertNotEqual(oldKey, ImageLoader.shared.requestKey(for: url, targetPixelSize: 416))
+        let current = Task { try await ImageLoader.shared.image(for: url, targetPixelSize: 416) }
+        defer { current.cancel() }
+        for _ in 0..<200 {
+            if newStarted.withLock({ $0 }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard newStarted.withLock({ $0 }) else {
+            XCTFail("A new content generation must start its own endpoint while the retired transfer is held")
+            oldGate.signal(); newGate.signal(); _ = try? await old.value; _ = try? await current.value
+            return
+        }
+        let peer = Task { try await ImageLoader.shared.image(for: url, targetPixelSize: 416) }
+        let otherSize = Task { try await ImageLoader.shared.image(for: url, targetPixelSize: 640) }
+        defer { peer.cancel() }
+        defer { otherSize.cancel() }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(reads.withLock { $0 }, 2, "Same-current-generation consumers and compatible sizes must still share one transfer")
+        oldGate.signal()
+        do { _ = try await old.value; XCTFail("Retired endpoint bytes cannot be delivered") } catch { }
+        newGate.signal()
+        let image = try await current.value, shared = try await peer.value, larger = try await otherSize.value
+        XCTAssertNotNil(image.cgImage); XCTAssertNotNil(shared.cgImage); XCTAssertNotNil(larger.cgImage)
+        XCTAssertGreaterThanOrEqual(image.cgImage?.width ?? 0, 416)
+        XCTAssertGreaterThanOrEqual(larger.cgImage?.width ?? 0, 640)
+        let cg = try XCTUnwrap(image.cgImage)
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(cg, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        XCTAssertGreaterThan(pixel[2], 180); XCTAssertLessThan(pixel[0], 80)
+        XCTAssertTrue(wireOK.withLock { $0 }, "The local work identity must never alter the authenticated wire endpoint")
+        try restore(); restored = true
+        XCTAssertEqual(try? Data(contentsOf: journal), before, "The synthetic scope must leave all existing journal bytes intact")
+    }
+    #endif
+
     func testCancelPrefetchKeepsVisibleSharedConsumer() async throws {
         let bytes = try imageBytes(), gate = DispatchSemaphore(value: 0), started = Mutex(false)
         let server = try LocalHTTPServer(concurrent: true) { request in

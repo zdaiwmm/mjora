@@ -8,6 +8,7 @@ private nonisolated struct MediaRequestBinding: Sendable {
     let key: MediaDisplayKeyV1
     /// Original session-scoped endpoint, before the local Nuke work suffix.
     let endpointURL: URL
+    let runtimeSession: UUID
     let requiresElevation: Bool
     let privateLease: LockedMediaLease?
     var isCurrent: Bool { key.isCurrentContent && (!requiresElevation || privateLease?.isCurrent == true) }
@@ -557,7 +558,8 @@ nonisolated final class ImageLoader: Sendable {
             sourceRevision: revision, presentationRevision: "committed:\(revision)", variant: .grid,
             pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover", orientationRevision: "source", colorProfile: "source",
             contentGeneration: namespace.generation, visibilityPolicy: namespace.visibilityPolicy),
-            endpointURL: url, requiresElevation: requiresElevation, privateLease: requiresElevation ? client.lockedMediaLease : nil)
+            endpointURL: url, runtimeSession: client.context.id,
+            requiresElevation: requiresElevation, privateLease: requiresElevation ? client.lockedMediaLease : nil)
     }
 
     /// decoding straight to a thumbnail keeps memory flat while scrolling -
@@ -565,15 +567,19 @@ nonisolated final class ImageLoader: Sendable {
     private func request(for url: URL, targetPixelSize: CGFloat) -> ImageRequest {
         let binding = binding(for: url, pixels: targetPixelSize)
         var workURL = url
-        if let binding, binding.requiresElevation {
+        if let binding {
             // Nuke keys its original-data task by the initializer URL, not
-            // imageID. This local fragment separates E1/E2 work before Nuke
-            // coalesces it; the authenticated endpoint below remains unchanged.
+            // imageID. The local fragment carries the captured generation and
+            // runtime authority before Nuke coalesces data; the authenticated
+            // endpoint below remains unchanged. Compatible sizes still share.
             guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
                 return ImageRequest(url: nil)
             }
             let sessionFragment = components.fragment ?? ""
-            components.fragment = "\(sessionFragment)&imora-private-producer=\(binding.privateLease?.identity ?? "denied")"
+            let generation = MediaDisplayKeyV1.digest(Data(binding.key.contentGeneration.utf8))
+            let privateSuffix = binding.requiresElevation
+                ? "&imora-private-producer=\(binding.privateLease?.identity ?? "denied")" : ""
+            components.fragment = "\(sessionFragment)&imora-work-session=\(binding.runtimeSession.uuidString)&imora-content-generation=\(generation)\(privateSuffix)"
             guard let scoped = components.url else { return ImageRequest(url: nil) }
             workURL = scoped
         }
