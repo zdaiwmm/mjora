@@ -1438,8 +1438,7 @@
             "value": "%lld 个项目"
           }
         }
-      },
-      "comment": "Imora/Features/Albums/AlbumDetailScreen.swift:519\nImora/Features/Albums/AlbumsTab.swift:379\nImora/Features/Albums/AlbumsTab.swift:454\nImora/Features/Spaces/SpacesScreen.swift:132\nImora/Features/Spaces/SpacesScreen.swift:398\nImora/Features/Spaces/SpacesScreen.swift:430\nImora/Features/Timeline/PhotoPeriodsView.swift:215\nImora/Features/Timeline/PhotoPeriodsView.swift:266\nImora/Features/Timeline/PhotoPeriodsView.swift:379\nImora/Features/Timeline/PhotosBrowseMenu.swift:96\nImora/Features/Timeline/PhotosMediaTimeline.swift:137\nImora/Features/Timeline/PhotosMediaTimeline.swift:96"
+      }
     },
     "%lld items loaded": {
       "extractionState": "manual",
@@ -33918,6 +33917,210 @@
           "stringUnit": {
             "state": "translated",
             "value": "上次保存已确认完成。"
+          }
+        }
+      }
+    },
+    "Play Memory": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play Memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放回忆"
+          }
+        }
+      }
+    },
+    "%lld of %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld of %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %lld 项，共 %lld 项"
+          }
+        }
+      }
+    },
+    "Show item %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show item %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看第 %lld 项"
+          }
+        }
+      }
+    },
+    "Slide progress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slide progress"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "幻灯片进度"
+          }
+        }
+      }
+    },
+    "Couldn't load this memory item.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load this memory item."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法载入这段回忆中的项目。"
+          }
+        }
+      }
+    },
+    "Music unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Music unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音乐暂不可用"
+          }
+        }
+      }
+    },
+    "Replay": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新播放"
+          }
+        }
+      }
+    },
+    "Mute": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mute"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "静音"
+          }
+        }
+      }
+    },
+    "Unmute": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unmute"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消静音"
+          }
+        }
+      }
+    },
+    "Previous": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一项"
+          }
+        }
+      }
+    },
+    "Photos are temporarily unavailable. Your edits are preserved. Reopen the app and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos are temporarily unavailable. Your edits are preserved. Reopen the app and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "照片暂时不可用。你的编辑已保留，请重新打开 App 后重试。"
+          }
+        }
+      }
+    },
+    "Sign in again to continue. Your edits are preserved.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in again to continue. Your edits are preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新登录以继续。你的编辑已保留。"
           }
         }
       }

@@ -1887,5 +1887,17 @@
   "Couldn't Load Capture Dates": "无法载入拍摄日期",
   "Couldn't locate this photo in the current sort. Try again.": "无法在当前排序中定位此照片，请重试。",
   "Loading capture dates": "正在载入拍摄日期",
-  "The library session changed. Reopen the calendar overview.": "图库会话已更改，请重新打开日期概览。"
+  "The library session changed. Reopen the calendar overview.": "图库会话已更改，请重新打开日期概览。",
+  "Play Memory": "播放回忆",
+  "%lld of %lld": "第 %lld 项，共 %lld 项",
+  "Show item %lld": "查看第 %lld 项",
+  "Slide progress": "幻灯片进度",
+  "Couldn't load this memory item.": "无法载入这段回忆中的项目。",
+  "Music unavailable": "音乐暂不可用",
+  "Replay": "重新播放",
+  "Mute": "静音",
+  "Unmute": "取消静音",
+  "Previous": "上一项",
+  "Photos are temporarily unavailable. Your edits are preserved. Reopen the app and try again.": "照片暂时不可用。你的编辑已保留，请重新打开 App 后重试。",
+  "Sign in again to continue. Your edits are preserved.": "请重新登录以继续。你的编辑已保留。"
 }
