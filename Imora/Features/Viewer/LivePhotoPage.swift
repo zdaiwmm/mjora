@@ -17,7 +17,7 @@ struct LivePhotoPage: View {
     let onImage: (UIImage) -> Void
     let ownsLaunchMedia: Bool
     let launchMediaBridge: AssetViewerLaunchMediaBridge
-    let openingMediaImage: UIImage?
+    let openingMediaSurface: CommittedGridSurface?
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
     let onDoubleTapZoomChanged: (Bool) -> Void
@@ -64,7 +64,7 @@ struct LivePhotoPage: View {
             .modifier(
                 AssetViewerLaunchMediaModifier(
                     asset: asset,
-                    openingImage: openingMediaImage,
+                    openingSurface: openingMediaSurface,
                     ownsLaunchMedia: ownsLaunchMedia,
                     bridge: launchMediaBridge
                 )

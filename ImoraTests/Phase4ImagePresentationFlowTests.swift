@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
 import SwiftUI
+import CryptoKit
 import Nuke
 import Photos
 import Synchronization
@@ -876,6 +877,212 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             releaseDenial(); _ = await denied.value
             XCTAssertEqual(try pixel(x: publicX), publicBefore)
         } catch { newGridGate.signal(); releaseDenial(); await finish(); throw error }
+        await finish()
+    }
+
+    func testViewerTransitionAutomaticallyClearsRetiredPrivateSurface() async throws {
+        let heldStatus = Mutex<CheckedContinuation<Void, Never>?>(nil), denialReached = Mutex(false)
+        let oldGate = DispatchSemaphore(value: 0), newGate = DispatchSemaphore(value: 0)
+        let oldViewerStarted = Mutex(false), oldPreviewReturned = Mutex(false), newStarted = Mutex(false)
+        let e2PreviewStarted = Mutex(false), e2PreviewReads = Mutex(0), wireOK = Mutex(true)
+        let reads = Mutex(0), epoch = Mutex(1)
+        let deadline = Mutex("2099-01-01T00:00:00Z"), userID = "viewer-private-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let payload = Data(#"{"id":["same-id"],"ownerId":["alice"],"isImage":[true],"isFavorite":[false],"isTrashed":[false],"visibility":["locked"],"thumbhash":["revision-one"],"fileCreatedAt":["2023-11-14T00:00:00.000Z"],"localOffsetHours":[0],"duration":[null],"livePhotoVideoId":[null],"ratio":[1]}"#.utf8)
+        func bytes(_ color: UIColor, pixels: Int) throws -> Data {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let size = CGSize(width: pixels, height: pixels)
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+                color.setFill(); context.fill(CGRect(origin: .zero, size: size))
+            }
+            return try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+        }
+        let red = try bytes(.red, pixels: 640), blue = try bytes(.blue, pixels: 640)
+        let redPreview = try bytes(.red, pixels: 2048), bluePreview = try bytes(.blue, pixels: 2048)
+        let redHash = SHA256.hash(data: red).map { String(format: "%02x", $0) }.joined()
+        let blueHash = SHA256.hash(data: blue).map { String(format: "%02x", $0) }.joined()
+        let redPreviewHash = SHA256.hash(data: redPreview).map { String(format: "%02x", $0) }.joined()
+        let bluePreviewHash = SHA256.hash(data: bluePreview).map { String(format: "%02x", $0) }.joined()
+        print("TASK18_TRACE fixture-red=\(redHash) fixture-blue=\(blueHash) thumbnail=640x640 preview=2048x2048 blue-preview=\(bluePreviewHash) bytes=\(bluePreview.count)")
+        func releaseOld() { for _ in 0..<12 { oldGate.signal() } }
+        func releaseNew() { for _ in 0..<12 { newGate.signal() } }
+        func releaseGates() { releaseOld(); releaseNew() }
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path == "/api/auth/status" {
+                return .init(body: Data("{\"isElevated\":true,\"pinCode\":true,\"password\":true,\"pinExpiresAt\":\"\(deadline.withLock { $0 })\"}".utf8))
+            }
+            if request.path.hasPrefix("/api/timeline/buckets?") { return .init(body: Data(#"[{"timeBucket":"2023-11-01T00:00:00Z","count":1}]"#.utf8)) }
+            if request.path.hasPrefix("/api/timeline/bucket?") { return .init(body: payload) }
+            if request.path.contains("/thumbnail") {
+                if request.path.contains("imora-private-producer") || request.path.contains("imora-session")
+                    || request.headers["authorization"] != "Bearer viewer-private" { wireOK.withLock { $0 = false } }
+                let read = reads.withLock { $0 += 1; return $0 }
+                let kind = request.path.contains("size=preview") ? "preview" : "thumbnail"
+                if read == 1 {
+                    print("TASK18_TRACE server-return read=\(read) kind=\(kind) epoch=1 sha256=\(redHash)")
+                    return .init(headers: ["Content-Type": "image/jpeg"], body: red)
+                }
+                if epoch.withLock({ $0 }) == 1 {
+                    oldViewerStarted.withLock { $0 = true }
+                    _ = oldGate.wait(timeout: .now() + 25)
+                    if kind == "preview" { oldPreviewReturned.withLock { $0 = true } }
+                    let body = kind == "preview" ? redPreview : red
+                    print("TASK18_TRACE server-return read=\(read) kind=\(kind) epoch=1 sha256=\(kind == "preview" ? redPreviewHash : redHash)")
+                    return .init(headers: ["Content-Type": "image/jpeg"], body: body)
+                }
+                newStarted.withLock { $0 = true }
+                if kind == "preview" {
+                    e2PreviewStarted.withLock { $0 = true }
+                    e2PreviewReads.withLock { $0 += 1 }
+                }
+                _ = newGate.wait(timeout: .now() + 25)
+                let body = kind == "preview" ? bluePreview : blue
+                print("TASK18_TRACE server-return read=\(read) kind=\(kind) epoch=2 sha256=\(kind == "preview" ? bluePreviewHash : blueHash)")
+                return .init(headers: ["Content-Type": "image/jpeg"], body: body)
+            }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { releaseGates(); server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "viewer-private", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), locked = try XCTUnwrap(session.lockedFolder)
+        func releaseDenial() { heldStatus.withLock { let held = $0; $0 = nil; return held }?.resume() }
+        defer { releaseDenial(); client.setInvalidStatusFixtureHook(nil) }
+        var value = asset(); value.visibility = .locked
+        ImageLoader.shared.markEphemeral(assetIDs: [value.id]); await locked.refreshStatus()
+        let model = TimelineModel(filter: TimelineFilter(visibility: .locked)); model.attach(client); await model.load()
+        let window = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow })
+        let rootController = try XCTUnwrap(window.rootViewController)
+        let parent = UIViewController()
+        parent.view.backgroundColor = .darkGray
+        parent.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            rootController.present(parent, animated: false) { continuation.resume() }
+        }
+        let tile = TimelineTileView(frame: .init(x: 40, y: 150, width: 132, height: 132)), registry = AssetTileRegistry()
+        parent.view.addSubview(tile)
+        tile.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+        parent.view.layoutIfNeeded() // Initial fixture layout only.
+        let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        for _ in 0..<200 {
+            if tile.checkpointSurface(for: key, client: client) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let oldSurface = try XCTUnwrap(tile.checkpointSurface(for: key, client: client))
+        let presentation = ViewerPresentation(), route = try XCTUnwrap(presentation.makeRoute(assets: [value], initialIndex: 0))
+        var didPresent = false
+        let viewer = AssetViewerHostingController(route: route, startsAsContextPreview: false, previewBounds: window.bounds.size,
+            session: session, sourceRegistry: registry, album: nil, personID: nil,
+            willPresent: { presentation.activate($0, presentsCover: false) }, didPresent: { _ in didPresent = true },
+            didDismiss: { presentation.complete($0) }, onChange: { _ in })
+        func finish() async {
+            releaseGates(); releaseDenial()
+            viewer.requestDismissal()
+            for _ in 0..<200 {
+                if parent.presentedViewController == nil { break }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            tile.unregister(); tile.removeFromSuperview()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                parent.dismiss(animated: false) { continuation.resume() }
+            }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        func centerPixel(xOffset: CGFloat = 0, evidence: String? = nil) throws -> [UInt8] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            }
+            if let evidence, let bytes = image.pngData() {
+                let attachment = XCTAttachment(data: bytes, uniformTypeIdentifier: "public.png")
+                attachment.name = evidence; attachment.lifetime = .keepAlways; add(attachment)
+            }
+            let cg = try XCTUnwrap(image.cgImage)
+            let pixelImage = try XCTUnwrap(cg.cropping(to: CGRect(x: (window.bounds.midX + xOffset).rounded(.down), y: window.bounds.midY.rounded(.down), width: 1, height: 1)))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            pixel.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(pixelImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return pixel
+        }
+        do {
+            viewer.presentDirectly(from: parent)
+            for _ in 0..<250 {
+                if didPresent && oldViewerStarted.withLock({ $0 }) {
+                    let image = try centerPixel()
+                    if image[0] > 180 && image[2] < 80 { break }
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(didPresent); XCTAssertTrue(oldViewerStarted.withLock { $0 })
+            let opening = try centerPixel(evidence: "viewer-private-opening")
+            XCTAssertGreaterThan(opening[0], 180, "The real viewer must show the bound red opening surface")
+            XCTAssertLessThan(opening[2], 80)
+            client.setInvalidStatusFixtureHook {
+                await withCheckedContinuation { continuation in
+                    heldStatus.withLock { $0 = continuation }; denialReached.withLock { $0 = true }
+                }
+            }
+            deadline.withLock { $0 = "not-a-date" }
+            let denied = Task { try? await client.authStatus() }
+            for _ in 0..<200 {
+                if denialReached.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard denialReached.withLock({ $0 }) else { XCTFail("The invalid acceptance was not held"); throw CocoaError(.fileReadUnknown) }
+            client.setInvalidStatusFixtureHook(nil); epoch.withLock { $0 = 2 }
+            deadline.withLock { $0 = "2099-01-01T00:00:00Z" }
+            _ = try await client.authStatus()
+            let newLease = try XCTUnwrap(client.lockedMediaLease)
+            XCTAssertFalse(oldSurface.isCurrent())
+            for _ in 0..<200 {
+                let image = try centerPixel()
+                if !(image[0] > 180 && image[2] < 80) && newStarted.withLock({ $0 }) && e2PreviewStarted.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let pending = try centerPixel(evidence: "viewer-private-e2-held")
+            XCTAssertFalse(pending[0] > 180 && pending[2] < 80,
+                "The viewer must automatically remove its retired E1 transition pixels while E2 is held")
+            XCTAssertTrue(newStarted.withLock { $0 }, "The viewer or mounted tile must start fresh E2 work")
+            XCTAssertTrue(e2PreviewStarted.withLock { $0 }, "The healthy viewer must start an independent E2 preview endpoint while E1 is held")
+            let previewURL = client.thumbnailURL(assetID: value.id, size: "preview", cacheKey: value.thumbhash)
+            let peer = Task { try await ImageLoader.shared.image(for: previewURL, targetPixelSize: pagePixelSize) }
+            defer { peer.cancel() }
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(e2PreviewReads.withLock { $0 }, 1, "Two same-lease preview consumers must share one real endpoint transfer")
+            releaseOld()
+            for _ in 0..<200 {
+                if oldPreviewReturned.withLock({ $0 }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(oldPreviewReturned.withLock { $0 }, "The held E1 preview must actually return before E2")
+            XCTAssertTrue(newLease.isCurrent)
+            releaseDenial(); _ = await denied.value
+            XCTAssertTrue(newLease.isCurrent, "Delayed E1 cleanup must not revoke E2")
+            releaseNew()
+            let peerImage = try await peer.value
+            XCTAssertEqual(peerImage.cgImage?.width, 2048)
+            XCTAssertEqual(peerImage.cgImage?.height, 2048)
+            XCTAssertTrue(wireOK.withLock { $0 }, "Only the original authenticated endpoint may go on the wire")
+            for _ in 0..<200 {
+                let image = try centerPixel()
+                if image[2] > 180 && image[0] < 80 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let photo = try centerPixel(xOffset: 80)
+            XCTAssertGreaterThan(photo[2], 180, "The actual viewer photo must contain fresh blue E2 pixels")
+            XCTAssertLessThan(photo[0], 80)
+            let renewed = try centerPixel(evidence: "viewer-private-e2-released")
+            print("TASK18_VIEWER pixels=\(renewed) viewerMounted=\(viewer.view.window != nil) presented=\(parent.presentedViewController === viewer) reads=\(reads.withLock { $0 }) lease=\(client.lockedMediaLease != nil) tileCurrent=\(tile.checkpointSurface(for: key, client: client) != nil)")
+            XCTAssertGreaterThan(renewed[2], 180, "The actual viewer center must contain fresh E2 pixels")
+            XCTAssertLessThan(renewed[0], 80, "A healthy E2 viewer must not show an unexpected white retry glyph")
+        } catch { await finish(); throw error }
         await finish()
     }
 

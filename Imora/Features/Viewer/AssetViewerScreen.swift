@@ -866,7 +866,7 @@ struct AssetViewerScreen: View {
     let usesExternalBackdrop: Bool
     let mediaTopSafeAreaInset: CGFloat?
     let mediaBottomSafeAreaInset: CGFloat?
-    let openingMediaImage: UIImage?
+    let openingMediaSurface: CommittedGridSurface?
     /// set when the grid behind is an album, which adds removal to the menu.
     let album: AlbumContext?
     /// set by album grids the signed-in user owns, so the photo on screen can
@@ -979,7 +979,7 @@ struct AssetViewerScreen: View {
         usesExternalBackdrop: Bool = false,
         mediaTopSafeAreaInset: CGFloat? = nil,
         mediaBottomSafeAreaInset: CGFloat? = nil,
-        openingMediaImage: UIImage? = nil,
+        openingMediaSurface: CommittedGridSurface? = nil,
         zoomCommandBridge: AssetViewerZoomCommandBridge? = nil,
         album: AlbumContext? = nil,
         onSetAlbumCover: ((String) async -> Bool)? = nil,
@@ -1009,7 +1009,7 @@ struct AssetViewerScreen: View {
         self.usesExternalBackdrop = usesExternalBackdrop
         self.mediaTopSafeAreaInset = mediaTopSafeAreaInset
         self.mediaBottomSafeAreaInset = mediaBottomSafeAreaInset
-        self.openingMediaImage = openingMediaImage
+        self.openingMediaSurface = openingMediaSurface
         _zoomCommandBridge = State(
             initialValue: zoomCommandBridge ?? AssetViewerZoomCommandBridge()
         )
@@ -1020,7 +1020,7 @@ struct AssetViewerScreen: View {
                     loadsViewerContent: loadsViewerContent,
                     usesExternalBackdrop: usesExternalBackdrop,
                     isContextPreview: isContextPreview,
-                    hasOpeningImage: openingMediaImage != nil
+                    hasOpeningImage: openingMediaSurface != nil
                 )
             )
         )
@@ -1821,7 +1821,7 @@ struct AssetViewerScreen: View {
                         stylesInset: stylesMediaInset,
                         openingAssetID: openingAssetID,
                         launchMediaBridge: launchMediaBridge,
-                        openingMediaImage: openingMediaImage,
+                        openingMediaSurface: openingMediaSurface,
                         onLaunchMediaReady: {
                             launchMediaReady = true
                             onLaunchMediaReady()
@@ -3934,7 +3934,7 @@ private struct AssetPager: View {
     let stylesInset: Bool
     let openingAssetID: String?
     let launchMediaBridge: AssetViewerLaunchMediaBridge
-    let openingMediaImage: UIImage?
+    let openingMediaSurface: CommittedGridSurface?
     let onLaunchMediaReady: () -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
@@ -3980,7 +3980,7 @@ private struct AssetPager: View {
         stylesInset: Bool,
         openingAssetID: String?,
         launchMediaBridge: AssetViewerLaunchMediaBridge,
-        openingMediaImage: UIImage?,
+        openingMediaSurface: CommittedGridSurface?,
         onLaunchMediaReady: @escaping () -> Void,
         allowsDoubleTapZoom: Bool,
         onMediaTap: @escaping () -> Void,
@@ -4008,7 +4008,7 @@ private struct AssetPager: View {
         self.stylesInset = stylesInset
         self.openingAssetID = openingAssetID
         self.launchMediaBridge = launchMediaBridge
-        self.openingMediaImage = openingMediaImage
+        self.openingMediaSurface = openingMediaSurface
         self.onLaunchMediaReady = onLaunchMediaReady
         self.allowsDoubleTapZoom = allowsDoubleTapZoom
         self.onMediaTap = onMediaTap
@@ -4049,7 +4049,7 @@ private struct AssetPager: View {
                             openingAssetID: openingAssetID
                         ),
                         launchMediaBridge: launchMediaBridge,
-                        openingMediaImage: openingMediaImage,
+                        openingMediaSurface: openingMediaSurface,
                         onMediaReady: {
                             guard asset.id == openingAssetID else { return }
                             onLaunchMediaReady()
@@ -4199,18 +4199,21 @@ final class AssetViewerLaunchMediaBridge {
 }
 
 struct AssetViewerLaunchMediaModifier: ViewModifier {
+    @Environment(SessionStore.self) private var session: SessionStore
     let asset: Asset
-    let openingImage: UIImage?
+    let openingSurface: CommittedGridSurface?
     let ownsLaunchMedia: Bool
     let bridge: AssetViewerLaunchMediaBridge
 
     func body(content: Content) -> some View {
+        let _ = ImageLoadRecovery.shared.generation
+        let _ = asset.visibility == .locked ? session.lockedFolder?.publicationGeneration : nil
         ZStack {
             content
-            if ownsLaunchMedia, bridge.isVisible, let openingImage {
+            if ownsLaunchMedia, bridge.isVisible, let openingSurface, openingSurface.isCurrent() {
                 AssetViewerLaunchMedia(
                     asset: asset,
-                    openingImage: openingImage
+                    openingImage: openingSurface.image
                 )
                 .allowsHitTesting(false)
                 .transition(.opacity)
@@ -4248,7 +4251,7 @@ private struct AssetPage: View {
     let editCacheKey: String?
     let ownsLaunchMedia: Bool
     let launchMediaBridge: AssetViewerLaunchMediaBridge
-    let openingMediaImage: UIImage?
+    let openingMediaSurface: CommittedGridSurface?
     let onMediaReady: () -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
@@ -4316,7 +4319,7 @@ private struct AssetPage: View {
                 onImage: onImage,
                 ownsLaunchMedia: ownsLaunchMedia,
                 launchMediaBridge: launchMediaBridge,
-                openingMediaImage: openingMediaImage,
+                openingMediaSurface: openingMediaSurface,
                 allowsDoubleTapZoom: allowsDoubleTapZoom,
                 onMediaTap: onMediaTap,
                 onDoubleTapZoomChanged: onDoubleTapZoomChanged,
@@ -4336,7 +4339,7 @@ private struct AssetPage: View {
                 onImage: onImage,
                 ownsLaunchMedia: ownsLaunchMedia,
                 launchMediaBridge: launchMediaBridge,
-                openingMediaImage: openingMediaImage,
+                openingMediaSurface: openingMediaSurface,
                 allowsDoubleTapZoom: allowsDoubleTapZoom,
                 onMediaTap: onMediaTap,
                 onDoubleTapZoomChanged: onDoubleTapZoomChanged,
@@ -4406,7 +4409,7 @@ private struct AssetPage: View {
     private var launchMediaModifier: AssetViewerLaunchMediaModifier {
         AssetViewerLaunchMediaModifier(
             asset: asset,
-            openingImage: openingMediaImage,
+            openingSurface: openingMediaSurface,
             ownsLaunchMedia: ownsLaunchMedia,
             bridge: launchMediaBridge
         )

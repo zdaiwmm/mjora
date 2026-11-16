@@ -21,11 +21,13 @@ private var assetViewerChromeTransitionDuration: TimeInterval {
 
 @MainActor
 private func makeAssetViewerZoomView(
-    image: UIImage,
+    surface: CommittedGridSurface,
+    session: SessionStore?,
+    isPrivate: Bool,
     frame: CGRect,
     cornerRadius: CGFloat
 ) -> UIImageView {
-    let imageView = UIImageView(image: image)
+    let imageView = AssetViewerBoundImageView(surface: surface, session: session, isPrivate: isPrivate)
     imageView.frame = frame
     imageView.contentMode = .scaleAspectFill
     imageView.clipsToBounds = true
@@ -34,16 +36,51 @@ private func makeAssetViewerZoomView(
     return imageView
 }
 
+/// Transition overlays can outlive both a grid layout pass and the viewer.
+/// Keep the proof captured with the original pixels, and never revive it after
+/// it has been retired by content, permission or private-lease changes.
+@MainActor
+private final class AssetViewerBoundImageView: UIImageView {
+    private let surface: CommittedGridSurface
+    private weak var session: SessionStore?
+    private let isPrivate: Bool
+    private var retired: Bool
+
+    init(surface: CommittedGridSurface, session: SessionStore?, isPrivate: Bool) {
+        self.surface = surface
+        self.session = session
+        self.isPrivate = isPrivate
+        retired = !surface.isCurrent()
+        super.init(image: retired ? nil : surface.image)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func updateProperties() {
+        super.updateProperties()
+        _ = ImageLoadRecovery.shared.generation
+        if isPrivate { _ = session?.lockedFolder?.publicationGeneration }
+        if !surface.isCurrent() { retired = true }
+        if retired { image = nil }
+    }
+}
+
 @MainActor
 private final class AssetViewerZoomSource {
     weak var view: UIView?
-    let image: UIImage
+    weak var session: SessionStore?
+    let surface: CommittedGridSurface
+    let isPrivate: Bool
+    var image: UIImage { surface.image }
     let frame: CGRect
     private let originalAlpha: CGFloat
 
-    init(view: UIView, image: UIImage, frame: CGRect) {
+    init(view: UIView, surface: CommittedGridSurface, session: SessionStore, isPrivate: Bool, frame: CGRect) {
         self.view = view
-        self.image = image
+        self.surface = surface
+        self.session = session
+        self.isPrivate = isPrivate
         self.frame = frame
         originalAlpha = view.alpha
     }
@@ -59,7 +96,9 @@ private final class AssetViewerZoomSource {
 
     func makeZoomView(frame: CGRect? = nil, cornerRadius: CGFloat? = nil) -> UIImageView {
         makeAssetViewerZoomView(
-            image: image,
+            surface: surface,
+            session: session,
+            isPrivate: isPrivate,
             frame: frame ?? self.frame,
             cornerRadius: cornerRadius ?? view?.layer.cornerRadius ?? 0
         )
@@ -608,21 +647,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
             return (animator, source, zoomView, nil)
         }
 
-        guard let zoomView = controller?.makeDetachedTransitionZoomView(frame: mediaFrame) else {
-            return fallbackDismissal(from: fromView, duration: duration)
-        }
-        controller?.setTransitionMediaVisible(false)
-        container.addSubview(zoomView)
-        let animator = UIViewPropertyAnimator(duration: duration, curve: .easeOut) {
-            fromView.alpha = 0
-            zoomView.alpha = 0
-            zoomView.transform = CGAffineTransform(
-                translationX: 0,
-                y: assetViewerDismissalDistance(for: container.bounds.height) * 0.32
-            )
-            .scaledBy(x: 0.94, y: 0.94)
-        }
-        return (animator, nil, zoomView, nil)
+        return fallbackDismissal(from: fromView, duration: duration)
     }
 
     private func fallbackDismissal(
@@ -987,70 +1012,11 @@ final class AssetTileRegistry {
         }
         let frame = view.convert(view.bounds, to: container)
         guard frame.intersects(container.bounds) else { return nil }
-        guard let image = cachedImage(
-            for: tile.asset,
-            targetPixelSize: tile.targetPixelSize,
-            session: session
-        )
-            ?? renderedImage(of: view)
-        else { return nil }
-        return AssetViewerZoomSource(view: view, image: image, frame: frame)
-    }
-
-    private func cachedImage(
-        for asset: Asset,
-        targetPixelSize: CGFloat,
-        session: SessionStore
-    ) -> UIImage? {
-        let pairedLocalID = asset.localIdentifier
-            ?? session.backup?.localIdentifierByRemoteId[asset.id]
-        if let pairedLocalID {
-            // the grid's own render comes first: uncropped, exactly what the
-            // tile is showing, so the page opens on the same picture.
-            if let image = LocalImageLoader.shared.cachedImage(
-                localIdentifier: pairedLocalID,
-                targetPixelSize: targetPixelSize,
-                contentMode: DeviceTileRender.contentMode,
-                coversTarget: DeviceTileRender.coversTile
-            ) {
-                return image
-            }
-            for size in [targetPixelSize, 640] {
-                if let image = LocalImageLoader.shared.cachedImage(
-                    localIdentifier: pairedLocalID,
-                    targetPixelSize: size,
-                    contentMode: .aspectFit
-                ) {
-                    return image
-                }
-            }
-            // a tile that only has its preview yet still hands over an
-            // uncropped picture.
-            if let preview = LocalImageLoader.shared.cachedPreview(localIdentifier: pairedLocalID),
-               Self.aspectMatches(preview, asset: asset) {
-                return preview
-            }
-            // the render has left the cache: ask photokit for the stored
-            // thumbnail right now rather than snapshot the square tile, which
-            // is the crop the viewer would then visibly zoom out of.
-            if let image = LocalImageLoader.shared.immediateImage(
-                localIdentifier: pairedLocalID,
-                targetPixelSize: targetPixelSize,
-                contentMode: DeviceTileRender.contentMode,
-                coversTarget: DeviceTileRender.coversTile
-            ) {
-                return image
-            }
-        }
-        guard let client = session.client else { return nil }
-        let url = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
-        if let image = ImageLoader.shared.cachedImage(
-            for: url,
-            targetPixelSize: targetPixelSize
-        ) {
-            return image
-        }
-        return ImageLoader.shared.cachedImage(for: url, targetPixelSize: 640)
+        guard let client = session.client, let tileView = view as? TimelineTileView else { return nil }
+        let key = MediaPresentationCoordinator.gridKey(asset: tile.asset, client: client, pixels: tile.targetPixelSize)
+        guard let surface = tileView.checkpointSurface(for: key, client: client), surface.isCurrent() else { return nil }
+        return AssetViewerZoomSource(view: view, surface: surface, session: session,
+            isPrivate: tile.asset.visibility == .locked, frame: frame)
     }
 
     fileprivate static func aspectMatches(_ image: UIImage, asset: Asset) -> Bool {
@@ -1059,17 +1025,7 @@ final class AssetTileRegistry {
         return abs(ratio - asset.ratio) <= asset.ratio * 0.03
     }
 
-    private func renderedImage(of view: UIView) -> UIImage? {
-        guard view.bounds.width > 0, view.bounds.height > 0 else { return nil }
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = max(1, view.traitCollection.displayScale)
-        format.opaque = view.isOpaque
-        return UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { context in
-            if !view.drawHierarchy(in: view.bounds, afterScreenUpdates: false) {
-                view.layer.render(in: context.cgContext)
-            }
-        }
-    }
+
 }
 
 @MainActor
@@ -1088,7 +1044,7 @@ final class AssetViewerDisplayState {
     var transitionMediaVisible = false
     var chromeVisible = true
     var mediaSafeAreaInsets: UIEdgeInsets?
-    var openingMediaImage: UIImage?
+    var openingMediaSurface: CommittedGridSurface?
     let zoomCommandBridge = AssetViewerZoomCommandBridge()
     /// whether the media is unobstructed. while information is open, pans
     /// belong to its sheet rather than the viewer dismissal.
@@ -1375,16 +1331,15 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             for: displayState.currentAssetID,
             in: container
         ) else { return nil }
-        let image = cachedTransitionImage() ?? source.image
+        guard source.surface.isCurrent() else { return nil }
         if phase == .presenting,
            displayState.currentAssetID == route.sourceAssetID,
-           displayState.openingMediaImage == nil,
+           displayState.openingMediaSurface == nil,
            let asset = transitionAsset,
-           AssetTileRegistry.aspectMatches(image, asset: asset) {
-            displayState.openingMediaImage = image
+           AssetTileRegistry.aspectMatches(source.image, asset: asset) {
+            displayState.openingMediaSurface = source.surface
         }
-        guard let sourceView = source.view else { return source }
-        return AssetViewerZoomSource(view: sourceView, image: image, frame: source.frame)
+        return source
     }
 
     /// `imageAspectRatio` is the picture the zoom view actually carries. it
@@ -1682,44 +1637,6 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         return route.assets[safe: index]
     }
 
-    private func cachedTransitionImage() -> UIImage? {
-        guard let asset = transitionAsset else { return nil }
-        let pairedLocalID = asset.localIdentifier
-            ?? session.backup?.localIdentifierByRemoteId[asset.id]
-        if let pairedLocalID {
-            for targetPixelSize in [pagePixelSize, 1280, 640] {
-                if let image = LocalImageLoader.shared.cachedImage(
-                    localIdentifier: pairedLocalID,
-                    targetPixelSize: targetPixelSize,
-                    contentMode: .aspectFit
-                ) {
-                    return image
-                }
-            }
-        }
-        guard let client = session.client else { return nil }
-        let previewURL = client.thumbnailURL(
-            assetID: asset.id,
-            size: "preview",
-            cacheKey: asset.thumbhash
-        )
-        for targetPixelSize in [pagePixelSize, 1280, 640] {
-            if let image = ImageLoader.shared.cachedImage(
-                for: previewURL,
-                targetPixelSize: targetPixelSize
-            ) {
-                return image
-            }
-        }
-        let thumbnailURL = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
-        return ImageLoader.shared.cachedImage(for: thumbnailURL, targetPixelSize: 640)
-    }
-
-    fileprivate func makeDetachedTransitionZoomView(frame: CGRect) -> UIImageView? {
-        guard let image = cachedTransitionImage() else { return nil }
-        return makeAssetViewerZoomView(image: image, frame: frame, cornerRadius: 0)
-    }
-
     fileprivate var isReadyForSwipeDismissal: Bool {
         phase == .presented && !dismissalRequested && swipeDismissal == nil
     }
@@ -1764,7 +1681,6 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
            let mediaFrame = transitionMediaFrame(in: container) {
             let source = transitionZoomSource(in: container)
             let zoomView = source?.makeZoomView(frame: mediaFrame, cornerRadius: 0)
-                ?? makeDetachedTransitionZoomView(frame: mediaFrame)
             guard let zoomView else {
                 let chromeHost: UIView = view.window ?? container
                 let chromeSnapshot = openingChromeOverlay == nil
@@ -1966,7 +1882,6 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         } else if let mediaFrame = transitionMediaFrame(in: window) {
             source = transitionZoomSource(in: window)
             zoomView = source?.makeZoomView(frame: mediaFrame, cornerRadius: 0)
-                ?? makeDetachedTransitionZoomView(frame: mediaFrame)
             zoomFrame = mediaFrame
             source?.hide()
             targetFrame = source?.frame
@@ -2401,7 +2316,7 @@ private struct AssetViewerHostRoot: View {
                     usesExternalBackdrop: true,
                     mediaTopSafeAreaInset: displayState.mediaSafeAreaInsets?.top,
                     mediaBottomSafeAreaInset: displayState.mediaSafeAreaInsets?.bottom,
-                    openingMediaImage: displayState.openingMediaImage,
+                    openingMediaSurface: displayState.openingMediaSurface,
                     zoomCommandBridge: displayState.zoomCommandBridge,
                     album: album,
                     onSetAlbumCover: onSetAlbumCover,

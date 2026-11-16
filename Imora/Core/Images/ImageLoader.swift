@@ -6,6 +6,8 @@ import UIKit
 private nonisolated struct MediaRequestBinding: Sendable {
     static let userInfoKey = ImageRequest.UserInfoKey("imora.contentBinding")
     let key: MediaDisplayKeyV1
+    /// Original session-scoped endpoint, before the local Nuke work suffix.
+    let endpointURL: URL
     let requiresElevation: Bool
     let privateLease: LockedMediaLease?
     var isCurrent: Bool { key.isCurrentContent && (!requiresElevation || privateLease?.isCurrent == true) }
@@ -555,14 +557,27 @@ nonisolated final class ImageLoader: Sendable {
             sourceRevision: revision, presentationRevision: "committed:\(revision)", variant: .grid,
             pixelBucket: max(1, Int(pixels.rounded(.up))), fitMode: "fit-cover", orientationRevision: "source", colorProfile: "source",
             contentGeneration: namespace.generation, visibilityPolicy: namespace.visibilityPolicy),
-            requiresElevation: requiresElevation, privateLease: requiresElevation ? client.lockedMediaLease : nil)
+            endpointURL: url, requiresElevation: requiresElevation, privateLease: requiresElevation ? client.lockedMediaLease : nil)
     }
 
     /// decoding straight to a thumbnail keeps memory flat while scrolling -
     /// the full-size bitmap never exists.
     private func request(for url: URL, targetPixelSize: CGFloat) -> ImageRequest {
-        var request = ImageRequest(url: url)
         let binding = binding(for: url, pixels: targetPixelSize)
+        var workURL = url
+        if let binding, binding.requiresElevation {
+            // Nuke keys its original-data task by the initializer URL, not
+            // imageID. This local fragment separates E1/E2 work before Nuke
+            // coalesces it; the authenticated endpoint below remains unchanged.
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                return ImageRequest(url: nil)
+            }
+            let sessionFragment = components.fragment ?? ""
+            components.fragment = "\(sessionFragment)&imora-private-producer=\(binding.privateLease?.identity ?? "denied")"
+            guard let scoped = components.url else { return ImageRequest(url: nil) }
+            workURL = scoped
+        }
+        var request = ImageRequest(url: workURL)
         if let client = authorization.client.withLock({ $0 }),
            (try? client.authorizedRequest(url: url)) != nil {
             if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
@@ -673,20 +688,22 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
     /// nuke asks before every disk read and write; nil keeps a locked asset
     /// memory only.
     nonisolated func dataCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any DataCaching)? {
-        guard let url = request.url, let client = client.withLock({ $0 }),
+        let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding
+        guard let url = binding?.endpointURL ?? request.url, let client = client.withLock({ $0 }),
               (try? client.authorizedRequest(url: url)) != nil,
-              (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { return nil }
-        if (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.requiresElevation == true { return nil }
-        if let id = Self.assetID(in: request.url), ephemeralAssetIDs.withLock({ $0.contains(id) }) {
+              binding?.isCurrent != false else { return nil }
+        if binding?.requiresElevation == true { return nil }
+        if let id = Self.assetID(in: url), ephemeralAssetIDs.withLock({ $0.contains(id) }) {
             return nil
         }
         return pipeline.configuration.dataCache
     }
 
     nonisolated func imageCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any ImageCaching)? {
-        guard let url = request.url, let client = client.withLock({ $0 }),
+        let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding
+        guard let url = binding?.endpointURL ?? request.url, let client = client.withLock({ $0 }),
               (try? client.authorizedRequest(url: url)) != nil,
-              (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { return nil }
+              binding?.isCurrent != false else { return nil }
         return pipeline.configuration.imageCache
     }
 
@@ -705,11 +722,10 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
         urlRequest: URLRequest,
         pipeline: ImagePipeline
     ) async throws -> URLRequest {
-        guard (request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding)?.isCurrent != false else { throw CancellationError() }
-        var urlRequest = urlRequest
-        urlRequest.url = urlRequest.url.map(ServerRoute.resolve)
-        guard let client = client.withLock({ $0 }), let url = urlRequest.url else { throw ServerTrustError.sessionExpired }
-        return try client.authorizedRequest(url: url)
+        let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding
+        guard binding?.isCurrent != false else { throw CancellationError() }
+        guard let client = client.withLock({ $0 }), let url = binding?.endpointURL ?? urlRequest.url else { throw ServerTrustError.sessionExpired }
+        return try client.authorizedRequest(url: ServerRoute.resolve(url))
     }
 
     /// a thumbnail that found nobody at the local address moves the rest of
