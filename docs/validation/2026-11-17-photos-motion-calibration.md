@@ -44,6 +44,7 @@
 ## 验证与发布
 
 - 动效初版完整原生单元/集成回归：644 项、2 项环境限制跳过、0 失败，`unit-final.xcresult`。跳过项为需另次进程运行的草稿恢复阶段和模拟器不提供的真机 Data Protection 元数据。
+- 合入已发布回忆及后台备份主线后的最终完整回归：667 项、3 项跳过、0 失败，`/Users/achilles/mjora/execution/private/photos-motion-20261117/unit-complete-release.xcresult`。额外跳过项为绑定另一专用模拟器的回忆夹具；回忆播放状态测试正常通过。运行中的唯一变动为验证文档；测试实现 `bd4853b` 与公开动效分支 `091e263` 的 App、Shared、测试源码相同。
 - 五项 UI 验收分批通过：重复双指缩放、编辑历史/比例/保存/还原、详情立即交互/图片条/搜索/年/月/地图、精选集选择底栏、实际系统 Reduce Motion。
 - `ui-verified.xcresult` 中的编辑、缩放、Reduce Motion 三条用例通过；同批另外两条失败不计通过。来源与就绪前提明确后，精选集选择在 `ui-readiness.xcresult` 通过，综合详情流程在 `ui-reboot-verified.xcresult` 通过，保留原一秒内出现详情控件的断言。
 - 综合详情验收使用项目已有的可选像素探针，选择当前、分辨率覆盖的真实照片；不使用空白、重试或占位表面作为“一秒打开”的起点。探针不修改 App 就绪条件。
