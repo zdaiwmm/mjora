@@ -21,6 +21,7 @@ struct RemoteImage: View {
     var animatesLoads = true
     var onImage: ((UIImage) -> Void)?
     var onReady: (() -> Void)?
+    var onBoundImage: ((BoundRemoteImage) -> Void)?
 
     @State private var image: KeyedImage?
     @State private var placeholder: KeyedImage?
@@ -31,6 +32,7 @@ struct RemoteImage: View {
     private struct KeyedImage {
         let key: String
         let image: UIImage
+        var bound: BoundRemoteImage? = nil
     }
 
     private var requestKey: String {
@@ -62,6 +64,14 @@ struct RemoteImage: View {
         if let ready = readyImage(key: key) { return ready }
         if allowsExternalPlaceholder, let placeholderImage { return placeholderImage }
         if let placeholder, placeholder.key == key { return placeholder.image }
+        return nil
+    }
+
+    private func readyBoundImage(key: String) -> BoundRemoteImage? {
+        if let image, image.key == key { return image.bound }
+        if let cached = ImageLoader.shared.cachedBoundImage(for: url, targetPixelSize: targetPixelSize) { return cached }
+        if let fallbackImage, fallbackImage.key == key { return fallbackImage.bound }
+        if let fallbackURL { return ImageLoader.shared.cachedBoundImage(for: fallbackURL, targetPixelSize: fallbackPixelSize) }
         return nil
     }
 
@@ -101,6 +111,10 @@ struct RemoteImage: View {
                     // own, so without this the slow-path fade below lands as
                     // a hard cut when the sharper render arrives.
                     .contentTransition(.opacity)
+                    .onChange(of: ObjectIdentifier(displayImage), initial: true) { _, _ in
+                        guard let bound = readyBoundImage(key: key), bound.image === displayImage, bound.isCurrent else { return }
+                        onBoundImage?(bound)
+                    }
             } else {
                 Color(.secondarySystemFill)
             }
@@ -122,7 +136,8 @@ struct RemoteImage: View {
             guard mayPresent else { return }
             guard image?.key != key else { return }
             if upgradeURL == nil, let cached = ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize) {
-                image = KeyedImage(key: requestKey, image: cached)
+                let bound = onBoundImage == nil ? nil : ImageLoader.shared.cachedBoundImage(for: url, targetPixelSize: targetPixelSize)
+                image = KeyedImage(key: requestKey, image: cached, bound: bound?.image === cached ? bound : nil)
                 signalReady(cached)
                 return
             }
@@ -130,6 +145,7 @@ struct RemoteImage: View {
             let key = requestKey
             let start = ContinuousClock.now
             let loaded: UIImage
+            var bound: BoundRemoteImage?
             do {
                 if let upgradeURL {
                     loaded = try await ImageLoader.shared.gridThumbnail(
@@ -140,7 +156,12 @@ struct RemoteImage: View {
                         fallbackImage = KeyedImage(key: key, image: preview)
                     }
                 } else {
-                    loaded = try await ImageLoader.shared.image(for: url, targetPixelSize: targetPixelSize)
+                    if onBoundImage != nil {
+                        let result = try await ImageLoader.shared.boundImage(for: url, targetPixelSize: targetPixelSize)
+                        loaded = result.image; bound = result
+                    } else {
+                        loaded = try await ImageLoader.shared.image(for: url, targetPixelSize: targetPixelSize)
+                    }
                 }
             } catch {
                 if !Task.isCancelled { failedKey = key }
@@ -148,7 +169,7 @@ struct RemoteImage: View {
             }
             guard !Task.isCancelled, key == requestKey, !isPrivate || lease?.isCurrent == true else { return }
             failedKey = nil
-            let keyed = KeyedImage(key: key, image: loaded)
+            let keyed = KeyedImage(key: key, image: loaded, bound: bound)
 
             // a fade only earns its place over a flat placeholder: over the
             // smaller render of the same photo it reads as a pulse, and in a
@@ -198,13 +219,13 @@ struct RemoteImage: View {
             guard ImageLoader.shared.cachedImage(for: url, targetPixelSize: targetPixelSize) == nil,
                   ImageLoader.shared.cachedImage(for: fallbackURL, targetPixelSize: fallbackPixelSize) == nil
             else { return }
-            let loaded = try? await ImageLoader.shared.image(
-                for: fallbackURL,
-                targetPixelSize: fallbackPixelSize
-            )
+            let bound = onBoundImage == nil ? nil : (try? await ImageLoader.shared.boundImage(for: fallbackURL, targetPixelSize: fallbackPixelSize))
+            let loaded: UIImage?
+            if onBoundImage != nil { loaded = bound?.image }
+            else { loaded = try? await ImageLoader.shared.image(for: fallbackURL, targetPixelSize: fallbackPixelSize) }
             guard !Task.isCancelled, key == requestKey, !isPrivate || lease?.isCurrent == true,
                   let loaded, image?.key != key else { return }
-            fallbackImage = KeyedImage(key: key, image: loaded)
+            fallbackImage = KeyedImage(key: key, image: loaded, bound: bound)
             signalReady(loaded)
         }
     }

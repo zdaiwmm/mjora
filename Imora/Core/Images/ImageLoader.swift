@@ -14,6 +14,17 @@ private nonisolated struct MediaRequestBinding: Sendable {
     var isCurrent: Bool { key.isCurrentContent && (!requiresElevation || privateLease?.isCurrent == true) }
 }
 
+/// Pixels and the authority captured for the request that actually produced
+/// them. The viewer may carry this proof across its detached transition.
+nonisolated struct BoundRemoteImage: @unchecked Sendable {
+    let image: UIImage
+    let key: MediaDisplayKeyV1
+    let access: MediaAccessGeneration
+    let localProvenance: LocalSurfaceProvenance?
+    fileprivate let validate: @Sendable () -> Bool
+    var isCurrent: Bool { validate() }
+}
+
 /// downloads and caches asset thumbnails on top of a nuke pipeline. beyond the
 /// memory and disk caches, the library brings request coalescing, a rate
 /// limiter tuned for fast scrolling, resumable downloads and the prefetcher
@@ -284,6 +295,51 @@ nonisolated final class ImageLoader: Sendable {
     }
 
     func image(for url: URL, targetPixelSize: CGFloat) async throws -> UIImage {
+        try await loadImage(for: url, targetPixelSize: targetPixelSize).0
+    }
+
+    /// The binding is captured before the request, never reconstructed from
+    /// an arbitrary image after a later authorization change.
+    func boundImage(for url: URL, targetPixelSize: CGFloat) async throws -> BoundRemoteImage {
+        guard let captured = presentationBinding(for: url, pixels: targetPixelSize) else { throw CancellationError() }
+        let (image, provenance) = try await loadImage(for: url, targetPixelSize: targetPixelSize)
+        guard captured.isCurrent(), !Task.isCancelled else { throw CancellationError() }
+        return captured.attach(image, provenance: provenance)
+    }
+
+    func cachedBoundImage(for url: URL, targetPixelSize: CGFloat) -> BoundRemoteImage? {
+        guard let captured = presentationBinding(for: url, pixels: targetPixelSize),
+              let surface = cachedSurface(for: url, targetPixelSize: targetPixelSize),
+              captured.isCurrent() else { return nil }
+        return captured.attach(surface.image, provenance: surface.localProvenance)
+    }
+
+    private struct PresentationBinding: Sendable {
+        let key: MediaDisplayKeyV1
+        let access: MediaAccessGeneration
+        let isCurrent: @Sendable () -> Bool
+        func attach(_ image: UIImage, provenance: LocalSurfaceProvenance?) -> BoundRemoteImage {
+            BoundRemoteImage(image: image, key: key, access: access, localProvenance: provenance, validate: {
+                guard isCurrent() else { return false }
+                guard let provenance else { return true }
+                return LocalImageLoader.currentModificationRevision(provenance.localIdentifier) == provenance.modificationRevision
+            })
+        }
+    }
+
+    private func presentationBinding(for url: URL, pixels: CGFloat) -> PresentationBinding? {
+        guard let client = authorization.client.withLock({ $0 }),
+              let binding = binding(for: url, pixels: pixels), binding.isCurrent else { return nil }
+        let access = MediaPresentationCoordinator.access(for: client)
+        return PresentationBinding(key: binding.key, access: access, isCurrent: { [weak self, weak client] in
+            guard let self, let client else { return false }
+            return client.context.isActive && self.authorization.client.withLock({ $0 === client })
+                && client.context.id == binding.runtimeSession && client.mediaDisplayScope == binding.key.scope
+                && MediaPresentationCoordinator.access(for: client) == access && binding.isCurrent
+        })
+    }
+
+    private func loadImage(for url: URL, targetPixelSize: CGFloat) async throws -> (UIImage, LocalSurfaceProvenance?) {
         guard let client = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
         _ = try client.authorizedRequest(url: url)
         var request = request(for: url, targetPixelSize: targetPixelSize)
@@ -315,7 +371,7 @@ nonisolated final class ImageLoader: Sendable {
                         throw CancellationError()
                     }
                 }
-                return response.image
+                return (response.image, response.container.userInfo["imora.local-provenance"] as? LocalSurfaceProvenance)
             } onCancel: { task.cancel() }
             await ThumbnailDemandScheduler.shared.releaseDemand(key: demandKey, id: demand)
             return image

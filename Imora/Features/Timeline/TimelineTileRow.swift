@@ -544,7 +544,7 @@ final class TimelineTileView: UIView {
             let localIsUnavailable = previous.localProvenance.map {
                 currentRevision($0.localIdentifier) != $0.modificationRevision
             } ?? false
-            if previous.key != expected || localIsUnavailable || projectionClient !== client || requestBinding?.isCurrent != true {
+            if previous.key != expected || !previous.isCurrent() || localIsUnavailable || projectionClient !== client || requestBinding?.isCurrent != true {
                 imageView.image = nil
                 showsPicture = false
                 shownDisplayKey = nil
@@ -566,6 +566,35 @@ final class TimelineTileView: UIView {
         guard let surface = boundSurface, surface.key == key, surface.isCurrent(),
               projectionClient === client else { return nil }
         return surface
+    }
+
+    /// A viewer can hand its displayed bitmap to the matching destination
+    /// before detaching. The captured proof remains part of the tile proof.
+    func prepareReturnSurface(_ surface: CommittedGridSurface, client: ImoraClient) -> Bool {
+        guard let asset, projectionClient === client, let binding = requestBinding, let loadKey,
+              binding.isCurrent, surface.isCurrent(), surface.access == binding.access,
+              surface.key.scope == binding.key.scope, surface.key.subject == binding.key.subject,
+              surface.key.sourceRevision == binding.key.sourceRevision,
+              surface.key.presentationRevision == binding.key.presentationRevision,
+              surface.key.contentGeneration == binding.key.contentGeneration,
+              surface.key.visibilityPolicy == binding.key.visibilityPolicy,
+              surface.key.variant == binding.key.variant, surface.key.fitMode == binding.key.fitMode,
+              surface.key.orientationRevision == binding.key.orientationRevision,
+              surface.key.colorProfile == binding.key.colorProfile,
+              AssetTileRegistry.aspectMatches(surface.image, asset: asset),
+              min(surface.image.size.width, surface.image.size.height) * surface.image.scale >= targetPixelSize * 0.95
+        else { return false }
+        if let local = projectionSource?.preferredLocalIdentifier {
+            guard surface.localProvenance?.localIdentifier == local else { return false }
+        } else if surface.localProvenance != nil {
+            return false
+        }
+        cancelLoads()
+        thumbnailState = ThumbnailLoadState(hasLocal: false, hasRemote: true, targetPixels: Double(targetPixelSize))
+        _ = thumbnailState.remoteResult(pixels: Double(targetPixelSize), isPreview: true)
+        show(surface.image, key: loadKey, fading: false, binding: binding,
+            localProvenance: surface.localProvenance, inheritedSurface: surface)
+        return boundSurface?.isCurrent() == true
     }
 
     /// This boundary can only revoke a displayed local surface, never grant access.
@@ -705,7 +734,7 @@ final class TimelineTileView: UIView {
     }
 
     private func show(_ image: UIImage, key: String, fading: Bool, binding: SurfaceBinding?,
-                      localProvenance: LocalSurfaceProvenance? = nil) {
+                      localProvenance: LocalSurfaceProvenance? = nil, inheritedSurface: CommittedGridSurface? = nil) {
         if let binding, binding.access != MediaPresentationCoordinator.access(for: binding.client) {
             reprojectAfterAccessChange(binding: binding, key: key)
             return
@@ -738,6 +767,7 @@ final class TimelineTileView: UIView {
         boundSurface = .init(image: image, key: binding.key, access: binding.access, localProvenance: localProvenance,
             isCurrent: { [weak self, weak client = binding.client] in
                 guard let self, let client, client.context.isActive, self.projectionClient === client,
+                      inheritedSurface?.isCurrent() != false,
                       self.boundSurfaceID == id, binding.key.isCurrentContent,
                       (self.asset?.visibility != .locked || binding.privateLease?.isCurrent == true),
                       binding.access == MediaPresentationCoordinator.access(for: client),

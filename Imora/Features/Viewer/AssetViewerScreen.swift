@@ -858,6 +858,8 @@ struct AssetViewerScreen: View {
     /// Mirrors whether the information sheet is absent, so the zoom
     /// transition only claims pans that belong to the unobstructed media.
     let onMediaAtTopChanged: (Bool) -> Void
+    let onBoundImage: (Asset, BoundRemoteImage) -> Void
+    let onMediaIdentityChanged: () -> Void
     let presentationID: UUID
     let zoomNamespace: Namespace.ID?
     let isContextPreview: Bool
@@ -992,6 +994,8 @@ struct AssetViewerScreen: View {
         onChromeVisibilityChanged: @escaping (Bool) -> Void = { _ in },
         onMediaFrameSourceChanged: @escaping (String, UIView, Double, Bool) -> Void = { _, _, _, _ in },
         onMediaAtTopChanged: @escaping (Bool) -> Void = { _ in },
+        onBoundImage: @escaping (Asset, BoundRemoteImage) -> Void = { _, _ in },
+        onMediaIdentityChanged: @escaping () -> Void = {},
         onDismissed: @escaping () -> Void,
         onChange: @escaping (AssetChange) -> Void
     ) {
@@ -1035,6 +1039,8 @@ struct AssetViewerScreen: View {
         self.onChromeVisibilityChanged = onChromeVisibilityChanged
         self.onMediaFrameSourceChanged = onMediaFrameSourceChanged
         self.onMediaAtTopChanged = onMediaAtTopChanged
+        self.onBoundImage = onBoundImage
+        self.onMediaIdentityChanged = onMediaIdentityChanged
         self.onDismissed = onDismissed
         self.onChange = onChange
     }
@@ -1048,6 +1054,27 @@ struct AssetViewerScreen: View {
 
     private var current: Asset? {
         assets.indices.contains(currentIndex) ? session.projectingFavorite(assets[currentIndex]) : nil
+    }
+
+    private struct SurfaceIdentity: Equatable {
+        let id: String?
+        let localID: String?
+        let localRevision: String?
+        let remoteRevision: String?
+        let visibility: String?
+        let edited: Bool?
+        let pairedID: String?
+        let editRevision: String?
+        let optimisticOperation: UUID?
+    }
+
+    private var surfaceIdentity: SurfaceIdentity {
+        let asset = current
+        return .init(id: asset?.id, localID: asset?.localIdentifier, localRevision: asset?.localImageVersion,
+            remoteRevision: asset?.thumbhash, visibility: asset?.visibility.rawValue, edited: asset?.isEdited,
+            pairedID: asset.flatMap { session.backup?.localIdentifierByRemoteId[$0.id] },
+            editRevision: asset.flatMap { editCacheKeys[$0.id] },
+            optimisticOperation: asset.flatMap { optimisticEdits[$0.id]?.operationID })
     }
 
     private var mediaShowsChrome: Bool {
@@ -1392,6 +1419,7 @@ struct AssetViewerScreen: View {
                 onChromeVisibilityChanged(chromeVisible)
                 if let selectedAssetID { onSelectionChanged(selectedAssetID) }
             }
+            .onChange(of: surfaceIdentity) { _, _ in onMediaIdentityChanged() }
             .onChange(of: compactScrollEndpoint != .media) { _, visible in
                 // photos shows its chrome with the information, which also puts
                 // the media in the frame the information stop is measured from.
@@ -1822,6 +1850,7 @@ struct AssetViewerScreen: View {
                         openingAssetID: openingAssetID,
                         launchMediaBridge: launchMediaBridge,
                         openingMediaSurface: openingMediaSurface,
+                        onBoundImage: onBoundImage,
                         onLaunchMediaReady: {
                             launchMediaReady = true
                             onLaunchMediaReady()
@@ -3936,6 +3965,7 @@ private struct AssetPager: View {
     let openingAssetID: String?
     let launchMediaBridge: AssetViewerLaunchMediaBridge
     let openingMediaSurface: CommittedGridSurface?
+    let onBoundImage: (Asset, BoundRemoteImage) -> Void
     let onLaunchMediaReady: () -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
@@ -3982,6 +4012,7 @@ private struct AssetPager: View {
         openingAssetID: String?,
         launchMediaBridge: AssetViewerLaunchMediaBridge,
         openingMediaSurface: CommittedGridSurface?,
+        onBoundImage: @escaping (Asset, BoundRemoteImage) -> Void,
         onLaunchMediaReady: @escaping () -> Void,
         allowsDoubleTapZoom: Bool,
         onMediaTap: @escaping () -> Void,
@@ -4010,6 +4041,7 @@ private struct AssetPager: View {
         self.openingAssetID = openingAssetID
         self.launchMediaBridge = launchMediaBridge
         self.openingMediaSurface = openingMediaSurface
+        self.onBoundImage = onBoundImage
         self.onLaunchMediaReady = onLaunchMediaReady
         self.allowsDoubleTapZoom = allowsDoubleTapZoom
         self.onMediaTap = onMediaTap
@@ -4051,6 +4083,10 @@ private struct AssetPager: View {
                         ),
                         launchMediaBridge: launchMediaBridge,
                         openingMediaSurface: openingMediaSurface,
+                        onBoundImage: { bound in
+                            guard asset.id == selection, optimisticEdits[asset.id] == nil else { return }
+                            onBoundImage(asset, bound)
+                        },
                         onMediaReady: {
                             guard asset.id == openingAssetID else { return }
                             onLaunchMediaReady()
@@ -4253,6 +4289,7 @@ private struct AssetPage: View {
     let ownsLaunchMedia: Bool
     let launchMediaBridge: AssetViewerLaunchMediaBridge
     let openingMediaSurface: CommittedGridSurface?
+    let onBoundImage: (BoundRemoteImage) -> Void
     let onMediaReady: () -> Void
     let allowsDoubleTapZoom: Bool
     let onMediaTap: () -> Void
@@ -4401,7 +4438,8 @@ private struct AssetPage: View {
                         fallbackTargetPixelSize: 640,
                         contentMode: .fit,
                         onImage: onImage,
-                        onReady: onMediaReady
+                        onReady: onMediaReady,
+                        onBoundImage: onBoundImage
                     )
                 }
                 .modifier(launchMediaModifier)

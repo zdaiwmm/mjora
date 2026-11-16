@@ -94,9 +94,9 @@ private final class AssetViewerZoomSource {
         view.alpha = originalAlpha
     }
 
-    func makeZoomView(frame: CGRect? = nil, cornerRadius: CGFloat? = nil) -> UIImageView {
+    func makeZoomView(surface: CommittedGridSurface? = nil, frame: CGRect? = nil, cornerRadius: CGFloat? = nil) -> UIImageView {
         makeAssetViewerZoomView(
-            surface: surface,
+            surface: surface ?? self.surface,
             session: session,
             isPrivate: isPrivate,
             frame: frame ?? self.frame,
@@ -634,10 +634,10 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
             )
         }
 
-        if let source = controller?.transitionZoomSource(in: container) {
+        if let prepared = controller?.returnTransition(in: container), let source = prepared.source {
             controller?.setTransitionMediaVisible(false)
             source.hide()
-            let zoomView = source.makeZoomView(frame: mediaFrame, cornerRadius: 0)
+            let zoomView = source.makeZoomView(surface: prepared.surface, frame: mediaFrame, cornerRadius: 0)
             container.addSubview(zoomView)
             let animator = UIViewPropertyAnimator(duration: duration, dampingRatio: 1) {
                 fromView.alpha = 0
@@ -1019,13 +1019,28 @@ final class AssetTileRegistry {
             isPrivate: tile.asset.visibility == .locked, frame: frame)
     }
 
-    fileprivate static func aspectMatches(_ image: UIImage, asset: Asset) -> Bool {
+    fileprivate func prepareReturnSource(for assetID: String, surface: CommittedGridSurface, in container: UIView) -> AssetViewerZoomSource? {
+        guard let tile = tiles[assetID], let view = tile.view as? TimelineTileView,
+              let session = tile.session, let client = session.client else { return nil }
+        let key = MediaPresentationCoordinator.gridKey(asset: tile.asset, client: client, pixels: tile.targetPixelSize)
+        if view.checkpointSurface(for: key, client: client) == nil {
+            guard view.prepareReturnSurface(surface, client: client) else { return nil }
+        }
+        return zoomSource(for: assetID, in: container)
+    }
+
+    static func aspectMatches(_ image: UIImage, asset: Asset) -> Bool {
         guard asset.ratio > 0, image.size.height > 0 else { return false }
         let ratio = Double(image.size.width / image.size.height)
         return abs(ratio - asset.ratio) <= asset.ratio * 0.03
     }
 
 
+}
+
+@MainActor @Observable
+private final class AssetViewerSurfaceLifetime {
+    var isCurrent = true
 }
 
 @MainActor
@@ -1045,6 +1060,8 @@ final class AssetViewerDisplayState {
     var chromeVisible = true
     var mediaSafeAreaInsets: UIEdgeInsets?
     var openingMediaSurface: CommittedGridSurface?
+    private(set) var displayedMediaSurface: CommittedGridSurface?
+    private var surfaceLifetime = AssetViewerSurfaceLifetime()
     let zoomCommandBridge = AssetViewerZoomCommandBridge()
     /// whether the media is unobstructed. while information is open, pans
     /// belong to its sheet rather than the viewer dismissal.
@@ -1053,6 +1070,42 @@ final class AssetViewerDisplayState {
     init(mode: Mode, currentAssetID: String) {
         self.mode = mode
         self.currentAssetID = currentAssetID
+    }
+
+    func retireDisplayedMedia() {
+        surfaceLifetime.isCurrent = false
+        surfaceLifetime = AssetViewerSurfaceLifetime()
+        displayedMediaSurface = nil
+    }
+
+    func bindDisplayedMedia(asset: Asset, delivery: BoundRemoteImage, session: SessionStore) {
+        guard asset.id == currentAssetID, asset.localIdentifier == nil, !asset.isTrashed,
+              let client = session.client, delivery.isCurrent else { return }
+        let expected = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: CGFloat(delivery.key.pixelBucket))
+        guard expected.isCurrentContent, delivery.key.scope == expected.scope, delivery.key.subject == expected.subject,
+              delivery.key.sourceRevision == expected.sourceRevision,
+              delivery.key.presentationRevision == expected.presentationRevision,
+              delivery.key.variant == expected.variant, delivery.key.pixelBucket == expected.pixelBucket,
+              delivery.key.fitMode == expected.fitMode, delivery.key.orientationRevision == expected.orientationRevision,
+              delivery.key.colorProfile == expected.colorProfile, delivery.key.contentGeneration == expected.contentGeneration,
+              delivery.key.visibilityPolicy == nil || delivery.key.visibilityPolicy == expected.visibilityPolicy else { return }
+        let paired = session.backup?.localIdentifierByRemoteId[asset.id]
+        if let provenance = delivery.localProvenance {
+            guard asset.isEdited != true, provenance.remoteIdentifier == asset.id,
+                  paired == provenance.localIdentifier else { return }
+        }
+        let lifetime = surfaceLifetime
+        displayedMediaSurface = .init(image: delivery.image, key: expected, access: delivery.access,
+            localProvenance: delivery.localProvenance, isCurrent: { [weak session, weak client] in
+                guard lifetime.isCurrent, let session, let client, session.client === client,
+                      delivery.isCurrent, expected.isCurrentContent,
+                      session.backup?.localIdentifierByRemoteId[asset.id] == paired else { return false }
+                if let provenance = delivery.localProvenance {
+                    return asset.isEdited != true && provenance.remoteIdentifier == asset.id
+                        && session.backup?.localIdentifierByRemoteId[asset.id] == provenance.localIdentifier
+                }
+                return true
+            })
     }
 }
 
@@ -1340,6 +1393,17 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             displayState.openingMediaSurface = source.surface
         }
         return source
+    }
+
+    fileprivate func returnTransition(in container: UIView) -> (source: AssetViewerZoomSource?, surface: CommittedGridSurface)? {
+        guard let surface = displayState.displayedMediaSurface, surface.isCurrent() else { return nil }
+        let source = sourceRegistry?.prepareReturnSource(for: displayState.currentAssetID, surface: surface, in: container)
+        return (source, surface)
+    }
+
+    private func makeReturnZoomView(surface: CommittedGridSurface, frame: CGRect) -> UIImageView {
+        makeAssetViewerZoomView(surface: surface, session: session, isPrivate: surface.key.visibilityPolicy == "locked",
+            frame: frame, cornerRadius: 0)
     }
 
     /// `imageAspectRatio` is the picture the zoom view actually carries. it
@@ -1679,8 +1743,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         suppressSourceInteraction()
         if !UIAccessibility.isReduceMotionEnabled,
            let mediaFrame = transitionMediaFrame(in: container) {
-            let source = transitionZoomSource(in: container)
-            let zoomView = source?.makeZoomView(frame: mediaFrame, cornerRadius: 0)
+            let prepared = returnTransition(in: container)
+            let source = prepared?.source
+            let zoomView = prepared.map { makeReturnZoomView(surface: $0.surface, frame: mediaFrame) }
             guard let zoomView else {
                 let chromeHost: UIView = view.window ?? container
                 let chromeSnapshot = openingChromeOverlay == nil
@@ -1879,9 +1944,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             if let source {
                 targetFrame = container.convert(source.frame, to: window)
             }
-        } else if let mediaFrame = transitionMediaFrame(in: window) {
-            source = transitionZoomSource(in: window)
-            zoomView = source?.makeZoomView(frame: mediaFrame, cornerRadius: 0)
+        } else if let mediaFrame = transitionMediaFrame(in: window), let prepared = returnTransition(in: window) {
+            source = prepared.source
+            zoomView = makeReturnZoomView(surface: prepared.surface, frame: mediaFrame)
             zoomFrame = mediaFrame
             source?.hide()
             targetFrame = source?.frame
@@ -2294,6 +2359,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
 
 @MainActor
 private struct AssetViewerHostRoot: View {
+    @Environment(SessionStore.self) private var session
     let route: ViewerRoute
     let displayState: AssetViewerDisplayState
     let dismissalRelay: AssetViewerDismissalRelay
@@ -2323,7 +2389,10 @@ private struct AssetViewerHostRoot: View {
                     personID: personID,
                     onRequestDismissal: { dismissalRelay.request() },
                     onLaunchMediaReady: { dismissalRelay.presentationMediaReady() },
-                    onSelectionChanged: { displayState.currentAssetID = $0 },
+                    onSelectionChanged: {
+                        if displayState.currentAssetID != $0 { displayState.retireDisplayedMedia() }
+                        displayState.currentAssetID = $0
+                    },
                     onPageZoomChanged: { dismissalRelay.pageZoomChanged($0) },
                     onInteractiveMediaInteractionStarted: {
                         dismissalRelay.interactiveMediaInteractionStarted()
@@ -2338,6 +2407,8 @@ private struct AssetViewerHostRoot: View {
                         )
                     },
                     onMediaAtTopChanged: { displayState.mediaAtTop = $0 },
+                    onBoundImage: { displayState.bindDisplayedMedia(asset: $0, delivery: $1, session: session) },
+                    onMediaIdentityChanged: { displayState.retireDisplayedMedia() },
                     onDismissed: {}
                 ) { change in
                     onChange(change)

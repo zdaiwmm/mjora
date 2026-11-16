@@ -1082,6 +1082,138 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             print("TASK18_VIEWER pixels=\(renewed) viewerMounted=\(viewer.view.window != nil) presented=\(parent.presentedViewController === viewer) reads=\(reads.withLock { $0 }) lease=\(client.lockedMediaLease != nil) tileCurrent=\(tile.checkpointSurface(for: key, client: client) != nil)")
             XCTAssertGreaterThan(renewed[2], 180, "The actual viewer center must contain fresh E2 pixels")
             XCTAssertLessThan(renewed[0], 80, "A healthy E2 viewer must not show an unexpected white retry glyph")
+            for _ in 0..<200 {
+                if (viewer.displayState.displayedMediaSurface?.image.cgImage?.width ?? 0) >= 2048 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNotNil(viewer.displayState.displayedMediaSurface, "The displayed private image must carry its captured proof")
+            viewer.requestDismissal()
+            let returning = try centerPixel(evidence: "viewer-private-return-before-revocation")
+            XCTAssertGreaterThan(returning[2], 150, "The detached return must initially show the current private pixels")
+            let revokeStarted = ContinuousClock.now
+            deadline.withLock { $0 = "not-a-date" }
+            _ = try? await client.authStatus()
+            for _ in 0..<30 {
+                let color = try centerPixel()
+                if !(color[2] > 150 && color[0] < 100) { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            let revoked = try centerPixel(evidence: "viewer-private-return-revoked")
+            XCTAssertLessThan(ContinuousClock.now - revokeStarted, .milliseconds(300), "The check must observe the active return animation")
+            XCTAssertFalse(revoked[2] > 150 && revoked[0] < 100,
+                "The detached return must clear retired private pixels automatically")
+        } catch { await finish(); throw error }
+        await finish()
+    }
+
+    func testViewerReturnCarriesDisplayedPixelsIntoUnreadyDestination() async throws {
+        let userID = "viewer-return-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 2048, height: 2048), format: format).image { context in
+            UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 2048, height: 2048))
+        }
+        let bytes = try XCTUnwrap(image.jpegData(compressionQuality: 0.9))
+        let previewRead = Mutex(false)
+        let server = try LocalHTTPServer(concurrent: true) { request in
+            if request.path == "/api/users/me" { return .init(body: user) }
+            if request.path.contains("/thumbnail") {
+                if request.path.contains("size=preview") { previewRead.withLock { $0 = true } }
+                return .init(headers: ["Content-Type": "image/jpeg"], body: bytes)
+            }
+            return .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "viewer-return", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client), value = asset()
+        let window = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow })
+        let root = try XCTUnwrap(window.rootViewController), parent = UIViewController()
+        parent.view.backgroundColor = .darkGray; parent.modalPresentationStyle = .fullScreen
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            root.present(parent, animated: false) { continuation.resume() }
+        }
+        let registry = AssetTileRegistry(), original = TimelineTileView(frame: .init(x: 40, y: 150, width: 132, height: 132))
+        parent.view.addSubview(original)
+        original.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 416, registry: registry)
+        parent.view.layoutIfNeeded() // Initial fixture layout only.
+        let originalKey = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)
+        for _ in 0..<200 {
+            if original.checkpointSurface(for: originalKey, client: client) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(original.checkpointSurface(for: originalKey, client: client))
+        let presentation = ViewerPresentation(), route = try XCTUnwrap(presentation.makeRoute(assets: [value], initialIndex: 0))
+        var didPresent = false
+        let viewer = AssetViewerHostingController(route: route, startsAsContextPreview: false, previewBounds: window.bounds.size,
+            session: session, sourceRegistry: registry, album: nil, personID: nil,
+            willPresent: { presentation.activate($0, presentsCover: false) }, didPresent: { _ in didPresent = true },
+            didDismiss: { presentation.complete($0) }, onChange: { _ in })
+        var destination: TimelineTileView?
+        func finish() async {
+            viewer.requestDismissal()
+            for _ in 0..<200 {
+                if parent.presentedViewController == nil { break }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            original.unregister(); original.removeFromSuperview()
+            destination?.unregister(); destination?.removeFromSuperview()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                parent.dismiss(animated: false) { continuation.resume() }
+            }
+            await session.logOut(reportRemoteFailure: false)
+        }
+        func pixel(_ point: CGPoint, evidence: String? = nil) throws -> [UInt8] {
+            let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            }
+            if let evidence, let data = frame.pngData() {
+                let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+                attachment.name = evidence; attachment.lifetime = .keepAlways; add(attachment)
+            }
+            let cg = try XCTUnwrap(frame.cgImage)
+            let sample = try XCTUnwrap(cg.cropping(to: CGRect(x: point.x.rounded(.down), y: point.y.rounded(.down), width: 1, height: 1)))
+            var result = [UInt8](repeating: 0, count: 4)
+            result.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return result
+        }
+        do {
+            viewer.presentDirectly(from: parent)
+            for _ in 0..<300 {
+                if didPresent, previewRead.withLock({ $0 }),
+                   (viewer.displayState.displayedMediaSurface?.image.cgImage?.width ?? 0) >= 2048 {
+                    let color = try pixel(CGPoint(x: window.bounds.midX + 80, y: window.bounds.midY))
+                    if color[2] > 180 && color[0] < 80 { break }
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(didPresent); XCTAssertTrue(previewRead.withLock { $0 })
+            let displayed = try pixel(CGPoint(x: window.bounds.midX + 80, y: window.bounds.midY), evidence: "viewer-return-before")
+            XCTAssertGreaterThan(displayed[2], 180); XCTAssertLessThan(displayed[0], 80)
+            original.unregister(); original.removeFromSuperview()
+            let next = TimelineTileView(frame: .init(x: 40, y: 150, width: 132, height: 132)); destination = next
+            parent.view.addSubview(next)
+            next.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 800, registry: registry)
+            let nextKey = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 800)
+            XCTAssertNil(next.checkpointSurface(for: nextKey, client: client), "The destination starts without its matching decoded surface")
+            viewer.requestDismissal()
+            XCTAssertNotNil(next.checkpointSurface(for: nextKey, client: client),
+                "The destination must bind the qualified displayed surface before the viewer detaches")
+            try await Task.sleep(for: .milliseconds(35))
+            let transition = try pixel(CGPoint(x: window.bounds.midX, y: window.bounds.midY), evidence: "viewer-return-transition")
+            XCTAssertGreaterThan(transition[2], 150, "The detached transition must show the actual blue viewer pixels")
+            XCTAssertLessThan(transition[0], 100)
+            try await Task.sleep(for: .milliseconds(450))
+            let final = try pixel(CGPoint(x: 106, y: 216), evidence: "viewer-return-grid")
+            XCTAssertGreaterThan(final[2], 150, "Finishing the transition must reveal the prepared destination image")
+            XCTAssertLessThan(final[0], 100)
         } catch { await finish(); throw error }
         await finish()
     }
