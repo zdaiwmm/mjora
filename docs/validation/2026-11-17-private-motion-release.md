@@ -10,3 +10,7 @@ The release retains memory functionality and the reliable-background-backup chan
 - Before preparing a package, the publisher requires its source to descend from every currently published source revision, as well as local main. This release includes both the previous motion candidate `c497307` and the separately published background fix `287ed7c`.
 - The first motion candidate, 1.0.14 (19), omitted the concurrently released background fix. It was withdrawn before this task attempted installation. Its signed bundles were withheld to stop update offers while preserving monotonic channel history. The next release supersedes it after the complete integrated regression.
 - Deployment receipts stay outside the repository in `/Users/achilles/mjora/execution/private/photos-motion-20261117`.
+
+Deployment completed for source `dd28cc9f1627e244ee00a758cd5f25777916df05`, version **1.0.15 (20)**. Both private update channels published validated, device-specific signed bundles. iPhone 16 Pro installation succeeded and its version was read back; app launch was skipped. iPhone 15 Pro returned `needsPhone`, so its package is published but not installed. The withdrawn 1.0.14 bundle remains withheld and is superseded by the current channel manifests. Receipts: `release.json`, `iphone16pro-installation-receipt.json`, `installation-summary.json`.
+
+Public push/merge remains pending explicit authorization for `zdaiwmm/mjora`, following automatic approval rejection. Local main contains the complete integration. This post-deployment record changes documentation only.
