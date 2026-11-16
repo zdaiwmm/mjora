@@ -470,31 +470,35 @@ final class Phase4LaunchPreviewTests: XCTestCase {
 
     #if DEBUG
     func testIsolatedFixtureRestoreRefusesToOverwriteUnrelatedJournalChanges() throws {
-        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-fixture-boundary-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let journal = MediaContentGenerations(root: root)
-        let owned = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "owned")
-        let other = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "other")
-        let restore = try journal.isolatedFixtureRestorer(scopes: [owned])
-        try journal.retire(scope: owned, subjects: [.remoteAsset("fixture")], retiresSourceRevisions: false, blocksAccess: true)
-        let unrelated = key("unrelated", scope: other)
-        try journal.retire(scope: other, subjects: [unrelated.subject], keys: [unrelated])
-        let file = root.appending(path: "content-generations.json"), before = try Data(contentsOf: file)
-        XCTAssertThrowsError(try restore())
-        XCTAssertEqual(try Data(contentsOf: file), before)
-        XCTAssertTrue(MediaContentGenerations(root: root).isRetired(scope: other, subject: unrelated.subject, sourceRevision: unrelated.sourceRevision))
+        for fresh in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appending(path: "phase4-fixture-boundary-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let journal = MediaContentGenerations(root: root)
+            let owned = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "owned")
+            let other = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "other")
+            let restore = try journal.isolatedFixtureRestorer(scopes: [owned], freshCapacityNamespace: fresh)
+            try journal.retire(scope: owned, subjects: [.remoteAsset("fixture")], retiresSourceRevisions: false, blocksAccess: true)
+            let unrelated = key("unrelated", scope: other)
+            try journal.retire(scope: other, subjects: [unrelated.subject], keys: [unrelated])
+            let file = root.appending(path: "content-generations.json"), before = try Data(contentsOf: file)
+            XCTAssertThrowsError(try restore())
+            XCTAssertEqual(try Data(contentsOf: file), before)
+            XCTAssertTrue(MediaContentGenerations(root: root).isRetired(scope: other, subject: unrelated.subject, sourceRevision: unrelated.sourceRevision))
+        }
     }
 
     func testIsolatedFixtureRestoresAbsentJournalAndPriorMemory() throws {
-        let root = FileManager.default.temporaryDirectory.appending(path: "phase4-fixture-absence-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let journal = MediaContentGenerations(root: root)
-        let owned = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "owned")
-        let restore = try journal.isolatedFixtureRestorer(scopes: [owned])
-        try journal.retire(scope: owned, subjects: [.remoteAsset("fixture")], retiresSourceRevisions: false, blocksAccess: true)
-        try restore()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appending(path: "content-generations.json").path))
-        XCTAssertEqual(journal.current(scope: owned, subject: .remoteAsset("fixture")), "")
+        for fresh in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appending(path: "phase4-fixture-absence-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let journal = MediaContentGenerations(root: root)
+            let owned = StableMediaScope.verified(server: "https://fixture.invalid", accountID: "owned")
+            let restore = try journal.isolatedFixtureRestorer(scopes: [owned], freshCapacityNamespace: fresh)
+            try journal.retire(scope: owned, subjects: [.remoteAsset("fixture")], retiresSourceRevisions: false, blocksAccess: true)
+            try restore()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appending(path: "content-generations.json").path))
+            XCTAssertEqual(journal.current(scope: owned, subject: .remoteAsset("fixture")), "")
+        }
     }
     #endif
 

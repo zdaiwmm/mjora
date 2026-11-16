@@ -177,6 +177,7 @@ final class MediaPresentationCoordinator {
         let rejectedKeys = rejected
         #if DEBUG || PHASE4_PERFORMANCE
         LaunchPipelineTrace.record("local-proof-before-decode", since: proofStarted, items: request.records.count)
+        LaunchPipelineTrace.mark("local-proof-rejected", items: rejectedKeys.count)
         #endif
         // At most two reads/decodes at once; no full-library fetch enters this path.
         var images = await withTaskGroup(of: (MediaDisplayKeyV1, UIImage)?.self) { group in
@@ -243,7 +244,12 @@ final class MediaPresentationCoordinator {
     private nonisolated static func prepare(asset: Asset, key: MediaDisplayKeyV1, record: PreparedImageRecord?, client: ImoraClient) async -> (MediaDisplayKeyV1, UIImage)? {
         guard !Task.isCancelled, client.context.isActive, key.isCurrentContent else { return nil }
         if let provenance = record?.localProvenance,
-           LocalImageLoader.currentModificationRevision(provenance.localIdentifier) != provenance.modificationRevision { return nil }
+           LocalImageLoader.currentModificationRevision(provenance.localIdentifier) != provenance.modificationRevision {
+            #if DEBUG || PHASE4_PERFORMANCE
+            LaunchPipelineTrace.mark("local-revision-unavailable-or-changed", items: PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue)
+            #endif
+            return nil
+        }
         if let local = asset.localIdentifier, !(await LocalImageLoader.shared.canReadPrepared(local)) { return nil }
         var native: NativeImageResolution?
         if let local = asset.localIdentifier {

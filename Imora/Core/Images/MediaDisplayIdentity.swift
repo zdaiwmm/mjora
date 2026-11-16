@@ -131,7 +131,7 @@ nonisolated final class MediaContentGenerations: Sendable {
     #if DEBUG
     /// Test-only isolation for the real shared journal. Restore refuses to
     /// overwrite unrelated changes and reinstates the exact prior file bytes.
-    func isolatedFixtureRestorer(scopes: [StableMediaScope]) throws -> () throws -> Void {
+    func isolatedFixtureRestorer(scopes: [StableMediaScope], freshCapacityNamespace: Bool = false) throws -> () throws -> Void {
         try memory.withLock { value in
             let previousMemory = value
             let previousBytes = FileManager.default.fileExists(atPath: file.path) ? try Data(contentsOf: file) : nil
@@ -145,11 +145,22 @@ nonisolated final class MediaContentGenerations: Sendable {
             } else if value.state != nil {
                 value = previousMemory; throw CocoaError(.fileReadCorruptFile)
             }
-            let baseline = value.state ?? State()
+            let original = value.state ?? State()
             let owned = Set(scopes.map(Self.identifier))
-            guard owned.count == scopes.count, owned.allSatisfy({ baseline.scopes[$0] == nil }) else {
+            guard owned.count == scopes.count, owned.allSatisfy({ original.scopes[$0] == nil }) else {
                 value = previousMemory; throw CocoaError(.fileWriteFileExists)
             }
+            // The 27,000-revision capacity fixture must not depend on how many
+            // synthetic accounts earlier test processes left behind. Only its
+            // test may temporarily use a fresh namespace; the
+            // exact previous bytes and memory are restored below, and any
+            // unrelated write still makes teardown fail instead of overwriting it.
+            let baseline: State
+            if freshCapacityNamespace {
+                baseline = State()
+                do { try persist(baseline) }
+                catch { value = previousMemory; throw error }
+            } else { baseline = original }
             value = Memory(state: baseline, loaded: true, unavailable: false)
             return { [self] in
                 try memory.withLock { current in

@@ -530,24 +530,14 @@ final class TimelineTileView: UIView {
                 return
             }
         }
-        // Reuse proof only within this synchronous projection. A later
-        // projection and every asynchronous delivery obtain current evidence.
-        var revisions: [String: String?] = [:]
-        func currentRevision(_ identifier: String) -> String? {
-            if let captured = revisions[identifier] { return captured }
-            let revision = LocalImageLoader.currentModificationRevision(identifier)
-            revisions[identifier] = .some(revision)
-            return revision
-        }
-        if let visibleLocalIdentifier {
-            applyLocalAccessRevision(currentRevision(visibleLocalIdentifier))
+        // A bound surface checks its captured local revision in isCurrent().
+        // Unbound previews still need their own fresh access check here.
+        if boundSurface == nil, let visibleLocalIdentifier {
+            applyLocalAccessRevision(LocalImageLoader.currentModificationRevision(visibleLocalIdentifier))
         }
         if let previous = boundSurface {
             let expected = client.map { MediaPresentationCoordinator.gridKey(asset: asset, client: $0, pixels: targetPixelSize) }
-            let localIsUnavailable = previous.localProvenance.map {
-                currentRevision($0.localIdentifier) != $0.modificationRevision
-            } ?? false
-            if previous.key != expected || !previous.isCurrent() || localIsUnavailable || projectionClient !== client || requestBinding?.isCurrent != true {
+            if previous.key != expected || !previous.isCurrent() || projectionClient !== client || requestBinding?.isCurrent != true {
                 imageView.image = nil
                 showsPicture = false
                 shownDisplayKey = nil

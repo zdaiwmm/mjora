@@ -1407,7 +1407,15 @@ final class BackupManager {
     /// timeline are right from the first frame.
     func primeLocalState() async {
         #if DEBUG && targetEnvironment(simulator)
-        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        if Phase4OwnedFixture.automaticPreparationName != nil {
+            // Preparation must choose the same read-only pairing as a normal
+            // restart, while recovery, scans and upload adoption stay disabled.
+            guard !isShutDown, let userId,
+                  await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id),
+                  client.context.isActive else { return }
+            localIdentifierByRemoteId = await index.renderableRemoteToLocalMap()
+            return
+        }
         #endif
         await cachedLaunchHandle?.waitUntilReleased()
         guard !Task.isCancelled, !isShutDown else { return }

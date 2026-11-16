@@ -46,7 +46,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         let journal = MediaContentGenerations.shared
         let journalFile = LaunchPreviewStore.rootDirectory.appending(path: "content-generations.json")
         let beforeBytes = FileManager.default.fileExists(atPath: journalFile.path) ? try Data(contentsOf: journalFile) : nil
-        let restore = try journal.isolatedFixtureRestorer(scopes: [historyScope, scope])
+        let restore = try journal.isolatedFixtureRestorer(scopes: [historyScope, scope], freshCapacityNamespace: true)
         let history = (0..<150).map { MediaDisplayKeyV1.Subject.remoteAsset("edited-asset-\($0)") }
         let revisions = (0..<180).map { Data(String(format: "revision-%010d", $0).utf8).base64EncodedString() }
         weak var priorModel: TimelineModel?
@@ -1638,6 +1638,36 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         XCTAssertGreaterThan(after[0], 180); XCTAssertLessThan(after[2], 80)
     }
 
+    /// The picture moves toward its grid cell; the window center legitimately
+    /// becomes background during a healthy return. Sample the actual presented
+    /// picture rectangle and pixels from the same Core Animation presentation.
+    private func returnTransitionPixel(in window: UIWindow, evidence: String) throws -> [UInt8] {
+        func imageViews(in view: UIView) -> [AssetViewerBoundImageView] {
+            (view as? AssetViewerBoundImageView).map { [$0] } ?? view.subviews.flatMap { imageViews(in: $0) }
+        }
+        let view = try XCTUnwrap(imageViews(in: window).last, "A normal return must carry the bound picture")
+        let layer = try XCTUnwrap(view.layer.presentation(), "Capture a committed animation frame")
+        let root = try XCTUnwrap(window.layer.presentation())
+        let rectangle = layer.convert(layer.bounds, to: root)
+        XCTAssertGreaterThan(rectangle.width, 0); XCTAssertTrue(rectangle.intersects(window.bounds))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let frame = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { context in
+            root.render(in: context.cgContext)
+        }
+        if let data = frame.pngData() {
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            attachment.name = evidence; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let sample = try XCTUnwrap(frame.cgImage?.cropping(to: CGRect(x: floor(rectangle.midX), y: floor(rectangle.midY), width: 1, height: 1)))
+        var result = [UInt8](repeating: 0, count: 4)
+        result.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return result
+    }
+
     func testGridAndViewerReusePreparedLocalImage() async throws {
         let (localID, _) = try await createSurfaceFixture()
         let revision = try XCTUnwrap(LocalImageLoader.currentModificationRevision(localID))
@@ -1732,7 +1762,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             XCTAssertNotNil(next.checkpointSurface(for: key, client: client))
             viewer.requestDismissal()
             try await Task.sleep(for: .milliseconds(35))
-            let transition = try pixel(CGPoint(x: window.bounds.midX, y: window.bounds.midY), evidence: "local-viewer-return")
+            let transition = try returnTransitionPixel(in: window, evidence: "local-viewer-return")
             XCTAssertGreaterThan(transition[0], 150); XCTAssertLessThan(transition[2], 100)
             try await Task.sleep(for: .milliseconds(450))
             let final = try pixel(CGPoint(x: 106, y: 216), evidence: "local-viewer-return-grid")
@@ -1972,7 +2002,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             XCTAssertNotNil(next.checkpointSurface(for: nextKey, client: client),
                 "The destination must bind the qualified displayed surface before the viewer detaches")
             try await Task.sleep(for: .milliseconds(35))
-            let transition = try pixel(CGPoint(x: window.bounds.midX, y: window.bounds.midY), evidence: "viewer-return-transition")
+            let transition = try returnTransitionPixel(in: window, evidence: "viewer-return-transition")
             XCTAssertGreaterThan(transition[2], 150, "The detached transition must show the actual blue viewer pixels")
             XCTAssertLessThan(transition[0], 100)
             try await Task.sleep(for: .milliseconds(450))
