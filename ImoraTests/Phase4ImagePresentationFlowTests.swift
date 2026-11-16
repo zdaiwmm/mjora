@@ -20,6 +20,66 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
               duration: nil, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
     }
 
+    func testInitialViewportRequiresEveryCurrentImageAndRestoredPosition() async throws {
+        let userID = "initial-viewport-\(UUID())"
+        let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
+        let server = try LocalHTTPServer { request in
+            request.path == "/api/users/me" ? .init(body: user) : .init(status: 503)
+        }
+        try await server.start(); defer { server.stop() }
+        let session = SessionStore()
+        await session.logIn(apiURL: server.apiURL, response: .init(accessToken: "initial-viewport", userId: userID,
+            userEmail: "fixture@example.invalid", name: "Fixture", isAdmin: false, profileImagePath: "", shouldChangePassword: false))
+        session.backup?.shutdown(); session.realtime?.shutdown(); session.favorites?.shutdown(); session.cachedLaunchHandle?.cancel()
+        let client = try XCTUnwrap(session.client)
+        let second = Asset(id: "second-image", ownerId: "alice", isImage: true, isFavorite: false,
+            isTrashed: false, visibility: .timeline, thumbhash: "revision-one", fileCreatedAt: .now,
+            localOffsetHours: 0, livePhotoVideoId: nil, ratio: 1, city: nil, country: nil)
+        let values = [asset(), second]
+        let model = TimelineModel(filter: TimelineFilter(), suppliedAssets: values)
+        model.showsDateHeaders = false
+        let grid = TimelineGridView(model: model, layoutBox: TimelineRowLayoutBox())
+        grid.frame = CGRect(x: 0, y: 0, width: 390, height: 280)
+        grid.contentInsetAdjustmentBehavior = .never
+        grid.initialPresentationCovered = true
+        var releases = 0
+        grid.onInitialViewportPrepared = { releases += 1 }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene), host = UIViewController()
+        window.rootViewController = host; host.view.addSubview(grid); window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        grid.update(side: AssetGridLayout.tileSide(viewportWidth: 390, columns: 3), tailPadding: 0,
+            context: .init(session: session, columns: 3, targetPixelSize: 416, showsBackupBadge: false,
+                usesOriginalAspectRatio: false, isSelecting: false, selection: [], reduceMotion: true,
+                registry: AssetTileRegistry(), motion: GridMotion(), isSelectable: { _ in true },
+                isSelectableAssetID: { _ in true }, actions: .init(toggleSelection: { _ in },
+                    menu: { _ in UIMenu(children: []) }, makeViewer: { _, _, _ in nil }), toggleDay: { _, _ in }), animated: false)
+        grid.layoutIfNeeded()
+        func tiles(_ view: UIView) -> [TimelineTileView] {
+            (view as? TimelineTileView).map { [$0] } ?? view.subviews.flatMap { tiles($0) }
+        }
+        let mounted = tiles(grid)
+        XCTAssertEqual(mounted.count, 2)
+        let image = solidImage(pixels: 512)
+        for value in values {
+            ImageLoader.shared.installPrepared(image, url: client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash),
+                targetPixelSize: 416, client: client)
+            let tile = try XCTUnwrap(mounted.first { $0.asset?.id == value.id })
+            tile.projectImage(asset: value, source: .init(assetID: value.id, localIdentifier: nil,
+                pairedLocalIdentifier: nil, pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil),
+                client: client, generation: 0, targetPixelSize: 416)
+            grid.layoutIfNeeded()
+            XCTAssertEqual(releases, 0, "An incomplete viewport or unrestored position must remain covered")
+        }
+        XCTAssertTrue(mounted.allSatisfy(\.hasPreparedInitialImage))
+        grid.initialPhotosPositionReady = true; grid.setNeedsLayout(); grid.layoutIfNeeded()
+        XCTAssertEqual(releases, 1)
+        grid.setNeedsLayout(); grid.layoutIfNeeded(); XCTAssertEqual(releases, 1)
+        client.invalidate()
+        XCTAssertTrue(mounted.allSatisfy { !$0.initialImageIsCurrent }, "Prepared pixels cannot authorize a retired session")
+        await session.logOut(reportRemoteFailure: false)
+    }
+
     func testCurrentPINElevationRecoversCanonicalLockedBucketWithoutDiskBytes() async throws {
         try await checkLockedRecovery(rollbackFromLockedPage: false)
     }

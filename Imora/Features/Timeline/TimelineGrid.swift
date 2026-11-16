@@ -508,6 +508,13 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
 /// exact layout, diffed by index while the rows hold and by id when they
 /// are swapped, and handed back to per-kind pools when they leave.
 final class TimelineGridView: UIScrollView {
+    var initialPresentationCovered = false {
+        didSet { if initialPresentationCovered != oldValue { setNeedsLayout() } }
+    }
+    var initialPhotosPositionReady = false
+    var permitsEmptyInitialViewport = false
+    var onInitialViewportPrepared: (() -> Void)?
+    private var initialReadinessDelivered = false
     var usesFullPhotosCanvas = false { didSet { if usesFullPhotosCanvas != oldValue { setNeedsLayout() } } }
     var onEffectiveHeaderHeight: ((CGFloat) -> Void)?
     private var shortContentTopPadding: CGFloat = 0
@@ -563,11 +570,11 @@ final class TimelineGridView: UIScrollView {
             applicationActive: applicationActive, viewInteractionEnabled: inputEnabled, offset: Double(offsetY),
             viewport: [Double(viewport.width), Double(viewport.height)], rowVersion: model?.rowsContentVersion ?? -1,
             tiles: tiles, placeholderRows: placeholderRows, expectedW0: expectedIDs, expectedAnchor: expected?.anchor,
-            restoredComplete: model?.restoredLaunchComplete ?? false, interactive: visible && inputEnabled && applicationActive,
+            restoredComplete: model?.restoredLaunchComplete ?? false, interactive: visible && !initialPresentationCovered && inputEnabled && applicationActive,
             serverIdentity: context?.session.client?.mediaDisplayScope.serverIdentity,
             accountID: context?.session.client?.mediaDisplayScope.accountID,
-            galleryVisible: visible,
-            loadingOverlayVisible: model?.isLoading == true && model?.rows.isEmpty == true,
+            galleryVisible: visible && !initialPresentationCovered,
+            loadingOverlayVisible: initialPresentationCovered || (model?.isLoading == true && model?.rows.isEmpty == true),
             reportedItemCount: model?.sections.reduce(0) { $0 + $1.count } ?? 0)
     }
     #endif
@@ -824,6 +831,22 @@ final class TimelineGridView: UIScrollView {
         }
 
         mount(rows: rows, layout: layout, removals: removals, width: width, viewportHeight: scroll.containerHeight)
+        if initialPresentationCovered, !initialReadinessDelivered, window != nil {
+            let viewport = bounds.inset(by: adjustedContentInset)
+            let visibleTiles = zoomTiles.filter {
+                let overlap = $0.convert($0.bounds, to: self).intersection(viewport)
+                return !$0.isHidden && overlap.width > 1 && overlap.height > 1
+            }
+            let hasPlaceholders = mounted.contains {
+                $0.kind == .placeholder && $0.view.frame.intersection(viewport).height > 1
+            }
+            if permitsEmptyInitialViewport || (initialPhotosPositionReady && !hasPlaceholders
+                && !visibleTiles.isEmpty && visibleTiles.allSatisfy(\.hasPreparedInitialImage)
+                && visibleTiles.allSatisfy(\.initialImageIsCurrent)) {
+                initialReadinessDelivered = true
+                onInitialViewportPrepared?()
+            }
+        }
         #if DEBUG || PHASE4_PERFORMANCE
         presentationTrace?.didCompleteLayout()
         #endif

@@ -135,6 +135,57 @@ final class Phase4LaunchPresentationTests: XCTestCase {
         attach(app, evidence: json, name: "phase4-cached-cloud-restart-two-seconds")
     }
 
+    func testColdCloudRestartPreparesFirstVisibleGridAndOpensSamePhoto() throws {
+        continueAfterFailure = false
+        let fixture = try fixture(), app = application()
+        app.terminate(); app.launch()
+        let (value, json) = try probe(app) { $0.observationComplete }
+        let first = try XCTUnwrap(value.first)
+        XCTAssertLessThan(try XCTUnwrap(value.processToFirstContentMS), 6_000,
+            "Retained image data must not wait for a network timeout; this is a simulator regression ceiling, not a physical speed target")
+        XCTAssertEqual(first.serverIdentity, fixture.apiURL)
+        XCTAssertEqual(first.accountID, fixture.ownerID)
+        XCTAssertEqual(first.reportedItemCount, 120)
+        XCTAssertTrue(first.galleryVisible && first.qualified && !first.loadingOverlayVisible)
+        XCTAssertTrue(first.viewInteractionEnabled)
+        XCTAssertTrue(try XCTUnwrap(value.firstInteractive).qualified)
+        XCTAssertEqual(value.incompleteFrames, 0)
+        XCTAssertEqual(first.tiles.map(\.assetID), value.latest.tiles.map(\.assetID))
+        XCTAssertTrue(first.tiles.allSatisfy { !$0.assetID.hasPrefix("local-") && !$0.sourceRevision.isEmpty })
+        attach(app, evidence: json, name: "phase4-cold-cloud-first-gallery")
+        // Match the actual tapped tile's frame to the native binding identity.
+        let tile = try XCTUnwrap(app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex.first { $0.isHittable })
+        let expected = try XCTUnwrap(value.latest.tiles.first {
+            let rect = CGRect(x: $0.rect[0], y: $0.rect[1], width: $0.rect[2], height: $0.rect[3])
+            return rect.contains(CGPoint(x: tile.frame.midX, y: tile.frame.midY))
+        })
+        tile.tap()
+        let viewer = app.descendants(matching: .any)["asset-viewer"].firstMatch
+        XCTAssertTrue(viewer.waitForExistence(timeout: 10))
+        XCTAssertEqual(viewer.value as? String, expected.assetID)
+        app.buttons["viewer-close"].tap()
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 10))
+        XCTAssertFalse(viewer.exists)
+        XCTAssertFalse(app.otherElements["photos-initial-preparation"].exists)
+    }
+
+    func testOfflineWithoutUsableMetadataShowsBoundedRetry() throws {
+        continueAfterFailure = false
+        _ = try fixture()
+        let app = application(trace: false)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.staticTexts["Couldn't load photos"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["Retry"].isHittable)
+        XCTAssertTrue(app.buttons["photos-source-menu"].isHittable, "Source navigation remains available")
+        XCTAssertFalse(app.buttons.matching(identifier: "asset-tile").firstMatch.exists)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "offline-no-usable-metadata-bounded-retry"; image.lifetime = .keepAlways; add(image)
+        app.buttons["Retry"].tap()
+        XCTAssertTrue(app.staticTexts["Loading photos"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Couldn't load photos"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(identifier: "asset-tile").firstMatch.exists)
+    }
+
     func testCachedDeviceRestartKeepsFirstVisibleGalleryCompleteForTwoSeconds() throws {
         continueAfterFailure = false
         let fixture = try fixture(), app = application()

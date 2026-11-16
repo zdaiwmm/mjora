@@ -504,6 +504,7 @@ final class TimelineModel {
     /// server months paint alone and the merge lands on its own, as before.
     private static let firstPaintLocalWait: Duration = .milliseconds(500)
     private var hasLoaded = false
+    var hasCompletedInitialLoad: Bool { hasLoaded }
     private var isViewerSuspended = false
     private var isRebuildDeferred = false
     private var rebuildPending = false

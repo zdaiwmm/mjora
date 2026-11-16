@@ -786,6 +786,15 @@ final class TimelineTileView: UIView {
                 return true
             })
         MediaPresentationCoordinator.shared.imageArrived(binding.key)
+        // Only the initial covered viewport needs another readiness layout.
+        var ancestor = superview
+        while let view = ancestor {
+            if let grid = view as? TimelineGridView {
+                if grid.initialPresentationCovered { grid.setNeedsLayout() }
+                break
+            }
+            ancestor = view.superview
+        }
         #if DEBUG && targetEnvironment(simulator)
         if phase4InjectOracleFault(key: key, binding: binding) { return }
         #endif
@@ -801,6 +810,16 @@ final class TimelineTileView: UIView {
             self.imageView.image = image
         }
     }
+
+    var hasPreparedInitialImage: Bool {
+        guard showsPicture, shownDisplayKey == activeDisplayKey,
+              let surface = boundSurface, imageView.image === surface.image,
+              let bitmap = surface.image.cgImage else { return false }
+        return (min(bitmap.width, bitmap.height) >= Int(targetPixelSize.rounded(.up))
+            || thumbnailState.phase == .ready)
+    }
+
+    var initialImageIsCurrent: Bool { boundSurface?.isCurrent() == true }
 
     #if DEBUG && targetEnvironment(simulator)
     /// Calibration only: corrupt the final on-screen pixels after a real,

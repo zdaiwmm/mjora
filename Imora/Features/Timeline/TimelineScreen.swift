@@ -462,6 +462,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     @State private var isRunningServerCommand = false
     @State private var restoredPhotosPosition = false
     @State private var completedPhotosRestoration = false
+    @State private var photosPositionLoadTask: Task<Void, Never>?
+    @State private var initialPhotosPrepared = false
+    @State private var initialPhotosTimedOut = false
+    @State private var initialPhotosAttempt = 0
+
+    private var coversInitialPhotos: Bool { photosConfiguration != nil && !initialPhotosPrepared }
 
     init(
         title: String,
@@ -934,6 +940,16 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             },
             onPinchEnded: { pinchEnded() },
             configureScrollView: { scrollView in
+                if let grid = scrollView as? TimelineGridView {
+                    grid.initialPresentationCovered = coversInitialPhotos
+                    grid.initialPhotosPositionReady = model.hasRestoredLaunchViewport || completedPhotosRestoration
+                    grid.permitsEmptyInitialViewport = showsEmptyState && model.hasCompletedInitialLoad
+                        && model.rows.isEmpty && model.loadError == nil
+                    grid.onInitialViewportPrepared = {
+                        Task { @MainActor in initialPhotosPrepared = true }
+                    }
+                    if coversInitialPhotos { grid.setNeedsLayout() }
+                }
                 if photosConfiguration != nil {
                     let fullCanvas = (photosConfiguration?.controls.mode ?? .all) == .all
                     (scrollView as? TimelineGridView)?.usesFullPhotosCanvas = fullCanvas
@@ -1066,12 +1082,31 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     viewportHeight: geometry.size.height
                 )
                 .ignoresSafeArea()
-                .accessibilityHidden(photosConfiguration?.controls.mode != nil && photosConfiguration?.controls.mode != .all)
+                .accessibilityHidden(coversInitialPhotos || (photosConfiguration?.controls.mode != nil && photosConfiguration?.controls.mode != .all))
                 .allowsHitTesting((photosConfiguration?.controls.mode ?? .all) == .all)
                 // the scrollbar is the app's own everywhere, so anything
                 // that scrolls at all gets one. gating it on a row count left
                 // short albums with no indicator of any kind.
                 scrubberOverlay(scrollable: scrollable, side: side)
+                if coversInitialPhotos {
+                    VStack(spacing: 16) {
+                        if initialPhotosTimedOut {
+                            Text("Couldn't load photos")
+                            Button("Retry") {
+                                initialPhotosTimedOut = false
+                                initialPhotosAttempt += 1
+                                photosPositionLoadTask?.cancel(); photosPositionLoadTask = nil
+                                ImageLoadRecovery.shared.contentChanged()
+                                Task { await model.load() }
+                            }
+                        } else {
+                            ProgressView("Loading photos")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemBackground).ignoresSafeArea())
+                    .accessibilityIdentifier("photos-initial-preparation")
+                }
             }
             .onChange(of: scrollResetTrigger) {
                 gridController.scrollToTop()
@@ -1232,6 +1267,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             .animation(.smooth(duration: 0.25), value: isSelecting)
         }
         .deviceCopyRemovalPresentation(deviceCopyRemoval)
+        .task(id: initialPhotosAttempt) {
+            guard coversInitialPhotos else { return }
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            if coversInitialPhotos { initialPhotosTimedOut = true }
+        }
         .confirmationDialog("Back Up Again?", isPresented: Binding(
             get: { pendingRebackup != nil }, set: { if !$0 { pendingRebackup = nil } }
         ), titleVisibility: .visible, presenting: pendingRebackup) { confirmation in
@@ -1296,6 +1336,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // the pipeline outlives the screen, so a window left open would keep
         // downloading tiles for a grid nobody is looking at.
         .onDisappear {
+            photosPositionLoadTask?.cancel(); photosPositionLoadTask = nil
             model.releaseCachedLaunch()
             photosConfiguration?.controls.isSelecting = false
             MediaPresentationCoordinator.shared.cancelCheckpoint()
@@ -1379,19 +1420,31 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     private func restorePhotosPositionIfNeeded() async {
         guard let controls = photosConfiguration?.controls, !restoredPhotosPosition,
               !model.sections.isEmpty, scrollContext.viewportWidth > 0 else { return }
-        restoredPhotosPosition = true
+        #if DEBUG || PHASE4_PERFORMANCE
+        let positionStarted = ProcessInfo.processInfo.systemUptime
+        defer { LaunchPipelineTrace.record("photos-position-restoration", since: positionStarted) }
+        #endif
         if model.hasRestoredLaunchViewport {
+            restoredPhotosPosition = true
             completedPhotosRestoration = true
             return
         }
         let savedOffset = controls.scrollOffset
+        // Row changes retry this method. A cache restore can supply the position
+        // while the existing network request continues refreshing in parallel.
+        if savedOffset == nil, filter.order?.lowercased() == "asc", let last = model.sections.last,
+           last.days == nil || last.hasPartialLaunchRange {
+            if photosPositionLoadTask == nil {
+                let model = model
+                photosPositionLoadTask = Task { await model.loadBucket(last.id) }
+            }
+            return
+        }
+        restoredPhotosPosition = true
         controls.isRestoring = true
         defer {
             controls.isRestoring = false
             completedPhotosRestoration = true
-        }
-        if savedOffset == nil, filter.order?.lowercased() == "asc", let last = model.sections.last {
-            await model.loadBucket(last.id)
         }
         await Task.yield()
         gridController.reloadRows(animated: false)
