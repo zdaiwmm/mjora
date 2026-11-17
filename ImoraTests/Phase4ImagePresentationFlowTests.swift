@@ -892,13 +892,14 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             let privateX = host.view.bounds.midX - 74, publicX = host.view.bounds.midX + 74
             for _ in 0..<200 {
                 let a = try pixel(x: privateX), b = try pixel(x: publicX)
-                if a[0] > 180 && a[2] < 80 && b[0] > 50 && b[2] > 50 { break }
+                if a[0] > 180 && a[2] < 80 && b[0] > 50 && b[1] < 80 && b[2] > 50 { break }
                 try await Task.sleep(for: .milliseconds(10))
             }
             let old = try pixel(x: privateX), publicBefore = try pixel(x: publicX)
             XCTAssertGreaterThan(old[0], 180, "E1 must be an actually rendered red endpoint image")
             XCTAssertLessThan(old[2], 80)
             XCTAssertGreaterThan(publicBefore[0], 50); XCTAssertGreaterThan(publicBefore[2], 50)
+            XCTAssertLessThan(publicBefore[1], 80, "The public endpoint must be purple pixels, not a gray loading placeholder")
             let oldLease = try XCTUnwrap(client.lockedMediaLease)
             client.setInvalidStatusFixtureHook {
                 await withCheckedContinuation { continuation in

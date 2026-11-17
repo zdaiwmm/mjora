@@ -78,6 +78,7 @@ nonisolated struct RepeatedBackupFailure: Codable, Equatable, Identifiable, Send
     var count: Int
     var kind: RepeatedBackupFailureKind
     var lastFailedAt: Date
+    var diagnostic: BackupFailureDiagnostic? = nil
 
     var id: String { "\(account)\u{1F}\(localIdentifier)" }
 }
@@ -108,6 +109,7 @@ nonisolated struct RepeatedBackupFailures: Codable, Sendable {
         modificationDate: Date?,
         isVideo: Bool,
         kind: RepeatedBackupFailureKind,
+        diagnostic: BackupFailureDiagnostic? = nil,
         capturedAt: Date? = nil,
         at date: Date = Date()
     ) -> Bool {
@@ -117,6 +119,7 @@ nonisolated struct RepeatedBackupFailures: Codable, Sendable {
             if entries[index].modificationDate == modificationDate {
                 entries[index].count = min(999, entries[index].count + 1)
                 entries[index].kind = kind
+                entries[index].diagnostic = diagnostic
                 entries[index].lastFailedAt = date
                 if entries[index].capturedAt == nil { entries[index].capturedAt = capturedAt }
                 return true
@@ -139,7 +142,8 @@ nonisolated struct RepeatedBackupFailures: Codable, Sendable {
             capturedAt: capturedAt,
             count: 1,
             kind: kind,
-            lastFailedAt: date
+            lastFailedAt: date,
+            diagnostic: diagnostic
         ))
         return true
     }

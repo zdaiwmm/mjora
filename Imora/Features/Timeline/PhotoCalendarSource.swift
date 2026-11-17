@@ -192,7 +192,7 @@ final class PhotoCalendarSource {
         hasBound && !isCancelled && !requiresGridReplacement && (context?.isActive ?? gridModel.usesSuppliedAssets)
     }
     private static func exactBucket(for assetID: String, in model: TimelineModel) -> String? {
-        model.sections.first { section in section.days?.contains { $0.assets.contains { $0.id == assetID } } == true }?.id
+        model.bucketID(containingAssetID: assetID)
     }
     private func makeCaptureModel(supplied: Bool = false) -> TimelineModel {
         var capture = gridModel.filter; capture.orderBy = nil

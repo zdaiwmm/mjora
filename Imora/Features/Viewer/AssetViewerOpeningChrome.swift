@@ -423,13 +423,25 @@ private final class AssetViewerOpeningChromeRendererController:
     func capture(
         _ presentation: AssetViewerOpeningChromePresentation
     ) -> AssetViewerPreparedOpeningChrome? {
+        #if DEBUG || PHASE4_PERFORMANCE
+        let captureSpan = GalleryFrameMetrics.shared.beginSpan("opening-chrome-capture")
+        defer { GalleryFrameMetrics.shared.endSpan(captureSpan) }
+        #endif
         guard let window = view.window,
               let geometry,
               !view.bounds.isEmpty
         else { return nil }
         guard model.presentation == presentation else { return nil }
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.measure("opening-chrome-capture-layout") { view.layoutIfNeeded() }
+        let snapshot = GalleryFrameMetrics.shared.measure("opening-chrome-snapshot-after-updates") {
+            view.snapshotView(afterScreenUpdates: true)
+        }
+        guard let snapshot else { return nil }
+        #else
         view.layoutIfNeeded()
         guard let snapshot = view.snapshotView(afterScreenUpdates: true) else { return nil }
+        #endif
 
         snapshot.frame = view.bounds
         snapshot.isUserInteractionEnabled = false

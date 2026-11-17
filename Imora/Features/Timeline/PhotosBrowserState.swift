@@ -275,11 +275,16 @@ final class PhotoCalendarCache {
         monthEntries.removeAll(keepingCapacity: true)
     }
 
-    func periods(in sections: [TimelineSection], mode: PhotoBrowseMode, year: Int?, preferredAssetID: String?) -> [PhotoPeriod] {
-        let key = PeriodKey(mode: mode, year: year, preferredAssetID: preferredAssetID)
+    func periods(in sections: [TimelineSection], mode: PhotoBrowseMode, year: Int?, preferred: PhotoPeriodAnchor?) -> [PhotoPeriod] {
+        let key = PeriodKey(mode: mode, year: year, preferredAssetID: preferred?.asset.id)
         if let entry = periodEntries[mode], entry.0 == key { return entry.1 }
-        let grouped = mode == .years ? PhotoPeriod.years(in: sections, preferredAssetID: preferredAssetID)
-            : PhotoPeriod.months(in: sections, year: year, preferredAssetID: preferredAssetID)
+        var grouped = mode == .years ? PhotoPeriod.years(in: sections)
+            : PhotoPeriod.months(in: sections, year: year)
+        if let preferred, let index = grouped.firstIndex(where: { $0.bucketIDs.contains(preferred.bucketID) }) {
+            let original = grouped[index]
+            grouped[index] = PhotoPeriod(id: original.id, year: original.year, month: original.month,
+                count: original.count, bucketIDs: original.bucketIDs, cover: preferred.asset, coverBucketID: preferred.bucketID)
+        }
         let result = PhotoPeriodCardLayout.oldestFirst(grouped)
         periodEntries[mode] = (key, result)
         return result

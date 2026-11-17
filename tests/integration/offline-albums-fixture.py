@@ -6,6 +6,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import struct
+import threading
 from urllib.parse import urlsplit
 import zlib
 
@@ -47,6 +48,8 @@ VIDEO_BYTES = MOTION_PATH.read_bytes()
 
 class Handler(BaseHTTPRequestHandler):
     offline = False
+    request_counts = {}
+    counts_lock = threading.Lock()
 
     def log_message(self, *_):
         pass
@@ -63,6 +66,18 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get('Content-Length', 0))
         self.rfile.read(size)
         path = urlsplit(self.path).path
+        if path == '/control/reset-counts':
+            with Handler.counts_lock:
+                Handler.request_counts = {}
+            return self.reply({'reset': True})
+        if path == '/control/motion-visible-v1':
+            DETAILS[MOTION]['visibility'] = 'timeline'
+            DETAILS[MOTION]['thumbhash'] = 'motion-v1'
+            DETAILS[LIVE]['thumbhash'] = 'parent-v1'
+            return self.reply({'motionVersion': 'motion-v1'})
+        if path == '/control/motion-v2':
+            DETAILS[MOTION]['thumbhash'] = 'motion-v2'
+            return self.reply({'motionVersion': 'motion-v2'})
         if path == '/control/offline':
             Handler.offline = True
             return self.reply({'offline': True})
@@ -81,7 +96,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/control/status':
-            return self.reply({'offline': Handler.offline, 'ownerID': OWNER})
+            with Handler.counts_lock:
+                counts = dict(Handler.request_counts)
+            return self.reply({'offline': Handler.offline, 'ownerID': OWNER, 'requestCounts': counts})
+        with Handler.counts_lock:
+            Handler.request_counts[path] = Handler.request_counts.get(path, 0) + 1
         if Handler.offline:
             return self.reply({}, 503)
         if path.endswith('/server/ping'):
@@ -125,7 +144,14 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--serve', action='store_true', required=True)
-    parser.parse_args()
+    parser.add_argument('--port', type=int, required=True)
+    parser.add_argument('--simulator-udid', required=True)
+    parser.add_argument('--evidence-root', type=Path, required=True)
+    args = parser.parse_args()
+    if not 1024 <= args.port <= 65535:
+        parser.error('Use an unprivileged loopback port')
+    PORT, SIMULATOR, ROOT = args.port, args.simulator_udid, args.evidence_root.resolve()
+    API = f'http://127.0.0.1:{PORT}/api'
     ROOT.mkdir(parents=True, exist_ok=True)
     manifest = ROOT / 'ui-fixture.json'
     manifest.write_text(json.dumps(dict(apiURL=API, ownerID=OWNER, simulatorUDID=SIMULATOR,

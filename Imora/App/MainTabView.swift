@@ -13,6 +13,7 @@ struct MainTabView: View {
     @AppStorage(PhotosLibrarySource.preferenceKey) private var source = "all"
     @State private var cloudControls = PhotosGridControls()
     @State private var deviceControls = PhotosGridControls()
+    @State private var collectionCovers = CollectionsCoverStore()
     @State private var hidesCompactNavigation = false
     @State private var keyboardVisible = false
     @State private var selection: TabKey = .photos
@@ -71,6 +72,9 @@ struct MainTabView: View {
             content(bottomSafeArea: geometry.safeAreaInsets.bottom)
         }
         .task(id: session.client?.context.id) { await OfflineAlbumDownloads.shared.attach(session.client) }
+        .task(id: session.client?.context.id) {
+            collectionCovers.reset(client: session.client)
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { OfflineAlbumDownloads.shared.pauseAll() }
         }
@@ -97,7 +101,7 @@ struct MainTabView: View {
                         .id(session.client?.offlineAccountKey)
                 }
                 Tab("Collections", systemImage: selection == .albums ? "rectangle.stack.fill" : "rectangle.stack", value: TabKey.albums) {
-                    AlbumsTab(account: session.client?.offlineAccountKey)
+                    AlbumsTab(account: session.client?.offlineAccountKey, covers: collectionCovers)
                         .id(session.client?.offlineAccountKey)
                         .toolbarVisibility(showsLibrarySection ? .automatic : .hidden, for: .tabBar)
                 }

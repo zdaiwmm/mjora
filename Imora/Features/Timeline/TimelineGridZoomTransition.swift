@@ -12,8 +12,15 @@ nonisolated enum TimelineGridZoomGeometry {
         guard magnification.isFinite, magnification > 0 else {
             return min(range.upperBound, max(range.lowerBound, base))
         }
-        let value = min(CGFloat(range.upperBound), max(CGFloat(range.lowerBound), CGFloat(base) / magnification))
+        let value = continuousColumns(base: base, magnification: magnification, width: width)
         return Int(value.rounded())
+    }
+
+    static func continuousColumns(base: Int, magnification: CGFloat, width: CGFloat) -> CGFloat {
+        let range = AssetGridLayout.columnRange(viewportWidth: width)
+        let side = AssetGridLayout.tileSide(viewportWidth: width, columns: base) * magnification
+        let value = (width + AssetGridLayout.gutter) / max(AssetGridLayout.gutter, side + AssetGridLayout.gutter)
+        return min(CGFloat(range.upperBound), max(CGFloat(range.lowerBound), value))
     }
 
     static func offset(frame: CGRect, unitY: CGFloat, viewportY: CGFloat,
@@ -71,6 +78,18 @@ final class TimelineGridZoomTransition {
     private var sourceSide: CGFloat = 1
     private(set) var isTracking = false
     var isPrepared: Bool { anchor != nil }
+    var assetIDs: Set<String> {
+        var ids = Set(tiles.map(\.id))
+        if let anchor { ids.insert(anchor.id) }
+        return ids
+    }
+
+    func targetOffset(in grid: UIScrollView, frames: [String: CGRect]) -> CGFloat? {
+        guard let anchor, let frame = frames[anchor.id] else { return nil }
+        let end = grid.contentSize.height - grid.bounds.height + grid.adjustedContentInset.top + grid.adjustedContentInset.bottom
+        return TimelineGridZoomGeometry.offset(frame: frame, unitY: anchor.unitY,
+            viewportY: anchor.viewportPoint.y, topInset: grid.adjustedContentInset.top, endOffset: end)
+    }
 
     func begin(in grid: UIScrollView, tiles source: [TimelineTileView],
                midpoint: CGPoint, reduceMotion: Bool) {
@@ -168,11 +187,7 @@ final class TimelineGridZoomTransition {
                 completion: @escaping () -> Void) {
         isTracking = false
         guard let anchor else { cancel(); completion(); return }
-        if let frame = frames[anchor.id] {
-            let end = grid.contentSize.height - grid.bounds.height + grid.adjustedContentInset.top + grid.adjustedContentInset.bottom
-            scroll(TimelineGridZoomGeometry.offset(frame: frame, unitY: anchor.unitY,
-                   viewportY: anchor.viewportPoint.y, topInset: grid.adjustedContentInset.top, endOffset: end))
-        }
+        if let offset = targetOffset(in: grid, frames: frames) { scroll(offset) }
         guard let overlay, !reduceMotion else { cancel(); completion(); return }
         let targets = frames.mapValues { $0.offsetBy(dx: -grid.contentOffset.x, dy: -grid.contentOffset.y) }
         let captured = Set(tiles.map(\.id))

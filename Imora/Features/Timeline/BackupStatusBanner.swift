@@ -15,7 +15,7 @@ struct BackupStatusBanner: View {
                            symbol: "icloud.slash", backup: backup, reminder: true)
                 } else if let message = backup.syncHoldMessage {
                     banner(title: String(localized: "Not currently syncing"), message: message,
-                           symbol: backup.isHeldForLowBattery ? "battery.25percent" : "wifi.slash",
+                           symbol: backup.isHeldForThermal ? "thermometer" : (backup.isHeldForLowBattery ? "battery.25percent" : "wifi.slash"),
                            backup: backup, reminder: false)
                 }
                 if backup.showsRepeatedFailureBanner {
@@ -130,7 +130,7 @@ struct BackupStatusBanner: View {
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.borderedProminent)
                 .frame(minHeight: 44)
-                .disabled(PhotoAccess.shared.status != .authorized)
+                .disabled(PhotoAccess.shared.status != .authorized || backup.isHeldForThermal)
                 .accessibilityHint("Temporarily allows backup under the conditions shown above.")
                 .accessibilityIdentifier("backup-sync-this-time")
             Button("Backup Settings", action: openSettings)

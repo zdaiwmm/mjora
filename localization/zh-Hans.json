@@ -2046,5 +2046,18 @@
   "The downloaded photo could not be read.": "无法读取下载的照片。",
   "The downloaded video is not a self-contained playable file.": "下载的视频不是可独立播放的完整文件。",
   "This album contains locked, hidden or unavailable media. Remove those items before downloading the album.": "此相册包含已锁定、隐藏或不可用的媒体。请先将这些项目移出相册，再下载相册。",
-  "Update Needed": "需要更新"
+  "Update Needed": "需要更新",
+  "Preparing original": "准备原件",
+  "Uploading file": "上传文件",
+  "Verifying backup": "核验备份",
+  "Failure Details": "失败详情",
+  "Exact error details were not saved for this attempt.": "此次尝试未保存详细错误信息。",
+  "The library indexing stage prepares up to three items at a time. Background activity, Low Power Mode and temperature may reduce this limit.": "图库建立索引阶段最多同时准备三个项目。后台运行、低电量模式和温度可能降低此上限。",
+  "Download Unavailable": "下载暂不可用",
+  "Incomplete Download": "未完成的下载",
+  "This local download could not be read. Pull down to try again.": "暂时无法读取此本地下载。请下拉重试。",
+  "Remove Local Copy": "移除本地副本",
+  "Downloads Need Attention": "需要处理的下载",
+  "Open the original album to download it again.": "打开原相册可重新下载。",
+  "Remove Incomplete Download?": "移除未完成的下载？"
 }

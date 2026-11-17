@@ -123,6 +123,7 @@ final class TimelineGridController {
     func periodTile(assetID: String? = nil) -> TimelineTileView? {
         grid?.periodTile(assetID: assetID)
     }
+    func periodTiles() -> [TimelineTileView] { grid?.periodTiles() ?? [] }
 
     var scrollOffset: CGFloat { grid?.offsetY ?? 0 }
     var endOffset: CGFloat {
@@ -613,14 +614,19 @@ final class TimelineGridView: UIScrollView {
     }
 
     func periodTile(assetID: String?) -> TimelineTileView? {
-        layoutIfNeeded()
-        let visible = zoomTiles.filter { $0.convert($0.bounds, to: self).intersects(bounds.inset(by: adjustedContentInset)) }
+        let visible = periodTiles()
         if let assetID, let tile = visible.first(where: { $0.asset?.id == assetID }) { return tile }
         guard assetID == nil else { return nil }
         return visible.min { lhs, rhs in
             abs(lhs.convert(lhs.bounds, to: self).midY - bounds.midY)
                 < abs(rhs.convert(rhs.bounds, to: self).midY - bounds.midY)
         }
+    }
+
+    func periodTiles() -> [TimelineTileView] {
+        layoutIfNeeded()
+        return zoomTiles.filter { !$0.isHidden && !$0.isProjectedRemoved
+            && $0.convert($0.bounds, to: self).intersects(bounds.inset(by: adjustedContentInset)) }
     }
 
     func beginColumnPinch(at midpoint: CGPoint) {
@@ -638,33 +644,24 @@ final class TimelineGridView: UIScrollView {
         let minimum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.upperBound) / max(side, 1)
         let maximum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.lowerBound) / max(side, 1)
         let clampedScale = min(maximum * 1.05, max(minimum * 0.95, scale))
-        let columns = min(CGFloat(range.upperBound), max(CGFloat(range.lowerBound), CGFloat(pinchBaseColumns ?? context.columns) / clampedScale))
+        let columns = TimelineGridZoomGeometry.continuousColumns(base: pinchBaseColumns ?? context.columns,
+            magnification: clampedScale, width: contentWidth)
         let lower = Int(columns.rounded(.down)), upper = Int(columns.rounded(.up))
+        let lowerSide = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: lower)
+        let upperSide = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: upper)
+        let progress = lower == upper ? 0 : (lowerSide - side * clampedScale) / (lowerSide - upperSide)
         zoomTransition.update(scale: clampedScale, midpoint: midpoint, in: self,
             from: framesForPinch(columns: lower), to: framesForPinch(columns: upper),
-            progress: columns - CGFloat(lower))
+            progress: progress)
     }
 
     private func framesForPinch(columns: Int) -> [String: CGRect] {
         if let cached = pinchFrames[columns] { return cached }
         guard let model else { return [:] }
-        let tileSide = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: columns)
-        let rows = columns == model.columns ? model.rows : model.rowsForZoom(columns: columns)
         let wanted = Set(zoomTiles.compactMap { $0.asset?.id })
-        var frames: [String: CGRect] = [:]
-        var y = effectiveHeaderHeight
-        for row in rows {
-            if case .tiles(_, let runs) = row {
-                for run in runs {
-                    for (offset, asset) in run.assets.enumerated() where wanted.contains(asset.id) {
-                        var x = CGFloat(run.colStart + offset) * (tileSide + AssetGridLayout.gutter)
-                        if effectiveUserInterfaceLayoutDirection == .rightToLeft { x = contentWidth - x - tileSide }
-                        frames[asset.id] = CGRect(x: x, y: y, width: tileSide, height: tileSide)
-                    }
-                }
-            }
-            y += row.height(tileSide: tileSide)
-        }
+        let frames = model.framesForZoom(assetIDs: wanted, columns: columns, width: contentWidth,
+            rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft)
+            .mapValues { $0.offsetBy(dx: 0, dy: effectiveHeaderHeight) }
         pinchFrames[columns] = frames
         return frames
     }
@@ -680,19 +677,20 @@ final class TimelineGridView: UIScrollView {
         guard zoomTransition.isPrepared, let model else { return false }
         self.side = side
         reloadRows(animated: false)
-        let layout = layoutBox.layout(for: model, side: side)
-        var frames: [String: CGRect] = [:]
-        for (index, row) in model.rows.enumerated() {
-            guard index < layout.starts.count, case .tiles(_, let runs) = row else { continue }
-            for run in runs {
-                for (offset, asset) in run.assets.enumerated() {
-                    var x = CGFloat(run.colStart + offset) * (side + AssetGridLayout.gutter)
-                    if effectiveUserInterfaceLayoutDirection == .rightToLeft { x = contentWidth - x - side }
-                    frames[asset.id] = CGRect(x: x, y: effectiveHeaderHeight + layout.starts[index], width: side, height: side)
-                }
-            }
+        func frames() -> [String: CGRect] {
+            model.framesForZoom(assetIDs: zoomTransition.assetIDs.union(zoomTiles.compactMap { $0.asset?.id }),
+                columns: model.columns, width: contentWidth,
+                rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft)
+                .mapValues { $0.offsetBy(dx: 0, dy: effectiveHeaderHeight) }
         }
-        zoomTransition.finish(in: self, frames: frames, scroll: { [weak self] offset in
+        // Mount the destination window before collecting its additional photos.
+        // This keeps the overlay bounded even in a library with thousands of rows.
+        let initial = frames()
+        if let offset = zoomTransition.targetOffset(in: self, frames: initial) {
+            scroll(toOffsetY: offset)
+            reloadRows(animated: false)
+        }
+        zoomTransition.finish(in: self, frames: frames(), scroll: { [weak self] offset in
             self?.scroll(toOffsetY: offset)
             self?.reloadRows(animated: false)
         }, destinations: { [weak self] in self?.zoomTiles ?? [] }, completion: {})

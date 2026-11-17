@@ -54,6 +54,10 @@ final class VideoPlayback {
     private(set) var currentTime: Double = 0
     private(set) var revision = 0
 
+    init(seedDuration: Double = 0) {
+        duration = seedDuration.isFinite ? max(0, seedDuration) : 0
+    }
+
     /// user toggle, kept across pages for the viewer's lifetime. clips open
     /// silent and the speaker button is what asks for sound, so tapping a
     /// thumbnail never talks back and the audio session is claimed only once

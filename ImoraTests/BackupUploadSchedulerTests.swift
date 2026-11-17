@@ -37,6 +37,24 @@ final class BackupUploadSchedulerTests: XCTestCase {
         XCTAssertEqual(started, 0)
     }
 
+    func testSeriousHeatDuringTheRunLeavesRemainingOriginalsUnstarted() async {
+        var thermal = ProcessInfo.ThermalState.nominal
+        var started: [Int] = []
+        var completed: [Int] = []
+        await BackupUploadScheduler.run([0, 1, 2], workers: 1,
+            workerLimit: { BackupRuntimePolicy.workers(requested: 1, background: false, lowPower: false, thermal: thermal) },
+            operation: { item in
+                started.append(item)
+                return { item }
+            }, didFinish: { item, _ in
+                completed.append(item)
+                thermal = .serious
+                return .proceed
+            })
+        XCTAssertEqual(started, [0])
+        XCTAssertEqual(completed, [0])
+    }
+
     func testAuthorityPauseKeepsUnstartedQueueAndDoesNotCancelHealthyWorker() async {
         enum Outcome: Sendable { case uploaded, authorityPaused }
         let healthyStarted = expectation(description: "healthy transfer started")
