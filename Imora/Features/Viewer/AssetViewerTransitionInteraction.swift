@@ -65,6 +65,6 @@ nonisolated enum AssetViewerOpeningChromeReveal {
     }
 
     static func duration(reduceMotion: Bool) -> TimeInterval {
-        reduceMotion ? 0 : 0.16
+        reduceMotion ? 0 : PhotosMotion.chromeDuration
     }
 }

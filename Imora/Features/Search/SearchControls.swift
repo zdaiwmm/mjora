@@ -160,7 +160,7 @@ struct SearchResultsHeader: View {
                 }
             }
             .font(.headline)
-            .animation(.snappy, value: countText)
+            .animation(PhotosMotion.layout, value: countText)
             .accessibilityIdentifier("search-result-count")
 
             Spacer()

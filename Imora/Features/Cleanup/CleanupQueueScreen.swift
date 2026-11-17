@@ -320,7 +320,7 @@ struct CleanupQueueScreen: View {
 
     private func remove(_ ids: [String]) {
         let gone = Set(ids)
-        withAnimation(.smooth) { items.removeAll { gone.contains($0.id) } }
+        withAnimation(PhotosMotion.layout) { items.removeAll { gone.contains($0.id) } }
         selection.subtract(gone)
     }
 

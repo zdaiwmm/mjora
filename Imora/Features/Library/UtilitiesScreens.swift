@@ -120,7 +120,7 @@ struct DuplicatesScreen: View {
         do {
             let results = try await client.resolveDuplicates(resolutions)
             let failed = Set(results.filter { !$0.success }.map(\.id))
-            withAnimation { groups.removeAll { ids.contains($0.id) && !failed.contains($0.id) } }
+            withAnimation(PhotosMotion.layout) { groups.removeAll { ids.contains($0.id) && !failed.contains($0.id) } }
             if !failed.isEmpty {
                 ErrorToastCenter.shared.show(failed.count == 1 ? String(localized: "Couldn't resolve 1 group.") : String(localized: "Couldn't resolve \(failed.count) groups."))
             }
@@ -134,7 +134,7 @@ struct DuplicatesScreen: View {
         let snapshot = groups
         await OptimisticAction.perform(
             errorMessage: String(localized: "Couldn't dismiss the group."),
-            apply: { withAnimation { groups.removeAll { $0.id == group.id } } },
+            apply: { withAnimation(PhotosMotion.layout) { groups.removeAll { $0.id == group.id } } },
             rollback: { groups = snapshot },
             request: { try await client.dismissDuplicates(id: group.id) }
         )

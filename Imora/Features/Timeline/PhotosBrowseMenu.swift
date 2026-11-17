@@ -197,7 +197,7 @@ struct PhotoPeriodControls: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 12) {
                 Button {
-                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) {
+                    withAnimation(reduceMotion ? nil : PhotosMotion.layout) {
                         controls.reveal(bucketID: nil)
                         controls.browsingPast = false
                     }
@@ -239,7 +239,7 @@ struct PhotosNavigationBar: View {
     @Namespace private var glassNamespace
     @Namespace private var selectionNamespace
 
-    private var motion: Animation? { reduceMotion ? nil : .smooth(duration: 0.35) }
+    private var motion: Animation? { reduceMotion ? nil : PhotosMotion.layout }
 
     var body: some View {
         GlassEffectContainer(spacing: showsPeriods ? 14 : 12) {
@@ -415,7 +415,9 @@ private final class PhotoPeriodSegmentedControl: UISegmentedControl {
         selectionBackground.layer.cornerRadius = target.height / 2
         if !reduceMotion, selectionBackground.frame.size == target.size,
            selectionBackground.frame.origin != target.origin {
-            UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            UIView.animate(withDuration: PhotosMotion.layoutDuration, delay: 0,
+                           usingSpringWithDamping: 1, initialSpringVelocity: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) {
                 self.selectionBackground.frame = target
             }
         } else { selectionBackground.frame = target }

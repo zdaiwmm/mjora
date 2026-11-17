@@ -319,7 +319,7 @@ struct SpatialSceneOverlay: View {
                     .allowsHitTesting(false)
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: textures == nil)
+        .animation(reduceMotion ? nil : PhotosMotion.controls, value: textures == nil)
         .task(id: assetID) { await load() }
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }

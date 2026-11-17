@@ -142,7 +142,7 @@ struct MemorySlideshowScreen: View {
                         }.padding(.horizontal, 20)
                     }
                     .onChange(of: playback.index) { _, index in
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(index, anchor: .center) }
+                        withAnimation(reduceMotion ? nil : PhotosMotion.layout) { proxy.scrollTo(index, anchor: .center) }
                     }
                 }
                 .frame(height: 48)
@@ -188,7 +188,7 @@ struct MemorySlideshowScreen: View {
     }
 
     private func setControls(_ visible: Bool) {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { showsControls = visible }
+        withAnimation(reduceMotion ? nil : PhotosMotion.controls) { showsControls = visible }
         scheduleControlHiding()
     }
 
@@ -198,7 +198,7 @@ struct MemorySlideshowScreen: View {
               !UIAccessibility.isVoiceOverRunning else { return }
         hideControlsTask = Task {
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { showsControls = false }
+            withAnimation(reduceMotion ? nil : PhotosMotion.controls) { showsControls = false }
         }
     }
 }

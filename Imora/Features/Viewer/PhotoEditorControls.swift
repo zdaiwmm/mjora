@@ -220,7 +220,7 @@ struct EditorTabBar<Tab: Hashable>: View {
             ForEach(items) { item in
                 let isSelected = item.tab == selection
                 Button {
-                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.25)) {
+                    withAnimation(reduceMotion ? nil : PhotosMotion.editorTools) {
                         selection = item.tab
                     }
                 } label: {
@@ -657,8 +657,8 @@ struct EditorPrimaryBar: View {
                 .accessibilityIdentifier(doneIdentifier)
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: hasChanges)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSaving)
+        .animation(reduceMotion ? nil : PhotosMotion.controls, value: hasChanges)
+        .animation(reduceMotion ? nil : PhotosMotion.controls, value: isSaving)
     }
 
     private func title(_ text: String, size: CGSize) -> some View {

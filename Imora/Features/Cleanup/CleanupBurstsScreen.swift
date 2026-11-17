@@ -331,7 +331,7 @@ struct CleanupBurstsScreen: View {
 
     private func removeAssets(_ ids: [String]) {
         let gone = Set(ids)
-        withAnimation(.smooth) {
+        withAnimation(PhotosMotion.layout) {
             groups = groups
                 .map { group in
                     var group = group
@@ -387,7 +387,7 @@ struct CleanupBurstsScreen: View {
             return
         }
         let done = Set(targets.map(\.id))
-        withAnimation(.smooth) { groups.removeAll { done.contains($0.id) } }
+        withAnimation(PhotosMotion.layout) { groups.removeAll { done.contains($0.id) } }
         for group in targets {
             focused[group.id] = nil
             for asset in group.assets { overrides[asset.id] = nil }
@@ -424,7 +424,7 @@ struct CleanupBurstsScreen: View {
         let ids = [primary] + group.assets.map(\.id).filter { $0 != primary }
         do {
             try await client.createStack(assetIDs: ids)
-            withAnimation(.smooth) { groups.removeAll { $0.id == group.id } }
+            withAnimation(PhotosMotion.layout) { groups.removeAll { $0.id == group.id } }
             actions += 1
             notice = CleanupNotice(message: String(localized: "Stacked \(CleanupText.count(ids.count, unit: .photo))"))
             await refreshCount()

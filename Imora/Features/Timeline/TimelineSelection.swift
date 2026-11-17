@@ -323,7 +323,7 @@ struct SelectionControlBar: View {
                 .accessibilityIdentifier("selection-show-selected")
             }
         }
-        .animation(.snappy(duration: 0.2), value: count)
+        .animation(PhotosMotion.controls, value: count)
     }
 
     private func circleButton(

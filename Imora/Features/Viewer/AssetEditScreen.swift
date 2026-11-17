@@ -450,7 +450,7 @@ struct AssetEditScreen: View {
         draft?.submission != nil || legacyRecovery.needsSave(draftChanged: state != initialState || effectiveAdjust != initialAdjust || removesPreservedEdits)
     }
     private var hasDraftIntent: Bool { hasChanges || adjust != initialAdjust }
-    private var editAnimation: Animation? { reduceMotion ? nil : .smooth(duration: 0.28) }
+    private var editAnimation: Animation? { reduceMotion ? nil : PhotosMotion.layout }
     private var canUndo: Bool { !undoStack.isEmpty || committed.map { $0 != snapshot } == true }
 
     private var snapshot: EditSnapshot {
@@ -683,7 +683,7 @@ struct AssetEditScreen: View {
             .editorPrimaryBarRoom()
         }
         .allowsHitTesting(!isSaving)
-        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: tool)
+        .animation(reduceMotion ? nil : PhotosMotion.editorTools, value: tool)
         .onChange(of: effectiveAdjust) { showsOriginal = false; renderAdjust() }
         .onChange(of: state) { if canUseUnifiedEditor { showsOriginal = false; renderAdjust() } }
     }
@@ -1841,7 +1841,7 @@ private struct AnimatedCropFrame: View, Animatable {
             }
             .stroke(.white.opacity(0.35), lineWidth: 0.5)
             .opacity(isDragging ? 1 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isDragging)
+            .animation(reduceMotion ? nil : PhotosMotion.controls, value: isDragging)
 
             // `PUCropHandleView`s in the label colour, all outside the
             // crop: a 1pt edge, 20x3 corners from 3pt past it and 25x3

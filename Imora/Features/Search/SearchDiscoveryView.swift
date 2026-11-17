@@ -277,7 +277,7 @@ struct SearchDiscoveryView: View {
         .padding(.vertical)
         .frame(maxWidth: 900, alignment: .leading)
         .frame(maxWidth: .infinity)
-        .animation(.snappy, value: recents.items)
+        .animation(PhotosMotion.layout, value: recents.items)
     }
 
     // MARK: - sections

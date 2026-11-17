@@ -237,7 +237,7 @@ struct VideoTrimEditor: View {
                         .monospacedDigit()
                         .offset(y: -24.33)
                         .opacity(scrubbedTime == nil ? 0 : 1)
-                        .animation(.easeOut(duration: 0.15), value: scrubbedTime == nil)
+                        .animation(PhotosMotion.controls, value: scrubbedTime == nil)
                         .allowsHitTesting(false)
                 }
 
@@ -564,7 +564,7 @@ private struct TrimScrubber: View {
             .gesture(drag(track: track, startX: startX, endX: endX))
         }
         .frame(height: Self.handleHeight)
-        .animation(.smooth(duration: 0.3), value: zoomPivot)
+        .animation(PhotosMotion.layout, value: zoomPivot)
     }
 
     /// the stretch of the original the track shows: all of it, or a fifth

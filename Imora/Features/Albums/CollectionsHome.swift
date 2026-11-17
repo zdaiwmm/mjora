@@ -95,7 +95,7 @@ struct CollectionsHome: View {
                     .accessibilityIdentifier("collections-edit-pins")
             }
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { layout.toggleCollapsed(section) }
+                withAnimation(PhotosMotion.layout) { layout.toggleCollapsed(section) }
             } label: {
                 Image(systemName: layout.collapsed.contains(section) ? "chevron.right" : "chevron.down")
                     .font(.caption.weight(.bold))

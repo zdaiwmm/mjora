@@ -35,7 +35,7 @@ struct LocalPhotosBanner: View {
                     .accessibilityIdentifier("local-photos-allow")
 
                     Button("Not Now") {
-                        withAnimation(.smooth) { dismissed = true }
+                        withAnimation(PhotosMotion.layout) { dismissed = true }
                     }
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
