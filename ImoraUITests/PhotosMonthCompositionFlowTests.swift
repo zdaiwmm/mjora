@@ -18,6 +18,7 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         let fixture = try OwnedUIFixture.load()
         let app = XCUIApplication()
         OwnedUIFixture.configure(app)
+        app.launchEnvironment["IMORA_FRAME_TRACE"] = "1"
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
@@ -35,7 +36,7 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
             return app.buttons["photos-source-menu"].exists && app.buttons["photos-source-menu"].isHittable
         }
         app.buttons["photos-source-menu"].tap()
-        let cloud = labelButton(app, ["云端照片", "Cloud Photos"], excludingID: "photos-source-menu")
+        let cloud = labelButton(app, ["云端", "Cloud"], excludingID: "photos-source-menu")
         XCTAssertTrue(cloud.waitForExistence(timeout: 5)); cloud.tap()
         wait(app, "Cloud source returns to All") { app.buttons["photos-sort-filter"].isHittable }
         chooseMenu(app, labels: ["拍摄日期", "Date Captured"])
@@ -249,7 +250,7 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         let source = app.buttons["photos-source-menu"]
         if source.waitForExistence(timeout: 15), source.isHittable {
             source.tap()
-            let cloud = labelButton(app, ["云端照片", "Cloud Photos"], excludingID: "photos-source-menu")
+            let cloud = labelButton(app, ["云端", "Cloud"], excludingID: "photos-source-menu")
             if cloud.waitForExistence(timeout: 4), cloud.isHittable { cloud.tap() }
         }
     }
@@ -326,6 +327,60 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
             return !value.hasPrefix("0:00 / ") && !value.hasPrefix("0:00, ")
         }
         capture(app, "gallery-video-playing")
+        let play = app.buttons["video-play-pause"]
+        let mute = app.buttons["video-mute"]
+        // The synthetic clip is only three seconds long and may have ended
+        // while XCTest captured its playing frame and accessibility tree.
+        if ["播放", "Play"].contains(play.label) {
+            play.tap()
+            wait(app, "Playback can restart") { ["暂停", "Pause"].contains(play.label) }
+        }
+        let restingFrame = controls.frame
+        play.tap()
+        wait(app, "Tapping pauses the video") { ["播放", "Play"].contains(play.label) }
+        let originalMute = mute.label
+        mute.tap()
+        wait(app, "Sound button changes the mute state") { mute.label != originalMute }
+        mute.tap()
+        wait(app, "Sound can be muted again") { mute.label == originalMute }
+        let oldProgress = scrubber.value as? String
+        scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)))
+        wait(app, "Dragging seeks the paused video") { scrubber.value as? String != oldProgress }
+        XCTAssertTrue(["播放", "Play"].contains(play.label), "Seeking a paused clip must keep it paused")
+        capture(app, "gallery-video-controls-interactive")
+        scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)).tap()
+        let mediaPoint = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        mediaPoint.tap()
+        wait(app, "Hidden transport controls stop receiving input") { !play.isHittable && !mute.isHittable }
+        mediaPoint.tap()
+        wait(app, "Transport remains interactive after showing") { play.isHittable && mute.isHittable }
+        XCTAssertEqual(controls.frame.minY, restingFrame.minY, accuracy: 1)
+        play.tap()
+        wait(app, "Playback resumes after showing the controls") { ["暂停", "Pause"].contains(play.label) }
+        capture(app, "gallery-video-controls-restored")
+    }
+
+    func testForegroundAndSourceSwitchKeepTheCloudLibraryVisible() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        for pass in 0..<3 {
+            app.buttons["photos-source-menu"].tap()
+            let local = labelButton(app, ["本机", "On Device"], excludingID: "photos-source-menu")
+            XCTAssertTrue(local.waitForExistence(timeout: 5)); local.tap()
+            wait(app, "Device navigation is ready") { app.buttons["photos-source-menu"].isHittable }
+            capture(app, "gallery-device-source-\(pass)")
+            app.buttons["photos-source-menu"].tap()
+            let cloud = labelButton(app, ["云端", "Cloud"], excludingID: "photos-source-menu")
+            XCTAssertTrue(cloud.waitForExistence(timeout: 5)); cloud.tap()
+            wait(app, "Cloud tiles survive the source switch") { app.buttons.matching(identifier: "asset-tile").count > 0 }
+            XCUIDevice.shared.press(.home)
+            app.activate()
+            wait(app, "Cloud navigation and photos return after backgrounding") {
+                app.buttons["photos-source-menu"].isHittable && app.buttons.matching(identifier: "asset-tile").count > 0
+            }
+            capture(app, "gallery-cloud-foreground-\(pass)")
+        }
     }
 
     func testCloudMonthsExposeEveryDayWithDistinctAdaptiveGeometry() throws {
@@ -370,4 +425,128 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         capture(app, "month-added-sort-preserved", frames: "Added isSelected=\(added.isSelected); value=\(String(describing: added.value))")
         XCTAssertTrue(added.isSelected || (added.value as? String) == "1", "Returning from a capture-month card must preserve All's actual Added selection")
     }
+
+    func testUnifiedNativeSourcesAndQuietBackupGlyphs() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        var observations: [String] = []
+        func count() -> Int { Int((app.buttons["photos-source-menu"].value as? String ?? "").filter(\.isNumber)) ?? 0 }
+        let cloudCount = count()
+        for labels in [["全部", "All Sources"], ["本机", "On Device"], ["云端", "Cloud"], ["全部", "All Sources"]] {
+            let source = app.buttons["photos-source-menu"]
+            wait(app, "Source control is ready") { source.isHittable }
+            source.tap()
+            XCTAssertFalse(labelButton(app, ["备份与同步", "Backup & Sync"]).exists)
+            let item = labelButton(app, labels, excludingID: "photos-source-menu")
+            XCTAssertTrue(item.waitForExistence(timeout: 5))
+            capture(app, "unified-native-source-menu")
+            let began = ProcessInfo.processInfo.systemUptime
+            item.tap()
+            wait(app, "Source returns a usable grid", timeout: 8) {
+                guard source.isHittable else { return false }
+                if labels[0] == "全部" { return count() > cloudCount }
+                if labels[0] == "云端" { return count() == cloudCount }
+                // Several identical device originals may share one verified
+                // cloud copy, so the device count can exceed the union count.
+                return ["本机", "On Device"].contains(source.label) && count() > 0
+            }
+            observations.append("\(labels[0]): automation-to-ready=\(ProcessInfo.processInfo.systemUptime - began), count=\(String(describing: source.value))")
+            capture(app, "unified-source-\(labels[0])")
+        }
+        let attachment = XCTAttachment(string: observations.joined(separator: "\n"))
+        attachment.name = "unified-source-switch-observations"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    func testUnifiedGalleryScrollHitches() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        app.buttons["photos-source-menu"].tap()
+        let all = labelButton(app, ["全部", "All Sources"], excludingID: "photos-source-menu")
+        XCTAssertTrue(all.waitForExistence(timeout: 5)); all.tap()
+        wait(app, "Combined grid is visible") { app.buttons.matching(identifier: "asset-tile").count > 0 }
+        let options = XCTMeasureOptions(); options.iterationCount = 3
+        measure(metrics: [XCTHitchMetric(application: app), XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options) {
+            app.swipeUp(velocity: .fast)
+            app.swipeUp(velocity: .fast)
+            app.swipeDown(velocity: .fast)
+            app.swipeDown(velocity: .fast)
+        }
+        capture(app, "unified-scroll-performance")
+    }
+
+    func testUnifiedPhotoOpenAndReturnHitches() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        app.buttons["photos-source-menu"].tap()
+        let all = labelButton(app, ["全部", "All Sources"], excludingID: "photos-source-menu")
+        XCTAssertTrue(all.waitForExistence(timeout: 5)); all.tap()
+        let options = XCTMeasureOptions(); options.iterationCount = 3
+        measure(metrics: [XCTHitchMetric(application: app), XCTClockMetric()], options: options) {
+            let tiles = app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex
+            guard let tile = tiles.first(where: { $0.isHittable && $0.frame.midY > 190 && $0.frame.midY < 600 }) else {
+                XCTFail("No visible photo to open"); return
+            }
+            tile.tap()
+            let close = app.buttons["viewer-close"]
+            XCTAssertTrue(close.waitForExistence(timeout: 6))
+            close.tap()
+            XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 6))
+        }
+        capture(app, "unified-open-return-performance")
+    }
+    func testUnifiedRecordedFailureShowsRecoveryAndCanRetry() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        app.buttons["photos-source-menu"].tap()
+        let review = labelButton(app, ["查看失败的项目", "Review Failed Items"])
+        guard review.waitForExistence(timeout: 5) else {
+            throw XCTSkip("The owned fixture has no recorded backup failure")
+        }
+        review.tap()
+        let guide = labelButton(app, ["查看解决方法", "How to Fix"])
+        XCTAssertTrue(guide.waitForExistence(timeout: 5))
+        capture(app, "unified-backup-failure-list")
+        guide.tap()
+        XCTAssertTrue(app.staticTexts["backup-failure-recovery"].waitForExistence(timeout: 5))
+        capture(app, "unified-backup-failure-recovery")
+        let retry = app.buttons["backup-retry-failed"]
+        XCTAssertTrue(retry.isHittable); retry.tap()
+        wait(app, "The recovery retry completes", timeout: 40) {
+            retry.isEnabled && !retry.label.contains("Retrying") && !retry.label.contains("重试中")
+        }
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        wait(app, "Verified retry removes the recorded failure", timeout: 20) {
+            app.staticTexts.matching(NSPredicate(format: "label IN %@", ["没有备份失败的项目", "No Failed Backups"])).firstMatch.exists
+        }
+        capture(app, "unified-backup-failure-resolved")
+    }
+
+    func testUnifiedSinglePhotoBackupUpdatesTheOpenViewer() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        app.buttons["photos-source-menu"].tap()
+        let all = labelButton(app, ["全部", "All Sources"], excludingID: "photos-source-menu")
+        XCTAssertTrue(all.waitForExistence(timeout: 5)); all.tap()
+        wait(app, "Unbacked device photo is present") {
+            app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex.contains {
+                $0.isHittable && ($0.label.contains("未备份") || $0.label.contains("Not backed up"))
+            }
+        }
+        let tile = try XCTUnwrap(app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex.first {
+            $0.isHittable && $0.frame.midY > 190 && ($0.label.contains("未备份") || $0.label.contains("Not backed up"))
+        })
+        tile.tap()
+        let backup = app.buttons["viewer-back-up"]
+        XCTAssertTrue(backup.waitForExistence(timeout: 10))
+        capture(app, "unified-viewer-before-backup")
+        backup.tap()
+        let complete = app.buttons.matching(NSPredicate(format: "label IN %@", ["已备份", "Backed up"])).firstMatch
+        wait(app, "Verified backup reaches the open viewer", timeout: 40) { complete.exists }
+        capture(app, "unified-viewer-after-backup")
+        XCTAssertFalse(app.buttons["viewer-back-up"].exists)
+        app.buttons["viewer-close"].tap()
+        wait(app, "Combined grid remains usable after backup") { app.buttons["photos-source-menu"].isHittable }
+        capture(app, "unified-grid-after-single-backup")
+    }
+
 }

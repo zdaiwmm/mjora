@@ -17,6 +17,14 @@ struct BackupScreen: View {
                     LabeledContent("Connected Through", value: connectionText)
                     if let message = backup.syncHoldMessage { Text(message).foregroundStyle(.secondary) }
                 }
+                if backup.hasBackupFailure {
+                    Section {
+                        NavigationLink { BackupFailuresScreen() } label: {
+                            Label("Review Failed Items", systemImage: "exclamationmark.icloud")
+                        }
+                        .accessibilityIdentifier("backup-review-failures")
+                    }
+                }
                 repeatedFailuresSection(backup)
                 Section {
                     NavigationLink { CleanupSettingsScreen() } label: {

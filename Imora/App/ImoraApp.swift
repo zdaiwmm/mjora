@@ -17,6 +17,9 @@ struct ImoraApp: App {
         let session = SessionStore()
         _session = State(initialValue: session)
         AppDelegate.launchSession = session
+        #if DEBUG
+        if NSClassFromString("XCTestCase") != nil { return }
+        #endif
         // set before any scene exists so a backup report landing mid-launch
         // is still presented.
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
@@ -39,9 +42,20 @@ struct ImoraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environment(session)
-                .environment(appUpdates)
+            #if DEBUG
+            let hostsUnitTests = NSClassFromString("XCTestCase") != nil
+            #else
+            let hostsUnitTests = false
+            #endif
+            if hostsUnitTests {
+                // Tests mount their own real windows. A second signed-in
+                // gallery would compete for the shared image/checkpoint pipeline.
+                Color.clear
+            } else {
+                RootView()
+                    .environment(session)
+                    .environment(appUpdates)
+            }
         }
     }
 }
@@ -160,8 +174,11 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                ImageLoadRecovery.shared.becameActive()
                 session.restoreSessionIfAvailable()
+                if UIApplication.shared.isProtectedDataAvailable {
+                    ImageLoader.shared.configure(client: session.client)
+                }
+                ImageLoadRecovery.shared.becameActive()
                 ShareUploadCoordinator.shared.resumePending()
                 // returning to the foreground picks up photos taken meanwhile
                 // and reconnects the realtime channel, which resyncs grids.
@@ -200,9 +217,9 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.protectedDataDidBecomeAvailableNotification
         )) { _ in
-            ImageLoadRecovery.shared.protectedDataBecameAvailable()
             session.restoreSessionIfAvailable()
             ImageLoader.shared.configure(client: session.client)
+            ImageLoadRecovery.shared.protectedDataBecameAvailable()
             ShareUploadCoordinator.shared.resumePending()
         }
         .onReceive(NotificationCenter.default.publisher(

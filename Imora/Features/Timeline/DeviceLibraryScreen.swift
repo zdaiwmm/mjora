@@ -83,6 +83,9 @@ struct DeviceLibraryScreen: View {
                 reload()
                 await loadTask?.value
             }
+            .onChange(of: filterLoading) { _, loading in
+                if !loading, model.flatAssets.isEmpty { photosConfiguration?.onReady() }
+            }
             .onChange(of: photosConfiguration?.controls.mediaFilter) { _, _ in reload() }
             .onChange(of: photosConfiguration?.controls.sortByAdded) { _, _ in applyPresentation() }
             .onChange(of: session.realtime?.localGeneration) { _, _ in reload() }

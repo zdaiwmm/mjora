@@ -109,7 +109,7 @@ final class PhotosReducedMotionTests: XCTestCase, @unchecked Sendable {
     private func selectSource(_ app: XCUIApplication, device: Bool) {
         let heading = app.buttons["photos-source-menu"]
         XCTAssertTrue(waitForHittable(heading, timeout: 10)); heading.tap()
-        let labels = device ? ["本机", "On Device"] : ["云端照片", "Cloud Photos"]
+        let labels = device ? ["本机", "On Device"] : ["云端", "Cloud"]
         let choices = app.buttons.matching(NSPredicate(format: "label IN %@", labels))
         let choice = choices.allElementsBoundByIndex.first(where: \.isHittable) ?? choices.firstMatch
         XCTAssertTrue(waitForHittable(choice, timeout: 5)); choice.tap()

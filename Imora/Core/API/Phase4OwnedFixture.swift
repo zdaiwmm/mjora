@@ -16,7 +16,7 @@ nonisolated struct Phase4OwnedFixture: Decodable, Sendable {
     /// Only account preparation and deliberate UI calibration use this mode.
     static var automaticPreparationName: String? {
         let name = ProcessInfo.processInfo.environment["IMORA_PHASE4_OWNED_FIXTURE"]
-        return ["entry", "benchmark", "live"].contains(name ?? "") ? name : nil
+        return ["entry", "benchmark", "live", "legacy"].contains(name ?? "") ? name : nil
     }
 
     static func load(_ name: String) throws -> Phase4OwnedFixture {

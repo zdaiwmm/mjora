@@ -479,14 +479,25 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.begin("gallery-scroll")
+        #endif
         setIdle(false)
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { setIdle(true) }
+        if !decelerate {
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.end("gallery-scroll")
+            #endif
+            setIdle(true)
+        }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.end("gallery-scroll")
+        #endif
         setIdle(true)
     }
 
@@ -593,6 +604,8 @@ final class TimelineGridView: UIScrollView {
     }
     #endif
     let zoomTransition = TimelineGridZoomTransition()
+    private var pinchBaseColumns: Int?
+    private var pinchFrames: [Int: [String: CGRect]] = [:]
     var currentTileSide: CGFloat { side }
 
     private var zoomTiles: [TimelineTileView] {
@@ -611,17 +624,49 @@ final class TimelineGridView: UIScrollView {
     }
 
     func beginColumnPinch(at midpoint: CGPoint) {
+        pinchBaseColumns = context?.columns
+        pinchFrames.removeAll(keepingCapacity: true)
+        setNeedsLayout()
         layoutIfNeeded()
         zoomTransition.begin(in: self, tiles: zoomTiles, midpoint: midpoint,
                              reduceMotion: context?.reduceMotion ?? UIAccessibility.isReduceMotionEnabled)
     }
 
     func updateColumnPinch(scale: CGFloat, at midpoint: CGPoint) {
-        guard context != nil, scale.isFinite, scale > 0 else { return }
+        guard let context, scale.isFinite, scale > 0 else { return }
         let range = AssetGridLayout.columnRange(viewportWidth: contentWidth)
         let minimum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.upperBound) / max(side, 1)
         let maximum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.lowerBound) / max(side, 1)
-        zoomTransition.update(scale: min(maximum * 1.05, max(minimum * 0.95, scale)), midpoint: midpoint, in: self)
+        let clampedScale = min(maximum * 1.05, max(minimum * 0.95, scale))
+        let columns = min(CGFloat(range.upperBound), max(CGFloat(range.lowerBound), CGFloat(pinchBaseColumns ?? context.columns) / clampedScale))
+        let lower = Int(columns.rounded(.down)), upper = Int(columns.rounded(.up))
+        zoomTransition.update(scale: clampedScale, midpoint: midpoint, in: self,
+            from: framesForPinch(columns: lower), to: framesForPinch(columns: upper),
+            progress: columns - CGFloat(lower))
+    }
+
+    private func framesForPinch(columns: Int) -> [String: CGRect] {
+        if let cached = pinchFrames[columns] { return cached }
+        guard let model else { return [:] }
+        let tileSide = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: columns)
+        let rows = columns == model.columns ? model.rows : model.rowsForZoom(columns: columns)
+        let wanted = Set(zoomTiles.compactMap { $0.asset?.id })
+        var frames: [String: CGRect] = [:]
+        var y = effectiveHeaderHeight
+        for row in rows {
+            if case .tiles(_, let runs) = row {
+                for run in runs {
+                    for (offset, asset) in run.assets.enumerated() where wanted.contains(asset.id) {
+                        var x = CGFloat(run.colStart + offset) * (tileSide + AssetGridLayout.gutter)
+                        if effectiveUserInterfaceLayoutDirection == .rightToLeft { x = contentWidth - x - tileSide }
+                        frames[asset.id] = CGRect(x: x, y: y, width: tileSide, height: tileSide)
+                    }
+                }
+            }
+            y += row.height(tileSide: tileSide)
+        }
+        pinchFrames[columns] = frames
+        return frames
     }
 
     func prepareColumnChange() {
@@ -631,6 +676,7 @@ final class TimelineGridView: UIScrollView {
 
     @discardableResult
     func finishColumnChange(side: CGFloat) -> Bool {
+        defer { pinchBaseColumns = nil; pinchFrames.removeAll(keepingCapacity: true) }
         guard zoomTransition.isPrepared, let model else { return false }
         self.side = side
         reloadRows(animated: false)
@@ -713,6 +759,7 @@ final class TimelineGridView: UIScrollView {
     private var placeholderPool: [TimelinePlaceholderView] = []
     /// rows that move or arrive inside the current pass animate there.
     private var animatesLayout = false
+    private var reflowTiles: [String: TimelineReflowTile] = [:]
 
     private var lastScroll: TimelineGridScroll?
     private var footerVisible = false
@@ -906,7 +953,8 @@ final class TimelineGridView: UIScrollView {
         }
         let top = offsetY - effectiveHeaderHeight
         let (before, after): (CGFloat, CGFloat)
-        switch controller?.direction ?? 0 {
+        switch pinchBaseColumns == nil ? controller?.direction ?? 0 : 2 {
+        case 2: (before, after) = (bounds.height * 2, bounds.height * 2)
         case 1: (before, after) = (Self.bufferBehind, Self.bufferAhead)
         case -1: (before, after) = (Self.bufferAhead, Self.bufferBehind)
         default: (before, after) = (Self.buffer, Self.buffer)
@@ -954,6 +1002,11 @@ final class TimelineGridView: UIScrollView {
         } else {
             // a swap: the views follow their row ids, so a reflow moves them
             // instead of repainting every row in place.
+            for entry in mounted {
+                for tile in (entry.view as? TimelineTileRowView)?.takeTilesForReflow(in: self) ?? [] {
+                    if let id = tile.view.asset?.id { reflowTiles[id] = tile }
+                }
+            }
             var byID: [String: MountedRow] = [:]
             byID.reserveCapacity(mounted.count)
             for entry in mounted { byID[entry.id] = entry }
@@ -970,6 +1023,8 @@ final class TimelineGridView: UIScrollView {
                 }
             }
             for entry in byID.values { recycle(entry) }
+            for tile in reflowTiles.values { tile.view.unregister(); tile.view.recycle() }
+            reflowTiles.removeAll(keepingCapacity: true)
         }
 
         for (offset, entry) in next.enumerated() {
@@ -982,7 +1037,7 @@ final class TimelineGridView: UIScrollView {
                 UIView.performWithoutAnimation {
                     entry.view.frame = frame
                     entry.view.layoutIfNeeded()
-                    if animatesLayout { entry.view.alpha = 0 }
+                    if animatesLayout, entry.kind != .tiles { entry.view.alpha = 0 }
                 }
                 if animatesLayout { entry.view.alpha = 1 }
             } else if entry.view.frame != frame {
@@ -1033,7 +1088,11 @@ final class TimelineGridView: UIScrollView {
         view.isHidden = false
         view.alpha = 1
         let entry = MountedRow(id: row.id, kind: kind, row: row, view: view)
-        UIView.performWithoutAnimation {
+        if reflowTiles.isEmpty {
+            UIView.performWithoutAnimation {
+                configure(entry, index: index, context: context, removals: removals, arriving: true)
+            }
+        } else {
             configure(entry, index: index, context: context, removals: removals, arriving: true)
         }
         if case .placeholder(_, let bucketID, _, _) = row {
@@ -1049,7 +1108,15 @@ final class TimelineGridView: UIScrollView {
         removals: Set<String>,
         arriving: Bool = false
     ) {
-        let animated = animatesLayout && !arriving
+        let reflowsTiles = entry.kind == .tiles && !reflowTiles.isEmpty
+        let animated = animatesLayout && (!arriving || reflowsTiles)
+        if reflowsTiles, let model {
+            let layout = layoutBox.layout(for: model, side: side)
+            UIView.performWithoutAnimation {
+                entry.view.frame = CGRect(x: 0, y: effectiveHeaderHeight + layout.starts[index],
+                                          width: contentWidth, height: side)
+            }
+        }
         switch entry.row {
         case .tiles(_, let runs):
             (entry.view as? TimelineTileRowView)?.apply(
@@ -1071,7 +1138,8 @@ final class TimelineGridView: UIScrollView {
                     motion: context.motion,
                     actions: context.actions
                 ),
-                animated: animated
+                animated: animated,
+                reusing: &reflowTiles
             )
         case .titleBand(_, let segments):
             (entry.view as? TimelineTitleBandView)?.apply(

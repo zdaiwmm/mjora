@@ -262,12 +262,6 @@ struct LivePhotoControlsBar: View {
             .menuIndicator(.hidden)
             .accessibilityValue(playback.liveMode.title)
             .accessibilityIdentifier("live-photo-mode")
-            if playback.isBuffering {
-                ProgressView().controlSize(.mini)
-                Button("Cancel", action: playback.cancelLivePlayback)
-                    .font(.caption)
-                    .accessibilityIdentifier("live-photo-cancel-load")
-            }
         }
         .foregroundStyle(.white)
         .glassEffect(.regular, in: .capsule)

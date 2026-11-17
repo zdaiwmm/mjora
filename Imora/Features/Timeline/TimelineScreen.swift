@@ -468,6 +468,9 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
     @State private var initialPhotosAttempt = 0
 
     private var coversInitialPhotos: Bool { photosConfiguration != nil && !initialPhotosPrepared }
+    private var sourcePrepared: Bool {
+        model.hasProjectedLocalInventory && (initialPhotosPrepared || initialPhotosTimedOut || model.loadError != nil)
+    }
 
     init(
         title: String,
@@ -812,7 +815,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         if let configuration = photosConfiguration {
             ToolbarItem(placement: .topBarLeading) {
                 PhotosSourceMenu(configuration: configuration,
-                                 count: model.sections.reduce(0) { $0 + $1.count })
+                                 count: model.totalItemCount)
             }
             .sharedBackgroundVisibility(.hidden)
         }
@@ -1317,6 +1320,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 await restorePhotosPositionIfNeeded()
             }
         }
+        .onChange(of: sourcePrepared, initial: true) { _, ready in
+            if ready { photosConfiguration?.onReady() }
+        }
+        .onChange(of: PhotoAccess.shared.status) { _, _ in
+            if mergesLocalPhotos { Task { await model.refreshLocalItems() } }
+        }
         .onChange(of: navigationTarget) {
             Task { await revealPendingTimelineTarget() }
         }
@@ -1797,11 +1806,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 pendingRebackup = session.backup?.rebackupConfirmation(localIdentifier: localID)
             }
         }
-        if asset.isLocalBackedUp || session.backup?.hasVerifiedBackup(localIdentifier: localID) == true {
+        let status = PhotoBackupStatus.resolve(asset: asset, backup: session.backup)
+        if status == .backedUp {
             return UIAction(title: String(localized: "Backed Up"), image: UIImage(systemName: "checkmark.icloud"),
                             attributes: .disabled) { _ in }
         }
-        switch session.backup?.uploadStates[localID] {
+        switch status {
         case .uploading(let fraction):
             let percent = Int((fraction * 100).rounded())
             return UIAction(
@@ -1813,12 +1823,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             return UIAction(title: String(localized: "Retry Backup"), image: UIImage(systemName: "exclamationmark.icloud")) { _ in
                 Task { await backUp(localID: localID) }
             }
-        case nil:
-            if session.backup?.sizeExcludedLocalIdentifiers.contains(localID) == true {
-                return UIAction(title: String(localized: "Excluded by Upload Size Limit"),
-                                image: UIImage(systemName: "minus.circle"),
-                                attributes: .disabled) { _ in }
-            }
+        case .sizeExcluded:
+            return UIAction(title: String(localized: "Excluded by Upload Size Limit"),
+                            image: UIImage(systemName: "minus.circle"),
+                            attributes: .disabled) { _ in }
+        case .notBackedUp, .backedUp, .cloudDeleted:
             guard session.backup != nil else {
                 return UIAction(
                     title: String(localized: "Backup Unavailable"),
