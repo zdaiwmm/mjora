@@ -35,10 +35,8 @@ struct PhotoPeriodsView: View {
     @State private var anchorRestoration = PhotoPeriodAnchorRestoration()
 
     private var periods: [PhotoPeriod] {
-        let grouped = controls.mode == .years
-            ? PhotoPeriod.years(in: model.sections, preferredAssetID: controls.periodAnchor?.asset.id)
-            : PhotoPeriod.months(in: model.sections, year: controls.selectedYear, preferredAssetID: controls.periodAnchor?.asset.id)
-        return PhotoPeriodCardLayout.oldestFirst(grouped)
+        model.photoPeriods(mode: controls.mode, year: controls.selectedYear,
+                           preferredAssetID: controls.periodAnchor?.asset.id)
     }
 
     var body: some View {
@@ -92,6 +90,9 @@ struct PhotoPeriodsView: View {
                 .onChange(of: controls.mode, initial: true) { _, _ in
                     restoreAnchor(using: proxy)
                 }
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { old, new in
+                    if abs(new - old) > 0.5 { controls.navigationExpanded = false }
+                }
                 .onChange(of: controls.selectedYear) { _, _ in
                     restoreAnchor(using: proxy)
                 }
@@ -126,7 +127,7 @@ struct PhotoPeriodsView: View {
     private var anchorDayTarget: String? {
         guard controls.mode == .months, let anchor = controls.periodAnchor,
               let period = anchoredPeriod else { return nil }
-        let content = PhotoMonthContent(period: period, sections: model.sections,
+        let content = model.photoMonthContent(period: period,
                                        preferredAssetID: anchor.asset.id, preferredBucketID: anchor.bucketID)
         guard let day = content.days.first(where: { $0.assets.contains(where: { $0.id == anchor.asset.id }) }) else { return nil }
         return "photos-period-day-\(day.id)"
@@ -233,8 +234,11 @@ private struct PhotoMonthSection: View {
     let layout: PhotoPeriodCardLayout
     let restorationTicket: UUID?
     let onDayReachable: (UUID, String) -> Void
-    @State private var laidOutDays: Set<String> = []
-    @State private var appearedDays: Set<String> = []
+    private final class Reachability {
+        var laidOutDays: Set<String> = []
+        var appearedDays: Set<String> = []
+    }
+    @State private var reachability = Reachability()
     @State private var retainedCoverIDs: [String: String] = [:]
     @State private var retry = 0
     @State private var loadingID: UUID?
@@ -251,7 +255,7 @@ private struct PhotoMonthSection: View {
     }
 
     private var content: PhotoMonthContent {
-        PhotoMonthContent(period: period, sections: model.sections,
+        model.photoMonthContent(period: period,
                           preferredAssetID: controls.periodAnchor?.asset.id,
                           preferredBucketID: controls.periodAnchor?.bucketID,
                           retainedCoverIDs: retainedCoverIDs)
@@ -291,7 +295,7 @@ private struct PhotoMonthSection: View {
             // A section that was already on screen may not change size after
             // the outer scroll. Its registered targets are still reachable.
             if let ticket {
-                for target in laidOutDays.intersection(appearedDays) { onDayReachable(ticket, target) }
+                for target in reachability.laidOutDays.intersection(reachability.appearedDays) { onDayReachable(ticket, target) }
             }
         }
         .task(id: LoadRequest(bucketIDs: period.bucketIDs.sorted(), retry: retry)) { await loadMissingBuckets() }
@@ -318,18 +322,18 @@ private struct PhotoMonthSection: View {
                         } action: { ready in
                             let target = "photos-period-day-\(day.id)"
                             if ready {
-                                laidOutDays.insert(target)
+                                reachability.laidOutDays.insert(target)
                                 reportReachability(of: target)
                             } else {
-                                laidOutDays.remove(target)
+                                reachability.laidOutDays.remove(target)
                             }
                         }
                         .onAppear {
                             let target = "photos-period-day-\(day.id)"
-                            appearedDays.insert(target)
+                            reachability.appearedDays.insert(target)
                             reportReachability(of: target)
                         }
-                        .onDisappear { appearedDays.remove("photos-period-day-\(day.id)") }
+                        .onDisappear { reachability.appearedDays.remove("photos-period-day-\(day.id)") }
                 }
             }
         }
@@ -338,7 +342,7 @@ private struct PhotoMonthSection: View {
     }
 
     private func reportReachability(of target: String) {
-        guard appearedDays.contains(target), laidOutDays.contains(target),
+        guard reachability.appearedDays.contains(target), reachability.laidOutDays.contains(target),
               let ticket = restorationTicket else { return }
         onDayReachable(ticket, target)
     }

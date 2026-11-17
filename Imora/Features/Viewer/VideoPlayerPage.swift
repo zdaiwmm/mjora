@@ -533,7 +533,8 @@ final class VideoPlayback {
                 guard let self, let player, self.player === player,
                       self.generation == capturedGeneration, !self.isScrubbing, !self.isSeeking, self.pendingSeekSeconds == nil
                 else { return }
-                if let asset = player.currentItem?.asset, !ControlledMediaFile.isAuthorized(asset) {
+                if let asset = player.currentItem?.asset,
+                   !ControlledMediaFile.isAuthorized(asset) || !ControlledMediaStream.isAuthorized(asset) {
                     self.reload(assetID: self.ownerID ?? "")
                     return
                 }
@@ -708,7 +709,10 @@ struct VideoPlayerPage: View {
                 posterCacheScope: posterCacheScope,
                 posterFallbackPixels: posterFallbackPixels,
                 posterFallbackScope: posterFallbackScope,
-                onPosterReady: onMediaReady,
+                onPosterReady: {
+                    if !ownsLaunchMedia || openingMediaSurface == nil { onMediaReady() }
+                },
+                onVideoReady: onMediaReady,
                 onPosterImage: onImage,
                 onPosterUnavailable: {
                     localUnavailable = true
@@ -738,6 +742,9 @@ struct VideoPlayerPage: View {
                 await makeItem()
             }
         }
+        .onChange(of: playback.isFailed) { _, failed in
+            if failed, isActive { onMediaReady() }
+        }
         .onDisappear { playback.release(assetID: asset.id) }
         .onChange(of: session.lockedFolder?.publicationGeneration) { _, _ in
             if asset.visibility == .locked, session.client?.lockedMediaLease == nil { playback.reload(assetID: asset.id) }
@@ -766,9 +773,10 @@ struct VideoPlayerPage: View {
             return item
         }
         guard !asset.isLocal, let client = session.client else { return nil }
-        guard let localURL = try? await client.localMediaFile(client.playbackURL(assetID: asset.id), requiresElevation: asset.visibility == .locked),
-              !Task.isCancelled, let urlAsset = try? localURL.makeAsset() else { return nil }
-        return AVPlayerItem(asset: urlAsset)
+        guard !Task.isCancelled,
+              let stream = try? ControlledMediaStream(client: client, url: client.playbackURL(assetID: asset.id),
+                                                       requiresElevation: asset.visibility == .locked) else { return nil }
+        return AVPlayerItem(asset: stream.makeAsset())
     }
 }
 
@@ -796,6 +804,7 @@ struct MediaSurfaceStack: View {
     var posterFallbackPixels: CGFloat?
     var posterFallbackScope: String?
     var onPosterReady: (() -> Void)?
+    var onVideoReady: (() -> Void)?
     var onPosterImage: ((UIImage) -> Void)?
     /// only a live photo needs this: its still is the asset, so losing the
     /// device copy would leave an empty page rather than a stale poster.
@@ -852,7 +861,7 @@ struct MediaSurfaceStack: View {
                 if playback.ownerID == assetID, let player = playback.player {
                     VideoPlayerSurface(
                         player: player,
-                        onReady: { onPosterReady?() }
+                        onReady: { (onVideoReady ?? onPosterReady)?() }
                     )
                     .opacity(showsVideo ? 1 : 0)
                     .allowsHitTesting(showsVideo)
@@ -1033,6 +1042,7 @@ struct VideoControlsBar: View {
         .glassEffect(.regular, in: .capsule)
         .padding(.horizontal, 28)
         .frame(maxWidth: 560)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("video-controls")
     }
 }

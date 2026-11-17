@@ -1944,6 +1944,10 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         try await assertViewerReturn(asset: asset())
     }
 
+    func testViewerReturnKeepsItsAnimationSourceWhileTheTileIsTemporarilyHidden() async throws {
+        try await assertViewerReturn(asset: asset(), hidesDestination: true)
+    }
+
     func testVideoAndLivePhotoPostersCarryTheirDisplayedReturnSurface() async throws {
         func poster(isImage: Bool, motionID: String?) -> Asset {
             Asset(id: "same-id", ownerId: "alice", isImage: isImage, isFavorite: false, isTrashed: false,
@@ -1961,7 +1965,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         try await assertViewerReturn(asset: edited, stalePair: (localID, revision))
     }
 
-    private func assertViewerReturn(asset value: Asset, stalePair: (String, String)? = nil) async throws {
+    private func assertViewerReturn(asset value: Asset, stalePair: (String, String)? = nil, hidesDestination: Bool = false) async throws {
         let userID = "viewer-return-\(UUID())"
         let user = Data("{\"id\":\"\(userID)\",\"email\":\"fixture@example.invalid\",\"name\":\"Fixture\",\"isAdmin\":false}".utf8)
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
@@ -2062,6 +2066,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             next.configure(asset: value, session: session, motion: GridMotion(), showsBackupBadge: false, targetPixelSize: 800, registry: registry)
             let nextKey = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 800)
             XCTAssertNil(next.checkpointSurface(for: nextKey, client: client), "The destination starts without its matching decoded surface")
+            if hidesDestination { next.alpha = 0 }
             viewer.requestDismissal()
             XCTAssertNotNil(next.checkpointSurface(for: nextKey, client: client),
                 "The destination must bind the qualified displayed surface before the viewer detaches")
