@@ -10,14 +10,16 @@ final class OfflineAlbumFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
         addUIInterruptionMonitor(withDescription: "Dismiss synthetic password saving") { alert in
-            let title = NSPredicate(format: "label CONTAINS %@ OR label CONTAINS[cd] %@", "保存密码", "Save Password")
-            guard alert.label.contains("保存密码") || alert.label.localizedCaseInsensitiveContains("Save Password")
-                    || alert.descendants(matching: .any).matching(title).firstMatch.exists else { return false }
-            for label in ["以后", "Not Now", "Later"] where alert.buttons[label].exists {
-                alert.buttons[label].tap()
-                return true
+            MainActor.assumeIsolated {
+                let title = NSPredicate(format: "label CONTAINS %@ OR label CONTAINS[cd] %@", "保存密码", "Save Password")
+                guard alert.label.contains("保存密码") || alert.label.localizedCaseInsensitiveContains("Save Password")
+                        || alert.descendants(matching: .any).matching(title).firstMatch.exists else { return false }
+                for label in ["以后", "Not Now", "Later"] where alert.buttons[label].exists {
+                    alert.buttons[label].tap()
+                    return true
+                }
+                return false
             }
-            return false
         }
     }
 
