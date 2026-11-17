@@ -47,7 +47,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
     }
 
     private func waitForHittable(_ target: XCUIElement, timeout: TimeInterval = 15) -> Bool {
-        let ready = NSPredicate { _, _ in target.exists && target.isHittable && target.isEnabled }
+        let ready = NSPredicate { _, _ in
+            guard target.exists else { return false }
+            let frame = target.frame
+            return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
+                && !frame.isEmpty && target.isHittable && target.isEnabled
+        }
         return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: timeout) == .completed
     }
 
@@ -95,23 +100,41 @@ final class OfflineAlbumFlowTests: XCTestCase {
         dismissPasswordPrompt(app)
         let title = "Offline acceptance"
         let label = NSPredicate(format: "label CONTAINS %@", title)
+        let offline = destination == "offline-album-progress"
+        var content: XCUIElement?
+        let active = NSPredicate { _, _ in
+            guard offline || app.buttons["shell-albums"].isSelected else { return false }
+            let candidates = offline
+                ? app.descendants(matching: .any).matching(identifier: "offline-albums").allElementsBoundByIndex
+                : app.scrollViews.matching(identifier: "collections-home").allElementsBoundByIndex
+            let viewport = app.windows.firstMatch.frame
+            content = candidates.first { candidate in
+                let frame = candidate.frame
+                return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
+                    && !frame.isEmpty && frame.intersects(viewport)
+            }
+            return content != nil
+        }
+        guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: active, object: nil)], timeout: 10) == .completed,
+              let content else { capture(app, "offline-album-container-inactive"); XCTFail("The expected album list is not active"); return }
         var target: XCUIElement?
         for attempt in 0..<4 {
             let ready = NSPredicate { _, _ in
-                let containers = app.buttons.matching(label).allElementsBoundByIndex
-                    + app.links.matching(label).allElementsBoundByIndex
-                    + app.cells.containing(.staticText, identifier: title).allElementsBoundByIndex
-                    + app.otherElements.matching(NSPredicate(format: "label == %@", title)).allElementsBoundByIndex
-                target = containers.first { $0.isHittable && $0.isEnabled }
+                let containers = content.buttons.matching(label).allElementsBoundByIndex
+                    + content.links.matching(label).allElementsBoundByIndex
+                    + content.cells.containing(.staticText, identifier: title).allElementsBoundByIndex
+                    + content.otherElements.matching(NSPredicate(format: "label == %@", title)).allElementsBoundByIndex
+                let viewport = content.frame.intersection(app.windows.firstMatch.frame)
+                target = containers.first { candidate in
+                    let frame = candidate.frame
+                    guard frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
+                          !frame.isEmpty, frame.intersects(viewport) else { return false }
+                    return candidate.isHittable && candidate.isEnabled
+                }
                 return target != nil
             }
             if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 3) == .completed { break }
-            if attempt < 3 {
-                let home = app.scrollViews["collections-home"]
-                if home.exists { home.swipeUp() }
-                else if app.collectionViews.firstMatch.exists { app.collectionViews.firstMatch.swipeUp() }
-                else { app.swipeUp() }
-            }
+            if attempt < 3 { content.swipeUp() }
         }
         guard let target else {
             capture(app, "offline-album-link-unavailable")
@@ -119,7 +142,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         }
         target.tap()
         let arrived = element(app, destination)
-        guard arrived.waitForExistence(timeout: 15) else {
+        guard waitForHittable(arrived) else {
             capture(app, "offline-album-navigation-failed")
             XCTFail("Album navigation did not reach \(destination)"); return
         }
@@ -147,11 +170,43 @@ final class OfflineAlbumFlowTests: XCTestCase {
 
     private func collections(_ app: XCUIApplication) {
         dismissPasswordPrompt(app)
-        let expand = app.buttons["photos-show-navigation"]
-        if expand.exists, expand.isHittable { expand.tap() }
-        let ready = NSPredicate { _, _ in app.buttons["shell-albums"].isHittable && !app.keyboards.firstMatch.exists }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 20), .completed)
-        tap(app, "shell-albums")
+        let albums = app.buttons["shell-albums"], library = app.buttons["shell-photos"]
+        for attempt in 0..<2 {
+            if attempt == 1 {
+                guard waitForHittable(library, timeout: 5) else { break }
+                library.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+                let selectedLibrary = NSPredicate { _, _ in library.isSelected }
+                guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selectedLibrary, object: nil)], timeout: 5) == .completed else { break }
+            }
+            let expand = app.buttons["photos-show-navigation"]
+            if expand.exists, expand.isHittable { expand.tap() }
+            var previousFrame = CGRect.zero
+            var stableFrames = 0
+            let ready = NSPredicate { _, _ in
+                guard albums.exists, !app.keyboards.firstMatch.exists else { stableFrames = 0; return false }
+                let frame = albums.frame
+                guard frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
+                      !frame.isEmpty, frame.intersects(app.windows.firstMatch.frame), albums.isEnabled else {
+                    stableFrames = 0; return false
+                }
+                stableFrames = frame == previousFrame ? stableFrames + 1 : 0
+                previousFrame = frame
+                return stableFrames >= 2
+            }
+            guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 8) == .completed else { continue }
+            albums.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+            let selectedCollections = NSPredicate { _, _ in
+                guard albums.isSelected, !library.isSelected else { return false }
+                let home = app.scrollViews["collections-home"]
+                guard home.exists else { return false }
+                let frame = home.frame
+                return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
+                    && !frame.isEmpty && frame.intersects(app.windows.firstMatch.frame)
+            }
+            if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selectedCollections, object: nil)], timeout: 6) == .completed { return }
+        }
+        capture(app, "offline-collections-selection-failed")
+        XCTFail("Collections did not become selected with a visible content container")
     }
 
     private func openOfflineList(_ app: XCUIApplication) {
