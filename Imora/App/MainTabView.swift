@@ -62,7 +62,7 @@ struct MainTabView: View {
     private var photoControls: PhotosGridControls { source == "local" ? deviceControls : cloudControls }
     private var showsDateNavigation: Bool {
         selection == .photos && (source == "local" || [.all, .favorites].contains(photoControls.mediaFilter))
-            && (photoControls.browsingPast || photoControls.mode != .all)
+            && photoControls.showsPeriodNavigation
     }
 
     var body: some View {

@@ -91,7 +91,7 @@ private final class AssetViewerZoomSource {
         self.session = session
         self.isPrivate = isPrivate
         self.frame = frame
-        originalAlpha = view.alpha
+        originalAlpha = view.alpha > 0.01 ? view.alpha : 1
     }
 
     func hide() {
@@ -1014,17 +1014,19 @@ final class AssetTileRegistry {
         tiles[assetID]?.view?.isUserInteractionEnabled = true
     }
 
-    fileprivate func zoomSource(for assetID: String, in container: UIView) -> AssetViewerZoomSource? {
+    fileprivate func zoomSource(for assetID: String, in container: UIView, allowsHiddenSource: Bool = false) -> AssetViewerZoomSource? {
         guard let tile = tiles[assetID],
               let view = tile.view,
               let session = tile.session,
               view.window != nil,
-              !view.isHidden,
-              view.alpha > 0.01
+              !view.isHidden
         else {
             tiles.removeValue(forKey: assetID)
             return nil
         }
+        // Opening/closing transitions temporarily hide their source tile.
+        // Keep its registration and allow a return to use its current pixels.
+        guard allowsHiddenSource || view.alpha > 0.01 else { return nil }
         let frame = view.convert(view.bounds, to: container)
         guard frame.intersects(container.bounds) else { return nil }
         guard let client = session.client, let tileView = view as? TimelineTileView else { return nil }
@@ -1041,7 +1043,7 @@ final class AssetTileRegistry {
         if view.checkpointSurface(for: key, client: client) == nil {
             guard view.prepareReturnSurface(surface, client: client) else { return nil }
         }
-        return zoomSource(for: assetID, in: container)
+        return zoomSource(for: assetID, in: container, allowsHiddenSource: true)
     }
 
     static func aspectMatches(_ image: UIImage, asset: Asset) -> Bool {
@@ -1448,8 +1450,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
     }
 
     fileprivate func returnTransition(in container: UIView) -> (source: AssetViewerZoomSource?, surface: CommittedGridSurface)? {
-        let gridSource = sourceRegistry?.zoomSource(for: displayState.currentAssetID, in: container)
-        guard let surface = displayState.displayedMediaSurface ?? gridSource?.surface,
+        let gridSource = sourceRegistry?.zoomSource(for: displayState.currentAssetID, in: container, allowsHiddenSource: true)
+        let openingSurface = displayState.currentAssetID == route.sourceAssetID ? displayState.openingMediaSurface : nil
+        guard let surface = displayState.displayedMediaSurface ?? gridSource?.surface ?? openingSurface,
               surface.isCurrent() else { return nil }
         let source = sourceRegistry?.prepareReturnSource(for: displayState.currentAssetID, surface: surface, in: container)
         return (source, surface)

@@ -754,16 +754,10 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         )
     }
 
-    /// everything padded past the last row, which is only the selection bar's
-    /// clearance. there is deliberately NO viewport-sized tail: padding the end
-    /// so the last month can reach the viewport top is what made a drag there
-    /// depend on a full screen of empty content being present to the pixel, and
-    /// it clamped short whenever the scroll view disagreed. immich-web pads
-    /// nothing and compresses the mapping instead - see maxScrollPercent - so
-    /// the end of the track is simply the end of the scroll.
+    /// Clearance above the floating controls without a viewport-sized tail.
     private func bottomPadding() -> CGFloat {
         if isSelecting { return 90 }
-        return 8
+        return photosConfiguration != nil ? 55 : 8
     }
 
     private var selectionMoreMenu: some View {
@@ -1241,7 +1235,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             if showsEmptyState { overlayState }
         }
         .overlay {
-            if let configuration = photosConfiguration, configuration.controls.mode != .all {
+            if let configuration = photosConfiguration {
                 PhotoCalendarOverview(gridModel: model, controls: configuration.controls, motion: periodMotion)
                     .transition(.identity)
             }
@@ -1422,7 +1416,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     private var showsPeriodControls: Bool {
         guard let c = photosConfiguration, c.completePeriodIndex, !isSelecting else { return false }
-        return c.controls.browsingPast || c.controls.mode != .all
+        return c.controls.showsPeriodNavigation
     }
 
     private func restorePhotosPositionIfNeeded() async {
@@ -1487,7 +1481,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             }
         }
         guard let requestedBucketID = request.bucketID else {
-            gridController.scrollToEnd()
+            gridController.scrollToEnd(animated: !reduceMotion)
             return
         }
         let bucketID: String

@@ -53,6 +53,21 @@ final class PhotoCalendarSourceTests: XCTestCase {
         XCTAssertTrue(timelineRequests.allSatisfy { Self.query($0)["isFavorite"] == "true" })
     }
 
+    func testReenteringCalendarKeepsItsLoadedCaptureIndex() async throws {
+        let server = try LocalHTTPServer { request in Self.reply(request) }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "calendar-reentry-\(UUID())")
+        defer { client.invalidate() }
+        let source = PhotoCalendarSource(gridModel: TimelineModel(filter: TimelineFilter(albumId: UUID().uuidString, orderBy: "createdAt")))
+        defer { source.cancel() }
+        await source.load(client: client)
+        let original = source.model
+        let indexRequests = server.received.filter { $0.path.hasPrefix("/api/timeline/buckets?") }.count
+        await source.load(client: client)
+        XCTAssertTrue(source.model === original)
+        XCTAssertEqual(server.received.filter { $0.path.hasPrefix("/api/timeline/buckets?") }.count, indexRequests)
+    }
+
     func testRevealUsesExactLoadedIDFirstAndNeverGuessesMissingUploadDateFromCaptureDate() {
         let loaded = Self.asset(id: "loaded", createdAt: Self.date("2026-11-02T12:00:00Z"))
         // Supplied model sections are capture-indexed regardless of its filter;

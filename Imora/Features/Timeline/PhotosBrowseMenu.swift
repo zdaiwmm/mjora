@@ -97,7 +97,11 @@ struct PhotosSourceMenu: View {
             .fixedSize(horizontal: true, vertical: true)
             .overlay(alignment: .bottomLeading) {
                 if configuration.completePeriodIndex {
-                    Text("\(count) items").font(.subheadline.weight(.semibold)).lineLimit(1).offset(y: 20)
+                    Text("\(count) items")
+                        .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: true, vertical: true)
+                        .offset(y: 20)
+                        .accessibilityIdentifier("photos-item-count")
                 } else {
                     Text(configuration.controls.mediaFilter.title).font(.subheadline.weight(.semibold)).offset(y: 20)
                 }
@@ -109,6 +113,7 @@ struct PhotosSourceMenu: View {
         .menuIndicator(.hidden)
         .tint(.primary)
         .accessibilityLabel(title)
+        .accessibilityValue(configuration.completePeriodIndex ? String(localized: "\(count) items") : configuration.controls.mediaFilter.title)
         .accessibilityIdentifier("photos-source-menu")
         .task(id: session.client?.offlineAccountKey) {
             configuration.controls.loadVisualPreferences(account: session.client?.offlineAccountKey)
@@ -198,8 +203,7 @@ struct PhotoPeriodControls: View {
             HStack(spacing: 12) {
                 Button {
                     withAnimation(reduceMotion ? nil : PhotosMotion.layout) {
-                        controls.reveal(bucketID: nil)
-                        controls.browsingPast = false
+                        controls.returnToLatest()
                     }
                 } label: {
                     Image(systemName: "photo.on.rectangle.fill").frame(width: 36, height: 36)
@@ -247,8 +251,7 @@ struct PhotosNavigationBar: View {
                 if showsPeriods {
                     Button {
                         withAnimation(motion) {
-                            controls.reveal(bucketID: nil)
-                            controls.browsingPast = false
+                            controls.expandNavigation()
                         }
                     } label: {
                         Image(systemName: "photo.on.rectangle.fill")
@@ -308,7 +311,10 @@ struct PhotosNavigationBar: View {
 
     private func tab(_ key: MainTabView.TabKey, title: LocalizedStringKey, symbol: String) -> some View {
         Button {
-            withAnimation(motion) { selection = key }
+            withAnimation(motion) {
+                if key == .photos, selection == .photos { controls.returnToLatest() }
+                else { selection = key }
+            }
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: symbol).font(.system(size: 20, weight: .medium))

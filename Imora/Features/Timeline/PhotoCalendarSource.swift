@@ -56,6 +56,7 @@ final class PhotoCalendarSource {
 
     func load(client: ImoraClient?, backup: BackupManager? = nil, hub: RealtimeHub? = nil, preferredAsset: Asset? = nil) async {
         guard !Task.isCancelled else { return }
+        let reusesIndex = isBound(to: client) && !model.sections.isEmpty && loadTask == nil
         let nextContext = client?.context
         if requiresGridReplacement {
             context = nextContext; hasBound = true; isCancelled = false
@@ -104,6 +105,7 @@ final class PhotoCalendarSource {
         synchronizeProjection()
         overviewModel.resumeAfterViewer()
         overviewModel.attach(client, backup: backup, hub: hub)
+        if reusesIndex { return }
         let target = overviewModel
         let ticket = generation
         let work: Task<Void, Never>
@@ -206,31 +208,44 @@ struct PhotoCalendarOverview: View {
     let gridModel: TimelineModel
     @Bindable var controls: PhotosGridControls
     let motion: PhotoPeriodMotion
-    @State private var source: PhotoCalendarSource
-
-    init(gridModel: TimelineModel, controls: PhotosGridControls, motion: PhotoPeriodMotion) {
-        self.gridModel = gridModel; self.controls = controls; self.motion = motion
-        _source = State(initialValue: PhotoCalendarSource(gridModel: gridModel))
-    }
+    @State private var source: PhotoCalendarSource?
 
     nonisolated private struct RequestIdentity: Hashable, Sendable {
         let grid: ObjectIdentifier
         let account: UUID?
         let suppliedRevision: Int
+        let isActive: Bool
     }
     private var requestIdentity: RequestIdentity {
         // Observe supplied selection changes even though the projection's
         // revision counter itself is intentionally ObservationIgnored.
         if gridModel.usesSuppliedAssets { _ = gridModel.flatAssets.count }
         return RequestIdentity(grid: ObjectIdentifier(gridModel), account: session.client?.context.id,
-            suppliedRevision: gridModel.usesSuppliedAssets ? gridModel.rowsContentVersion : 0)
+            suppliedRevision: gridModel.usesSuppliedAssets ? gridModel.rowsContentVersion : 0,
+            isActive: controls.mode != .all)
     }
 
     var body: some View {
         Group {
-            if source.gridIdentity != ObjectIdentifier(gridModel) || !source.isBound(to: session.client) {
-                ProgressView(String(localized: "Loading capture dates"))
-            } else if source.model.sections.isEmpty, let error = source.error ?? source.model.loadError {
+            if controls.mode == .all {
+                Color.clear
+            } else {
+                overview
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(controls.mode == .all ? Color.clear : Color(.systemBackground))
+        .allowsHitTesting(controls.mode != .all)
+        .accessibilityHidden(controls.mode == .all)
+        .task(id: requestIdentity) {
+            if controls.mode != .all { await load() }
+        }
+        .onDisappear { source?.cancel() }
+    }
+
+    @ViewBuilder private var overview: some View {
+        if let source, source.gridIdentity == ObjectIdentifier(gridModel), source.isBound(to: session.client) {
+            if source.model.sections.isEmpty, let error = source.error ?? source.model.loadError {
                 ContentUnavailableView {
                     Label("Couldn't Load Capture Dates", systemImage: "wifi.exclamationmark")
                 } description: { Text(error) } actions: {
@@ -241,18 +256,16 @@ struct PhotoCalendarOverview: View {
             } else {
                 PhotoPeriodsView(model: source.model, controls: controls, motion: motion)
             }
+        } else {
+            ProgressView(String(localized: "Loading capture dates"))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
-        .task(id: requestIdentity) { await load() }
-        .onDisappear { source.cancel() }
     }
 
     private func load() async {
-        if source.gridIdentity != ObjectIdentifier(gridModel) {
-            source.cancel(); source = PhotoCalendarSource(gridModel: gridModel)
+        if source?.gridIdentity != ObjectIdentifier(gridModel) {
+            source?.cancel(); source = PhotoCalendarSource(gridModel: gridModel)
         }
-        await source.load(client: session.client, backup: session.backup, hub: session.realtime,
-                          preferredAsset: controls.periodAnchor?.asset)
+        await source?.load(client: session.client, backup: session.backup, hub: session.realtime,
+                           preferredAsset: controls.periodAnchor?.asset)
     }
 }

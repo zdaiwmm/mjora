@@ -365,7 +365,20 @@ final class TimelineModel {
         let project = assetProjection
         updateAssets(ids: Set(flatAssets.map(\.id))) { $0 = project($0) }
     }
-    private(set) var sections: [TimelineSection] = []
+    private(set) var sections: [TimelineSection] = [] {
+        didSet { calendarCache.invalidate() }
+    }
+    @ObservationIgnored private var calendarCache = PhotoCalendarCache()
+
+    func photoPeriods(mode: PhotoBrowseMode, year: Int? = nil, preferredAssetID: String? = nil) -> [PhotoPeriod] {
+        calendarCache.periods(in: sections, mode: mode, year: year, preferredAssetID: preferredAssetID)
+    }
+
+    func photoMonthContent(period: PhotoPeriod, preferredAssetID: String? = nil,
+                           preferredBucketID: String? = nil, retainedCoverIDs: [String: String] = [:]) -> PhotoMonthContent {
+        calendarCache.month(in: sections, period: period, preferredAssetID: preferredAssetID,
+                            preferredBucketID: preferredBucketID, retainedCoverIDs: retainedCoverIDs)
+    }
     private(set) var rows: [TimelineRow] = []
     /// bumped when row geometry changes so the screen's exact row-offset cache
     /// knows to rebuild. metadata patches keep the existing offsets.

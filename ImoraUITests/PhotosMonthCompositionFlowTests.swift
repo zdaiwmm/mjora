@@ -254,6 +254,80 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         }
     }
 
+    func testLibraryCountNavigationExpansionAndLatestRowClearance() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        let source = app.buttons["photos-source-menu"]
+        let count = try XCTUnwrap(source.value as? String)
+        XCTAssertFalse(count.contains("…"))
+        XCTAssertFalse(count.contains("..."))
+        XCTAssertTrue(count.contains("项目") || count.contains("items"))
+        capture(app, "gallery-full-item-count")
+        for _ in 0..<4 where !app.buttons["photos-show-navigation"].isHittable { drag(app, by: 250) }
+        let expand = app.buttons["photos-show-navigation"]
+        wait(app, "Collapsed navigation") { expand.isHittable }
+        let visible = app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex
+            .first { $0.isHittable && $0.frame.midY > 180 && $0.frame.midY < 600 }
+        let label = try XCTUnwrap(visible?.label)
+        let originalY = try XCTUnwrap(visible?.frame.midY)
+        expand.tap()
+        let library = app.buttons["shell-photos"]
+        wait(app, "First tap expands Library and Collections") { library.isHittable && app.buttons["shell-albums"].isHittable }
+        let retained = app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex.first { $0.label == label }
+        XCTAssertEqual(try XCTUnwrap(retained?.frame.midY), originalY, accuracy: 3)
+        capture(app, "gallery-navigation-expanded-without-jump")
+        library.tap()
+        wait(app, "Animated return reaches the latest row") {
+            !app.buttons["photos-show-navigation"].isHittable && library.isHittable
+        }
+        // Wait for the programmatic scroll animation to settle before measuring.
+        let settled = Date().addingTimeInterval(1)
+        wait(app, "Return animation settles", timeout: 3) { Date() >= settled }
+        let lastY = try XCTUnwrap(app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex
+            .filter { $0.isHittable && $0.frame.midY > 150 && $0.frame.minY < library.frame.minY }
+            .map { $0.frame.maxY }.max())
+        let gap = library.frame.minY - lastY
+        XCTAssertGreaterThanOrEqual(gap, 4)
+        XCTAssertLessThanOrEqual(gap, 20)
+        capture(app, "gallery-latest-row-clearance", frames: "lastPhotoBottom=\(lastY) navigationTop=\(library.frame.minY) gap=\(gap)")
+        enterMonths(app)
+        let picker = app.segmentedControls["photos-period-picker"]
+        for labels in [["年", "Years"], ["月", "Months"], ["全部", "All"], ["月", "Months"]] {
+            let mode = picker.buttons.matching(NSPredicate(format: "label IN %@", labels)).firstMatch
+            XCTAssertTrue(mode.isHittable); mode.tap()
+            if labels[0] == "全部" { wait(app, "All grid") { app.buttons["photos-sort-filter"].isHittable } }
+            else { wait(app, "Period content") { app.scrollViews["photos-periods"].exists } }
+        }
+        capture(app, "gallery-period-switching")
+        app.buttons["photos-show-navigation"].tap()
+        app.buttons["shell-albums"].tap()
+        wait(app, "Collections profile") { app.buttons["profile-avatar"].isHittable }
+        capture(app, "collections-larger-profile-avatar")
+    }
+
+    func testVideoShowsTransportImmediatelyAndAutoplays() throws {
+        let app = try launchCloudCapture()
+        defer { finishCloud(app) }
+        let menu = app.buttons["photos-sort-filter"]
+        menu.tap()
+        let media = labelButton(app, ["媒体类型", "Media Types"])
+        wait(app, "Media filter") { media.isHittable }; media.tap()
+        let videos = labelButton(app, ["视频", "Videos"])
+        wait(app, "Video filter") { videos.isHittable }; videos.tap()
+        wait(app, "Filtered video tiles") { app.buttons.matching(identifier: "asset-tile").count > 0 && menu.isHittable }
+        let tile = try XCTUnwrap(app.buttons.matching(identifier: "asset-tile").allElementsBoundByIndex.first { $0.isHittable })
+        tile.tap()
+        let controls = app.otherElements["video-controls"]
+        let scrubber = app.descendants(matching: .any).matching(identifier: "video-scrubber").firstMatch
+        XCTAssertTrue(controls.waitForExistence(timeout: 2))
+        capture(app, "gallery-video-opening-progress")
+        wait(app, "Video advances automatically", timeout: 8) {
+            guard let value = scrubber.value as? String else { return false }
+            return !value.hasPrefix("0:00 / ") && !value.hasPrefix("0:00, ")
+        }
+        capture(app, "gallery-video-playing")
+    }
+
     func testCloudMonthsExposeEveryDayWithDistinctAdaptiveGeometry() throws {
         let app = try launchCloudCapture()
         defer { finishCloud(app) }
