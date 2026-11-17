@@ -108,9 +108,7 @@ final class OfflineAlbumDownloads {
                         if temporary != download { try FileManager.default.moveItem(at: download, to: temporary) }
                         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                            if code == 401 || code == 403 || code == 404 {
-                                try await OfflineAlbumStore.shared.invalidate(scope: scope, ids: [component.asset.id], remove: true)
-                            }
+                            await client.rejectMediaResponse(url: url, statusCode: code)
                             throw ImoraError.http(code, "")
                         }
                         try await Self.validateMedia(at: temporary, kind: component.kind)
