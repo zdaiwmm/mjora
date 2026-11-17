@@ -152,10 +152,11 @@ nonisolated struct PhotoPeriod: Identifiable {
         return groups.keys.sorted(by: >).compactMap { key in
             let values = groups[key]!.sorted { $0.0.id > $1.0.id }
             guard let first = values.first else { return nil }
-            let loaded = values.flatMap { value in
-                (value.0.days ?? []).flatMap(\.assets).map { (asset: $0, bucketID: value.0.id) }
+            let loaded = values.lazy.flatMap { value in
+                (value.0.days ?? []).lazy.flatMap(\.assets).lazy.map { (asset: $0, bucketID: value.0.id) }
             }
-            let chosen = loaded.first(where: { $0.asset.id == preferredAssetID }) ?? loaded.first
+            let preferred = preferredAssetID.flatMap { id in loaded.first { $0.asset.id == id } }
+            let chosen = preferred ?? loaded.first
             return Self(id: key, year: first.1, month: groupedByYear ? nil : first.2,
                         count: values.reduce(0) { $0 + $1.0.count }, bucketIDs: values.map { $0.0.id },
                         cover: chosen?.asset, coverBucketID: chosen?.bucketID)
@@ -184,8 +185,23 @@ final class PhotosGridControls {
     var mediaFilter: PhotoMediaFilter = .all
     var isSelecting = false
     var browsingPast = false
+    var navigationExpanded = false
+    var showsPeriodNavigation: Bool { !navigationExpanded && (browsingPast || mode != .all) }
+
+    func expandNavigation() { navigationExpanded = true }
+
+    func returnToLatest() {
+        reveal(bucketID: nil)
+        browsingPast = false
+        navigationExpanded = false
+    }
     var mode: PhotoBrowseMode = .all {
-        didSet { if oldValue != mode { onModeChange?(oldValue, mode) } }
+        didSet {
+            if oldValue != mode {
+                navigationExpanded = false
+                onModeChange?(oldValue, mode)
+            }
+        }
     }
     var periodAnchor: PhotoPeriodAnchor?
     var showsAllBackupStatuses = false {
@@ -210,6 +226,7 @@ final class PhotosGridControls {
         guard !isRestoring else { return }
         let previous = scrollOffset
         scrollOffset = offset
+        if isUserScrolling, let previous, abs(offset - previous) > 0.5 { navigationExpanded = false }
         guard mode == .all else { return }
         if endOffset <= 0 || endOffset - offset <= 8 {
             browsingPast = false
@@ -232,5 +249,50 @@ final class PhotosGridControls {
             .filter { range.contains($0) }.sorted()
         columns = inward ? (steps.last { $0 < columns } ?? steps.first ?? 2)
             : (steps.first { $0 > columns } ?? steps.last ?? 5)
+    }
+}
+
+/// Derived calendar data is reused across scroll/layout updates. TimelineModel
+/// invalidates it on section writes, including metadata and bucket arrivals.
+@MainActor
+final class PhotoCalendarCache {
+    private struct PeriodKey: Equatable {
+        let mode: PhotoBrowseMode
+        let year: Int?
+        let preferredAssetID: String?
+    }
+    private struct MonthEntry {
+        let preferredAssetID: String?
+        let preferredBucketID: String?
+        let retainedCoverIDs: [String: String]
+        let content: PhotoMonthContent
+    }
+    private var periodEntries: [PhotoBrowseMode: (PeriodKey, [PhotoPeriod])] = [:]
+    private var monthEntries: [String: MonthEntry] = [:]
+
+    func invalidate() {
+        periodEntries.removeAll(keepingCapacity: true)
+        monthEntries.removeAll(keepingCapacity: true)
+    }
+
+    func periods(in sections: [TimelineSection], mode: PhotoBrowseMode, year: Int?, preferredAssetID: String?) -> [PhotoPeriod] {
+        let key = PeriodKey(mode: mode, year: year, preferredAssetID: preferredAssetID)
+        if let entry = periodEntries[mode], entry.0 == key { return entry.1 }
+        let grouped = mode == .years ? PhotoPeriod.years(in: sections, preferredAssetID: preferredAssetID)
+            : PhotoPeriod.months(in: sections, year: year, preferredAssetID: preferredAssetID)
+        let result = PhotoPeriodCardLayout.oldestFirst(grouped)
+        periodEntries[mode] = (key, result)
+        return result
+    }
+
+    func month(in sections: [TimelineSection], period: PhotoPeriod, preferredAssetID: String?,
+               preferredBucketID: String?, retainedCoverIDs: [String: String]) -> PhotoMonthContent {
+        if let entry = monthEntries[period.id], entry.preferredAssetID == preferredAssetID,
+           entry.preferredBucketID == preferredBucketID, entry.retainedCoverIDs == retainedCoverIDs { return entry.content }
+        let content = PhotoMonthContent(period: period, sections: sections, preferredAssetID: preferredAssetID,
+                                        preferredBucketID: preferredBucketID, retainedCoverIDs: retainedCoverIDs)
+        monthEntries[period.id] = MonthEntry(preferredAssetID: preferredAssetID, preferredBucketID: preferredBucketID,
+                                           retainedCoverIDs: retainedCoverIDs, content: content)
+        return content
     }
 }

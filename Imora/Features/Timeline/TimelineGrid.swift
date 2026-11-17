@@ -153,12 +153,12 @@ final class TimelineGridController {
         grid?.scroll(toOffsetY: 0)
     }
 
-    func scrollToEnd() {
+    func scrollToEnd(animated: Bool = false) {
         guard let grid else { return }
         grid.layoutIfNeeded()
         let lastOffset = max(0, grid.contentSize.height - grid.bounds.height
                              + grid.adjustedContentInset.top + grid.adjustedContentInset.bottom)
-        grid.scroll(toOffsetY: lastOffset)
+        grid.scroll(toOffsetY: lastOffset, animated: animated)
     }
 
     /// lays the model's rows out right away instead of at the next pass, so
@@ -747,10 +747,10 @@ final class TimelineGridView: UIScrollView {
         contentOffset.y + adjustedContentInset.top
     }
 
-    func scroll(toOffsetY y: CGFloat) {
+    func scroll(toOffsetY y: CGFloat, animated: Bool = false) {
         restOffsetY = y
         let target = CGPoint(x: -adjustedContentInset.left, y: y - adjustedContentInset.top)
-        if contentOffset != target { setContentOffset(target, animated: false) }
+        if contentOffset != target { setContentOffset(target, animated: animated) }
     }
 
     func reloadRows(animated: Bool) {

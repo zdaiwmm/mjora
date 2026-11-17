@@ -60,7 +60,6 @@ nonisolated struct AssetViewerChromePresentation: Equatable, Sendable {
         showsTransportControls = reservesTransportControls
             && canShowChrome
             && mediaIsUnobstructed
-            && (isLivePhoto || isPlayerReady)
         showsCarousel = !isContextPreview
             && canShowChrome
             && mediaIsUnobstructed

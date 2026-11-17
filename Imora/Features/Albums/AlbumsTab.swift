@@ -96,7 +96,7 @@ struct AlbumsTab: View {
                     ToolbarSpacer(.fixed, placement: .topBarTrailing)
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { showSettings = true } label: {
-                            ProfileAvatar(size: 30).frame(width: 44, height: 44)
+                            ProfileAvatar(size: 36).frame(width: 44, height: 44)
                         }
                         .buttonStyle(.plain)
                         .glassEffect(.regular.interactive(), in: .circle)

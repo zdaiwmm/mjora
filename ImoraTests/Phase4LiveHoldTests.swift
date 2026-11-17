@@ -22,7 +22,7 @@ final class Phase4LiveHoldTests: XCTestCase {
         }
         XCTAssertFalse(chrome(live: true).reservesTransportControls, "Live modes live above the media, without resizing the thumbnail accessory")
         XCTAssertTrue(chrome(live: true).showsCarousel)
-        XCTAssertFalse(chrome(live: false).showsTransportControls)
+        XCTAssertTrue(chrome(live: false).showsTransportControls, "Videos expose progress while the item prepares")
         XCTAssertFalse(chrome(live: true, visible: false).showsTransportControls)
         XCTAssertFalse(chrome(live: true, contextPreview: true).showsTransportControls)
         XCTAssertFalse(chrome(live: true, atMedia: false).showsTransportControls)
