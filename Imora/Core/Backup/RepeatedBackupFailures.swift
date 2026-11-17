@@ -8,9 +8,14 @@ nonisolated enum RepeatedBackupFailureKind: String, Codable, Sendable {
     case connection
     case authorization
     case other
+    case cloudStorage, deviceStorage, originalUnavailable
 
     init(error: any Error) {
         switch error {
+        case PhotoLibraryError.insufficientStorage: self = .deviceStorage
+        case ImoraError.http(507, _): self = .cloudStorage
+        case PhotoLibraryError.assetMissing, PhotoLibraryError.resourceMissing, PhotoLibraryError.exportFailed,
+             PhotoLibraryError.unexpectedSize: self = .originalUnavailable
         case is UploadSizeLimit: self = .uploadLimit
         case ImoraError.http(413, _): self = .serverSizeLimit
         case ImoraError.http(401, _), ImoraError.http(403, _): self = .authorization
@@ -28,8 +33,40 @@ nonisolated enum RepeatedBackupFailureKind: String, Codable, Sendable {
         case .connection: String(localized: "The connection failed during backup.")
         case .authorization: String(localized: "The server rejected the backup. Check your account.")
         case .other: String(localized: "Imora could not complete this backup.")
+        case .cloudStorage: String(localized: "The server account's storage quota is full.")
+        case .deviceStorage: String(localized: "There is not enough space on this device to prepare the original.")
+        case .originalUnavailable: String(localized: "The original photo or video could not be read.")
         }
     }
+
+    var title: String {
+        switch self {
+        case .connection: String(localized: "Connection Interrupted")
+        case .authorization: String(localized: "Account Access Required")
+        case .cloudStorage: String(localized: "Cloud Storage Full")
+        case .deviceStorage: String(localized: "Device Storage Full")
+        case .originalUnavailable: String(localized: "Original Unavailable")
+        case .uploadLimit: String(localized: "Upload Size Limit")
+        case .serverSizeLimit: String(localized: "Server File Size Limit")
+        case .other: String(localized: "Backup Failed")
+        }
+    }
+
+    var recoveryMessage: String {
+        switch self {
+        case .connection: String(localized: "Connect to the internet, check the server connection in Backup Settings, then retry. Your saved progress is retained.")
+        case .authorization: String(localized: "Check your signed-in account and its upload permissions in Account & Settings. Sign in again if required, then retry.")
+        case .cloudStorage: String(localized: "Free space or increase the storage quota on your server, then return here and retry. Retrying alone cannot resolve a full server.")
+        case .deviceStorage: String(localized: "Free space on this iPhone in Settings before retrying. Preparing an original needs temporary space on the device.")
+        case .originalUnavailable: String(localized: "Open this photo or video in the Photos app while connected to the internet. Wait for the original to download from iCloud, then return here and retry.")
+        case .uploadLimit: String(localized: "Increase the upload size limit in Backup Settings if you want to back up this file, then retry.")
+        case .serverSizeLimit: String(localized: "Ask your server administrator to increase the server or reverse proxy upload limit, then retry this file.")
+        case .other: String(localized: "Check that the original opens in Photos and that your server is reachable, then retry. If the problem continues, review Backup Settings.")
+        }
+    }
+
+
+
 }
 
 nonisolated struct RepeatedBackupFailure: Codable, Equatable, Identifiable, Sendable {
@@ -132,6 +169,10 @@ nonisolated struct RepeatedBackupFailures: Codable, Sendable {
             entry.account == account
                 && currentRevisions[entry.localIdentifier] != .some(entry.modificationDate)
         }
+    }
+
+    func failures(account: String) -> [RepeatedBackupFailure] {
+        entries.filter { $0.account == account }.sorted { $0.lastFailedAt > $1.lastFailedAt }
     }
 
     func needingAttention(account: String) -> [RepeatedBackupFailure] {

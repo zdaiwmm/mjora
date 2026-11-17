@@ -102,6 +102,12 @@ nonisolated enum PhotoLibraryService {
         }
     }
 
+    @concurrent
+    static func timelineAssets() async -> [DeviceAsset] {
+        if hasFullAccess { return await scan() }
+        return await browsableAssets()
+    }
+
     /// Backup and cleanup must stop on a failed scan, never interpret a cache failure as an empty library.
     @concurrent
     static func scanForBackup() async throws -> [DeviceAsset] {

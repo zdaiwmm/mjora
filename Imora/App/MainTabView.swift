@@ -9,7 +9,7 @@ struct MainTabView: View {
     @Bindable private var timelineRouter = TimelineNavigationRouter.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage("imora.photos.source") private var source = "cloud"
+    @AppStorage(PhotosLibrarySource.preferenceKey) private var source = "all"
     @State private var cloudControls = PhotosGridControls()
     @State private var deviceControls = PhotosGridControls()
     @State private var hidesCompactNavigation = false

@@ -135,6 +135,7 @@ final class BackupManager {
         didSet {
             if oldValue != userId {
                 cloudSyncReady = false
+                backedUpLocalRevisions = [:]
                 remoteSyncClient = nil
                 activeTransfers.removeAll()
                 sizeExcludedRequestBytesByLocal = [:]
@@ -147,6 +148,8 @@ final class BackupManager {
     @ObservationIgnored private var repeatedFailureLedger = RepeatedBackupFailures.load()
     /// assets with more than five consecutive failed backup attempts.
     private(set) var repeatedFailures: [RepeatedBackupFailure] = []
+    private(set) var backupFailures: [RepeatedBackupFailure] = []
+    private(set) var backedUpLocalRevisions: [String: Date?] = [:]
     /// failures the user already waved away in the gallery. a new one brings
     /// the banner back; the backup screen keeps listing all of them.
     private var dismissedRepeatedFailureIDs = Set(
@@ -158,6 +161,11 @@ final class BackupManager {
     }
     var showsRepeatedFailureBanner: Bool {
         repeatedFailures.contains { !dismissedRepeatedFailureIDs.contains($0.id) }
+    }
+
+    var hasBackupFailure: Bool {
+        if case .error = phase { return true }
+        return !backupFailures.isEmpty || lastFailure != nil
     }
 
     func dismissRepeatedFailureBanner() {
@@ -718,8 +726,15 @@ final class BackupManager {
         self.mediaPriority = BackupMediaPriority(rawValue: UserDefaults.standard.string(forKey: Self.mediaPriorityKey) ?? "") ?? .together
         #if DEBUG && targetEnvironment(simulator)
         // Preparation needs the read-only launch validator, not backup
-        // recovery, PhotoKit observers, or account-crossing upload work.
-        if Phase4OwnedFixture.automaticPreparationName != nil { return }
+        // recovery, PhotoKit observers, or automatic upload work. The path
+        // monitor still supplies conditions for an explicit manual UI action.
+        if Phase4OwnedFixture.automaticPreparationName != nil {
+            networkWatcher = NetworkPathWatcher { [weak self] path in
+                self?.conditions.updateNetwork(connected: path.connected, metered: path.expensive,
+                    wifi: path.wifi, cellular: path.cellular)
+            }
+            return
+        }
         #endif
         if repeatedFailureLedger.removeLegacySizeLimitFailures() {
             repeatedFailureLedger.save()
@@ -1212,7 +1227,7 @@ final class BackupManager {
                 return
             case .quota(let message):
                 recentQuotaReached = true
-                throw ImoraError.http(400, message)
+                throw ImoraError.http(507, message)
             }
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return }
@@ -1263,6 +1278,7 @@ final class BackupManager {
                 revisions: snapshot.backedUpLocalRevisions)
             if repeatedFailureLedger.entries.count != before { saveRepeatedFailures() }
         }
+        backedUpLocalRevisions = snapshot.backedUpLocalRevisions
         backedUpRemoteIds = snapshot.backedUpRemoteIds
         let replacedRenderings = localIdentifierByRemoteId.compactMap { remote, local in
             snapshot.renderableLocalByRemote[remote] == local ? nil : remote
@@ -1523,27 +1539,29 @@ final class BackupManager {
 
     /// every device asset paired with its backup status, newest first.
     func localTimelineAssets() async -> [LocalTimelineItem] {
-        guard PhotoLibraryService.hasFullAccess, let userId else { return [] }
+        guard let userId else { return [] }
         // the library walk and the index decode are independent, and at
         // launch each is a few hundred milliseconds on a large library, so
         // they overlap instead of queueing.
-        async let scanned = PhotoLibraryService.scan()
+        async let scanned = PhotoLibraryService.timelineAssets()
         guard await index.load(serverHost: client.serverKey, userId: userId, generation: client.context.id) else { return [] }
         let entries = await index.allEntries()
-        let assets = await scanned.sorted {
+        return await Self.makeLocalTimelineItems(assets: scanned, entries: entries)
+    }
+
+    @concurrent
+    nonisolated private static func makeLocalTimelineItems(assets: [DeviceAsset], entries: [String: BackupEntry]) async -> [LocalTimelineItem] {
+        let assets = assets.sorted {
             let lhs = $0.creationDate ?? $0.modificationDate ?? .distantPast
             let rhs = $1.creationDate ?? $1.modificationDate ?? .distantPast
             return lhs == rhs ? $0.localIdentifier < $1.localIdentifier : lhs > rhs
         }
         return assets.map { asset in
             let entry = entries[asset.localIdentifier]
-            return LocalTimelineItem(
-                device: asset,
-                remoteId: entry?.primaryRemoteId,
-                backedUp: entry?.hasHistoricalBackup == true && asset.modificationDate != nil
-                    && entry?.matches(modificationDate: asset.modificationDate) == true
-                    && entry?.isLivePhoto == asset.isLivePhoto
-            )
+            let backedUp = entry?.hasHistoricalBackup == true && asset.modificationDate != nil
+                && entry?.matches(modificationDate: asset.modificationDate) == true
+                && entry?.isLivePhoto == asset.isLivePhoto
+            return LocalTimelineItem(device: asset, remoteId: backedUp ? entry?.primaryRemoteId : nil, backedUp: backedUp)
         }
     }
 
@@ -2207,7 +2225,7 @@ final class BackupManager {
                     return .pause
                 case .quota(let message):
                     quotaMessage = message
-                    uploadStates[localId] = nil
+                    markUploadFailed(asset, reason: message, kind: .cloudStorage)
                     return .cancel
                 }
                 done += 1
@@ -2224,7 +2242,8 @@ final class BackupManager {
     }
 
     private func updateRepeatedFailureSummary() {
-        repeatedFailures = userId == nil ? [] : repeatedFailureLedger.needingAttention(account: accountKey)
+        backupFailures = userId == nil ? [] : repeatedFailureLedger.failures(account: accountKey)
+        repeatedFailures = backupFailures.filter { $0.count > RepeatedBackupFailures.bannerThreshold }
     }
 
     private func saveRepeatedFailures() {
@@ -2560,16 +2579,16 @@ final class BackupManager {
         if await index.entry(for: localIdentifier)?.isUploadBlockedByRemoteRemoval == true {
             throw SingleAssetBackupError.failed(String(localized: "The cloud copy was removed. Confirm Back Up Again to restore or recreate it."))
         }
+        guard let asset = await PhotoLibraryService.assetInfo(localIdentifier: localIdentifier) else {
+            throw SingleAssetBackupError.missing
+        }
         if let entry = await index.entry(for: localIdentifier),
            entry.isBackedUp,
+           BackupRoutineRecheckPolicy.hasUnchangedRevision(asset: asset, entry: entry),
            let remoteID = entry.primaryRemoteId {
             await refreshLocalSnapshots()
             return remoteID
         }
-        guard let asset = await PhotoLibraryService.assetInfo(localIdentifier: localIdentifier) else {
-            throw SingleAssetBackupError.missing
-        }
-
         let transfer = beginActiveTransfer(localIdentifier: localIdentifier)
         defer { activeTransfers.finish(localIdentifier: localIdentifier, attempt: transfer.attempt) }
         uploadStates[localIdentifier] = .uploading(0)
@@ -2608,8 +2627,8 @@ final class BackupManager {
             uploadStates[localIdentifier] = nil
             throw pause
         case .quota(let message):
-            uploadStates[localIdentifier] = nil
-            throw ImoraError.http(400, message)
+            markUploadFailed(asset, reason: message, kind: .cloudStorage)
+            throw ImoraError.http(507, message)
         }
 
         await stackEditedRevisions()
@@ -2670,9 +2689,13 @@ final class BackupManager {
     /// uploads share the worker pool of a full run, so every tile keeps its
     /// own progress overlay. like the single-asset path, this ignores the
     /// automatic-backup preference: the selection is an explicit ask.
-    func backUp(localIdentifiers: [String]) async throws -> BulkBackupOutcome {
+    func backUp(localIdentifiers: [String], overridingCurrentHolds: Bool = false) async throws -> BulkBackupOutcome {
         guard await PhotoLibraryService.requestFullAccess() else {
             throw ImoraError.http(0, String(localized: "full photo library access is required for backup."))
+        }
+        if overridingCurrentHolds {
+            conditions.overrideCurrentHolds(allowCellular: backUpOnCellular,
+                pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
         }
         let user = try await client.currentUser()
         userId = user.id
@@ -2693,12 +2716,13 @@ final class BackupManager {
                 continue
             }
             if await index.entry(for: localId)?.isUploadBlockedByRemoteRemoval == true { outcome.skipped += 1; continue }
-            if let entry = await index.entry(for: localId), entry.isBackedUp {
-                outcome.alreadyBackedUp += 1
-                continue
-            }
             guard let asset = await PhotoLibraryService.assetInfo(localIdentifier: localId) else {
                 outcome.skipped += 1
+                continue
+            }
+            if let entry = await index.entry(for: localId), entry.isBackedUp,
+               BackupRoutineRecheckPolicy.hasUnchangedRevision(asset: asset, entry: entry) {
+                outcome.alreadyBackedUp += 1
                 continue
             }
             queue.append(asset)
@@ -2771,7 +2795,7 @@ final class BackupManager {
                     return .pause
                 case .quota(let message):
                     quotaMessage = message
-                    uploadStates[localId] = nil
+                    markUploadFailed(asset, reason: message, kind: .cloudStorage)
                     return .cancel
                 }
                 localChanged()

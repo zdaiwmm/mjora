@@ -85,6 +85,34 @@ final class PhotosEditorMotionTests: XCTestCase {
         XCTAssertFalse(transition.isTracking)
     }
 
+    func testPinchReflowsRowsBeforeTheFingersLiftAndCanReverse() throws {
+        let parent = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
+        let grid = UIScrollView(frame: parent.bounds)
+        parent.addSubview(grid)
+        let anchor = UIView(), moving = UIView()
+        let transition = TimelineGridZoomTransition()
+        transition.begin(in: grid, captured: [
+            .init(id: "anchor", frame: CGRect(x: 0, y: 100, width: 100, height: 100), makeReplica: { anchor }),
+            .init(id: "moving", frame: CGRect(x: 0, y: 200, width: 100, height: 100), makeReplica: { moving })
+        ], midpoint: CGPoint(x: 50, y: 150), reduceMotion: false)
+        defer { transition.cancel() }
+        let lower = ["anchor": CGRect(x: 0, y: 100, width: 100, height: 100),
+                     "moving": CGRect(x: 0, y: 200, width: 100, height: 100)]
+        let upper = ["anchor": CGRect(x: 0, y: 100, width: 75, height: 75),
+                     "moving": CGRect(x: 225, y: 100, width: 75, height: 75)]
+        transition.update(scale: 0.85, midpoint: CGPoint(x: 50, y: 150), in: grid,
+                          from: lower, to: upper, progress: 0.5)
+        XCTAssertTrue(transition.isTracking)
+        XCTAssertEqual(moving.frame.minX, 118.75, accuracy: 0.01)
+        XCTAssertEqual(moving.frame.width, 87.5, accuracy: 0.01)
+        XCTAssertEqual(anchor.frame.midX, 50, accuracy: 0.01)
+        XCTAssertEqual(anchor.frame.midY, 150, accuracy: 0.01)
+        transition.update(scale: 1, midpoint: CGPoint(x: 50, y: 150), in: grid,
+                          from: lower, to: upper, progress: 0)
+        XCTAssertEqual(moving.frame, CGRect(x: 0, y: 200, width: 100, height: 100))
+        XCTAssertTrue(transition.isTracking)
+    }
+
     func testReducedMotionRestoresAnchorWithoutBuildingReplicasOrLeavingAnOverlay() {
         let parent = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
         let grid = UIScrollView(frame: parent.bounds)

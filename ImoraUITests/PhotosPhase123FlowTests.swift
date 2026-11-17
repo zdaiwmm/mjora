@@ -103,7 +103,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
     private func source(_ app: XCUIApplication, device: Bool) {
         let title = app.buttons["photos-source-menu"]
         XCTAssertTrue(title.waitForExistence(timeout: 15)); title.tap()
-        let item = button(app, labels: device ? ["本机", "On Device"] : ["云端照片", "Cloud Photos"])
+        let item = button(app, labels: device ? ["本机", "On Device"] : ["云端", "Cloud"])
         XCTAssertTrue(item.waitForExistence(timeout: 5)); item.tap()
         waitUntil("Source menu returns after selection") { title.exists && title.isHittable }
     }
@@ -117,7 +117,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
         let title = app.buttons["photos-source-menu"]
         if title.waitForExistence(timeout: 15), title.isHittable {
             title.tap()
-            let cloud = button(app, labels: ["云端照片", "Cloud Photos"])
+            let cloud = button(app, labels: ["云端", "Cloud"])
             if cloud.waitForExistence(timeout: 3), cloud.isHittable { cloud.tap() }
         }
     }

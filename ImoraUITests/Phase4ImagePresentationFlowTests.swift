@@ -61,7 +61,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         let source = app.buttons["photos-source-menu"]
         XCTAssertTrue(source.waitForExistence(timeout: 45)); source.tap()
         let options = app.buttons.matching(NSPredicate(format: "(label == %@ OR label BEGINSWITH %@) AND identifier != %@",
-            "Cloud Photos", "Cloud Photos,", "photos-source-menu"))
+            "Cloud", "Cloud,", "photos-source-menu"))
         let cloud = options.allElementsBoundByIndex.first(where: \.isHittable) ?? options.firstMatch
         XCTAssertTrue(cloud.waitForExistence(timeout: 8)); cloud.tap()
         return app

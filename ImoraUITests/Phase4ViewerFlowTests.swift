@@ -50,7 +50,7 @@ final class Phase4ViewerFlowTests: XCTestCase {
         let source = app.buttons["photos-source-menu"]
         XCTAssertTrue(source.waitForExistence(timeout: 35)); source.tap()
         let cloud = app.buttons.matching(NSPredicate(format: "(label == %@ OR label BEGINSWITH %@) AND identifier != %@",
-            "Cloud Photos", "Cloud Photos,", "photos-source-menu")).firstMatch
+            "Cloud", "Cloud,", "photos-source-menu")).firstMatch
         XCTAssertTrue(cloud.waitForExistence(timeout: 5)); cloud.tap()
         let all = app.segmentedControls["photos-period-picker"].buttons["All"]
         if all.exists && all.isHittable { all.tap() }
@@ -143,7 +143,7 @@ final class Phase4ViewerFlowTests: XCTestCase {
         let source = app.buttons["photos-source-menu"]
         XCTAssertTrue(source.waitForExistence(timeout: 35)); source.tap()
         let cloud = app.buttons.matching(NSPredicate(format: "(label == %@ OR label BEGINSWITH %@) AND identifier != %@",
-            "Cloud Photos", "Cloud Photos,", "photos-source-menu")).firstMatch
+            "Cloud", "Cloud,", "photos-source-menu")).firstMatch
         XCTAssertTrue(cloud.waitForExistence(timeout: 5)); cloud.tap()
         let all = app.segmentedControls["photos-period-picker"].buttons["All"]
         if all.exists && all.isHittable { all.tap() }

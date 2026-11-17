@@ -98,7 +98,7 @@ final class Phase4LaunchPresentationTests: XCTestCase {
         dismissPrompts(app)
         app.buttons["photos-source-menu"].tap()
         let identified = app.descendants(matching: .any)["photos-source-\(source)"].firstMatch
-        let label = source == "local" ? "On Device" : "Cloud Photos"
+        let label = source == "local" ? "On Device" : "Cloud"
         let option = identified.exists ? identified : app.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", label, label + ",")).firstMatch
         XCTAssertTrue(option.waitForExistence(timeout: 5)); option.tap()
         let grid = app.scrollViews["phase4-launch-grid-probe"]

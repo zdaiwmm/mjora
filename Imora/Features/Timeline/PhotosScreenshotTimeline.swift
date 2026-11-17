@@ -7,6 +7,8 @@ struct PhotosScreenshotTimeline: View {
     @Environment(\.scenePhase) private var scenePhase
     let configuration: PhotosToolbarConfiguration?
     let title: String
+    var includesDevice = false
+    @State private var localLibrary = PhotosLocalMediaLibrary()
     @State private var library = PhotosScreenshotLibraryModel()
     @State private var timeline = TimelineModel(filter: TimelineFilter(), suppliedAssets: [])
 
@@ -15,21 +17,28 @@ struct PhotosScreenshotTimeline: View {
                        photosConfiguration: configuration, showsEmptyState: !library.isLoading && library.error == nil,
                        suppliedModel: timeline, footer: {
             VStack(spacing: 8) {
-                Text("\(library.assets.count) items")
+                Text("\(timeline.flatAssets.count) items")
                     .accessibilityIdentifier("photos-filter-count")
                 if library.hasUnclassifiedPhotos {
                     Text("Some cloud photos have no screenshot classification.")
                 }
             }
             .font(.footnote).foregroundStyle(.secondary).padding()
+            PhotosLocalMediaNotice(library: localLibrary) { await refreshDevice() }
         })
+        .task(id: session.realtime?.localGeneration) { await refreshDevice() }
+        .onChange(of: PhotoAccess.shared.status) { _, _ in Task { await refreshDevice() } }
+        .onChange(of: localLibrary.assets) { updateProjection() }
         .task(id: session.client?.context.id) { await refresh() }
         .refreshable { await refresh() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await refresh() } }
         }
+        .onChange(of: library.isLoading) { _, loading in
+            if !loading, timeline.flatAssets.isEmpty { configuration?.onReady() }
+        }
         .onChange(of: library.assets, initial: true) { _, assets in
-            timeline.replaceSuppliedAssets(assets, groupsByDate: true)
+            updateProjection()
         }
         .overlay {
             if timeline.isEmpty, library.isLoading {
@@ -43,6 +52,17 @@ struct PhotosScreenshotTimeline: View {
                     .background(Color(.systemBackground))
             }
         }
+    }
+
+    private func refreshDevice() async {
+        guard includesDevice else { return }
+        await localLibrary.refresh(media: .screenshots, session: session)
+        updateProjection()
+    }
+
+    private func updateProjection() {
+        localLibrary.project(cloud: library.assets, includesDevice: includesDevice,
+            remoteByLocal: session.backup?.remoteIdentifierByLocalId ?? [:], into: timeline)
     }
 
     private func refresh() async {

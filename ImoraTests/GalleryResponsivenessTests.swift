@@ -5,6 +5,72 @@ import XCTest
 
 @MainActor
 final class GalleryResponsivenessTests: XCTestCase {
+    func testRebindingTheSameSessionPreservesPreparedThumbnails() throws {
+        let client = ImoraClient(apiURL: URL(string: "https://fixture.invalid/api")!, accessToken: UUID().uuidString)
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128)).image { context in
+            UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+        }
+        let url = client.thumbnailURL(assetID: "resume-\(UUID())")
+        ImageLoader.shared.installPrepared(image, url: url, targetPixelSize: 128, client: client)
+        XCTAssertNotNil(ImageLoader.shared.cachedSurface(for: url, targetPixelSize: 128))
+        ImageLoader.shared.configure(client: client)
+        XCTAssertNotNil(ImageLoader.shared.cachedSurface(for: url, targetPixelSize: 128),
+                        "Foreground recovery must not clear the current session's decoded photos")
+    }
+
+    func testDeletionReusesSurvivingTilesAcrossRows() throws {
+        let model = TimelineModel(filter: .init(), suppliedAssets: (0..<12).map { photo("reflow-\($0)") })
+        model.showsDateHeaders = false
+        let session = SessionStore(), registry = AssetTileRegistry()
+        let grid = TimelineGridView(model: model, layoutBox: TimelineRowLayoutBox())
+        grid.frame = CGRect(x: 0, y: 0, width: 390, height: 600)
+        grid.contentInsetAdjustmentBehavior = .never
+        grid.update(side: AssetGridLayout.tileSide(viewportWidth: 390, columns: 3), tailPadding: 0,
+            context: .init(session: session, columns: 3, targetPixelSize: 128, showsBackupBadge: false,
+                usesOriginalAspectRatio: false, isSelecting: false, selection: [], reduceMotion: false,
+                registry: registry, motion: GridMotion(), isSelectable: { _ in true },
+                isSelectableAssetID: { _ in true }, actions: .init(toggleSelection: { _ in },
+                    menu: { _ in UIMenu(children: []) }, makeViewer: { _, _, _ in nil }), toggleDay: { _, _ in }), animated: false)
+        grid.layoutIfNeeded()
+        func tiles(_ view: UIView) -> [TimelineTileView] {
+            (view as? TimelineTileView).map { [$0] } ?? view.subviews.flatMap { tiles($0) }
+        }
+        let before = Dictionary(uniqueKeysWithValues: tiles(grid).compactMap { tile in tile.asset.map { ($0.id, tile) } })
+        let removed = try XCTUnwrap(model.flatAssets.first?.id)
+        XCTAssertEqual(before.count, 12)
+        model.removeAssets(ids: [removed])
+        grid.reloadRows(animated: true)
+        for tile in tiles(grid) {
+            let id = try XCTUnwrap(tile.asset?.id)
+            XCTAssertNotEqual(id, removed)
+            XCTAssertTrue(before[id] === tile, "A photo crossing a row boundary must keep its loaded tile")
+        }
+        XCTAssertEqual(tiles(grid).count, 11)
+    }
+
+    func testResizingKeepsTheCurrentPhotoWhileTheLargerThumbnailLoads() throws {
+        let client = ImoraClient(apiURL: URL(string: "https://fixture.invalid/api")!, accessToken: UUID().uuidString)
+        ImageLoader.shared.configure(client: client)
+        defer { ImageLoader.shared.configure(client: nil); client.invalidate() }
+        let value = photo("resize-\(UUID())")
+        let source = AssetThumbnailSource(assetID: value.id, localIdentifier: nil, pairedLocalIdentifier: nil,
+            pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil)
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128)).image { context in
+            UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+        }
+        ImageLoader.shared.installPrepared(image, url: client.thumbnailURL(assetID: value.id, cacheKey: value.thumbhash),
+            targetPixelSize: 128, client: client)
+        let tile = TimelineTileView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        tile.projectImage(asset: value, source: source, client: client, generation: 0, targetPixelSize: 128)
+        XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image)
+        tile.projectImage(asset: value, source: source, client: client, generation: 0, targetPixelSize: 512)
+        XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image, "Changing thumbnail resolution must not flash a blank tile")
+        XCTAssertFalse(tile.hasPreparedInitialImage, "A smaller preview must not impersonate the requested final image")
+        tile.recycle()
+    }
+
     func testNavigationExpandsBeforeASecondTapRequestsTheLatestPhotos() {
         let controls = PhotosGridControls()
         controls.observeScroll(offset: 1_000, endOffset: 2_000, isUserScrolling: false)
