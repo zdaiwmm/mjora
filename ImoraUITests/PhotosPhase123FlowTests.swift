@@ -170,6 +170,9 @@ final class PhotosPhase123FlowTests: XCTestCase {
         defer { finishOnCloud(app) }
         app.buttons["photos-source-menu"].tap()
         button(app, labels: ["账号与设置", "Account & Settings"]).tap()
+        let preferences = app.buttons["settings-photo-preferences"]
+        XCTAssertTrue(waitForHittable(preferences, timeout: 10))
+        preferences.tap()
         let toggle = app.switches.matching(NSPredicate(format: "label IN %@", ["回忆", "Memories"])).firstMatch
         XCTAssertTrue(waitForHittable(toggle, timeout: 10))
         let initial = toggle.value as? String == "1"
@@ -206,6 +209,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
         snapshot(app, "phase123-settings-switch-on")
         set(initial)
         try await api.waitForMemories(initial)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["settings-close"].tap()
     }
 

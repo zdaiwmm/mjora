@@ -76,7 +76,7 @@ struct ActiveBackupScreen: View {
                 .foregroundStyle(.white.opacity(0.7))
 
             VStack(spacing: 8) {
-                Text("Active Mode")
+                Text("Keep Screen Awake")
                     .font(.title2.weight(.semibold))
                 Text(backup.continuedSubtitle)
                     .multilineTextAlignment(.center)
@@ -115,20 +115,6 @@ struct ActiveBackupScreen: View {
                     .accessibilityIdentifier("active-backup-recent-status")
             }
 
-            VStack(spacing: 10) {
-                Text("Especially helpful for your first backup")
-                    .font(.callout.weight(.semibold))
-                Text("This screen prevents automatic locking and keeps Imora active, giving it more time to index your library and upload missing photos and videos.")
-                Text("Indexing checks your files against the server so photos and videos already backed up don't upload again.")
-                Text("When the backup finishes, Imora returns to Backup settings and lets your screen lock normally again.")
-                Text("Connect to power and leave this screen open for a foreground backup, or request background continuation below.")
-            }
-            .font(.footnote)
-            .foregroundStyle(.white.opacity(0.75))
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: 360)
-            .accessibilityIdentifier("active-backup-explanation")
-
             BackgroundBackupControls(backup: backup, usesDarkBackground: true) {
                 if backup.manualBackupNeedsApproval {
                     confirmBackgroundConditions = true
@@ -142,7 +128,7 @@ struct ActiveBackupScreen: View {
 
             Spacer()
 
-            Button("Exit Active Mode") {
+            Button("Exit Keep-Awake Mode") {
                 finishActiveMode()
             }
             .buttonStyle(.bordered)

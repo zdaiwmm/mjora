@@ -208,6 +208,11 @@ nonisolated enum ServerRoute {
 /// A ping proves reachability only, never the server's identity.
 @Observable
 final class LocalServerRouter {
+    enum ConnectionMode: CaseIterable, Identifiable {
+        case automatic, external, local
+        var id: Self { self }
+    }
+
     enum Status: Equatable {
         case off
         case external
@@ -276,6 +281,24 @@ final class LocalServerRouter {
         self.ssidProvider = ssidProvider ?? Self.currentSSID
         self.identityProbe = identityProbe ?? Self.answersWithIdentity
         provisioning = LocalServerIdentityProvisioning.decode(provisioningData)
+    }
+
+    var connectionMode: ConnectionMode {
+        switch manualOverride {
+        case .local: .local
+        case .external: .external
+        case nil: config?.isEnabled == false ? .external : .automatic
+        }
+    }
+
+    func useAutomatic() {
+        if var config {
+            config.isEnabled = true
+            config.automaticallyUseVerifiedLocal = config.verifiedIdentity != nil
+            update(config)
+        }
+        invalidateSelection()
+        evaluate(resetting: true)
     }
 
     var isManualLocal: Bool { manualOverride == .local }
