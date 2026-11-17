@@ -73,6 +73,31 @@ final class OfflineAlbumTests: XCTestCase {
         XCTAssertNil(original, "An edited offline display must never stand in for editor/backup original bytes")
     }
 
+    func testDamagedAlbumManifestsDoNotBlockHealthyOfflineMedia() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let context = AccountRequestContext(apiURL: URL(string: scope.serverIdentity)!, token: "synthetic")
+        let store = OfflineAlbumStore(root: root), part = try component(asset(), scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: part.asset, components: [part])], scope: scope)
+        let bytes = try png()
+        try await install(bytes, component: part, store: store, scope: scope, context: context)
+        try await store.setState(.ready, scope: scope, id: "album")
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let directory = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+        let incomplete = directory.appending(path: MediaDisplayKeyV1.digest(Data("interrupted".utf8)))
+        try ProtectedTemporaryFiles.prepareDirectory(incomplete)
+        for corrupt in [false, true] {
+            if corrupt { try Data("invalid-json".utf8).write(to: incomplete.appending(path: "manifest.json")) }
+            let restarted = OfflineAlbumStore(root: root)
+            let albums = try await restarted.albums(scope: scope)
+            XCTAssertEqual(albums.map(\.id), ["album"])
+            let file = try await restarted.media(scope: scope,
+                url: URL(string: "https://offline.invalid/api/assets/still/original?edited=true&c=v1")!)
+            XCTAssertEqual(try Data(contentsOf: XCTUnwrap(file).url), bytes)
+        }
+    }
+
     func testIncompleteLivePhotoIsNotReadyAndMissingFileCanBeDownloadedAgain() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
