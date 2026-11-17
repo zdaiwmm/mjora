@@ -437,7 +437,12 @@ final class OfflineAlbumTests: XCTestCase {
         XCTFail("Timed out waiting for the owned asynchronous operation")
     }
 
-    private func fixtureServer(image: Data, video: Data = Data()) throws -> LocalHTTPServer {
+    private nonisolated struct DownloadFixtureState: Sendable {
+        var favorite = false
+        var mediaRequests: [String: Int] = [:]
+    }
+
+    private func fixtureServer(image: Data, video: Data = Data(), state: Mutex<DownloadFixtureState>? = nil) throws -> LocalHTTPServer {
         try LocalHTTPServer { request in
             if request.path == "/api/albums/album" { return .init(body: Self.albumData()) }
             if request.path == "/api/server/version" { return .init(body: Data(#"{"major":3,"minor":4,"patch":1}"#.utf8)) }
@@ -447,22 +452,74 @@ final class OfflineAlbumTests: XCTestCase {
                     : Data(#"{"assets":{"items":[{"id":"still"},{"id":"live"},{"id":"video"}]}}"#.utf8))
             }
             if request.path.contains("/original?") || request.path.contains("/thumbnail?") {
+                state?.withLock { $0.mediaRequests[request.path, default: 0] += 1 }
                 return .init(headers: ["Content-Type": "image/png"], body: image)
             }
-            if request.path.hasSuffix("/video/playback") { return .init(headers: ["Content-Type": "video/quicktime"], body: video) }
+            if request.path.hasSuffix("/video/playback") {
+                state?.withLock { $0.mediaRequests[request.path, default: 0] += 1 }
+                return .init(headers: ["Content-Type": "video/quicktime"], body: video)
+            }
             if request.path.hasPrefix("/api/assets/") {
                 let id = String(request.path.split(separator: "/").last!)
                 let isVideo = id == "video" || id == "motion"
                 let day = id == "video" ? 3 : id == "live" ? 2 : 1
                 let pairing = id == "live" ? #", "livePhotoVideoId":"motion""# : ""
+                let favorite = state?.withLock { $0.favorite } ?? false
                 return .init(body: Data("""
                 {"id":"\(id)","ownerId":"fixture","type":"\(isVideo ? "VIDEO" : "IMAGE")","originalFileName":"\(id)",
-                "fileCreatedAt":"2026-01-0\(day)T12:00:00Z","localDateTime":"2026-01-0\(day)T12:00:00Z","isFavorite":false,
+                "fileCreatedAt":"2026-01-0\(day)T12:00:00Z","localDateTime":"2026-01-0\(day)T12:00:00Z","isFavorite":\(favorite),
                 "isTrashed":false,"visibility":"\(id == "motion" ? "hidden" : "timeline")","thumbhash":"v1","width":32,"height":32\(pairing)}
                 """.utf8))
             }
             return .init(status: 404)
         }
+    }
+
+    func testActualHTTPRetryReusesCompleteMediaAndRedownloadsMissingOrTruncatedFiles() async throws {
+        let image = try png(), state = Mutex(DownloadFixtureState())
+        let server = try fixtureServer(image: image, state: state)
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "reuse-synthetic")
+        client.confirmMediaAccount(UUID().uuidString)
+        defer { client.invalidate() }
+        let scope = client.mediaDisplayScope, downloads = OfflineAlbumDownloads(), value = try album()
+        await downloads.attach(client)
+        let download: @MainActor () async throws -> Void = {
+            downloads.download(value, client: client)
+            try await self.waitUntil { !downloads.workingIDs.contains("album") }
+            XCTAssertNil(downloads.error)
+            XCTAssertEqual(downloads.albums.first?.state, .ready)
+        }
+        try await download()
+        let initialRequests = state.withLock { $0.mediaRequests }
+        XCTAssertEqual(initialRequests.values.reduce(0, +), 1, "The initial photo should make one actual media request")
+
+        try await download()
+        XCTAssertEqual(state.withLock { $0.mediaRequests }, initialRequests, "The same version downloaded a completed component again")
+
+        state.withLock { $0.favorite = true }
+        try await download()
+        XCTAssertEqual(state.withLock { $0.mediaRequests }, initialRequests, "A favorite-only change downloaded media again")
+        let metadata = try XCTUnwrap(downloads.albums.first)
+        XCTAssertTrue(metadata.items[0].asset.isFavorite)
+        XCTAssertTrue(metadata.items[0].components[0].asset.isFavorite)
+
+        let originalURL = client.editedOriginalURL(assetID: "still")
+        let saved = try await OfflineAlbumStore.shared.media(scope: scope, url: originalURL)
+        let missing = try XCTUnwrap(saved)
+        try FileManager.default.removeItem(at: missing.url)
+        try await download()
+        XCTAssertEqual(state.withLock { $0.mediaRequests.values.reduce(0, +) }, 2, "A missing component did not make a replacement HTTP request")
+        let recovered = try await OfflineAlbumStore.shared.media(scope: scope, url: originalURL)
+        let recoveredFile = try XCTUnwrap(recovered)
+        XCTAssertEqual(try Data(contentsOf: recoveredFile.url), image)
+
+        try Data(image.prefix(8)).write(to: recoveredFile.url, options: .atomic)
+        try await download()
+        XCTAssertEqual(state.withLock { $0.mediaRequests.values.reduce(0, +) }, 3, "A truncated component did not make a replacement HTTP request")
+        let repaired = try await OfflineAlbumStore.shared.media(scope: scope, url: originalURL)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(repaired).url), image)
+        await downloads.remove("album")
     }
 
     func testActualHTTPDownloadReadsPhotoVideoAndLiveAfterServerStops() async throws {
