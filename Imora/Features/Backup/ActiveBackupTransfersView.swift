@@ -69,9 +69,6 @@ struct ActiveBackupTransfersView: View {
                 .accessibilityIdentifier("backup-current-file-\(transfer.id)")
             }
 
-            Text(String(localized: "The backed-up count increases after server verification."))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("backup-current-files")

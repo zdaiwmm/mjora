@@ -12,6 +12,7 @@ struct CleanupSettingsScreen: View {
     @State private var task: Task<Void, Never>?
     @State private var isBusy = false
     @State private var confirmation = false
+    @State private var showsPreview = false
     @State private var outcome: String?
 
     private struct AlbumOption: Identifiable { let id: String; let name: String }
@@ -33,6 +34,7 @@ struct CleanupSettingsScreen: View {
                 Toggle("Keep Favorites", isOn: $preserveFavorites)
                     .accessibilityIdentifier("cleanup-keep-favorites")
             }
+            .disabled(isBusy)
             Section("Keep Selected Albums") {
                 ForEach(albums) { album in
                     Toggle(album.name, isOn: Binding(get: { protectedAlbums.contains(album.id) }, set: { selected in
@@ -41,61 +43,72 @@ struct CleanupSettingsScreen: View {
                 }
                 if albums.isEmpty { Text("No local albums available.").foregroundStyle(.secondary) }
             }
+            .disabled(isBusy)
             Section {
-                Button {
-                    scan()
-                } label: {
-                    if isBusy { Label("Verifying with server...", systemImage: "hourglass") }
+                Button(action: scan) {
+                    if isBusy { ProgressView("Verifying with server...") }
                     else { Label("Scan and Preview", systemImage: "doc.text.magnifyingglass") }
                 }
                 .disabled(isBusy || session.backup == nil)
                 .accessibilityIdentifier("cleanup-scan-preview")
                 if isBusy { Button("Cancel Verification", role: .cancel) { task?.cancel() } }
-            } footer: {
-                Text("Only verified server copies can be removed. Unknown dates, cloud-deleted items, and incomplete Live Photos stay on this device.")
             }
-            if let report {
-                Section("Cleanup Preview") {
-                    if let cutoff = report.retention?.cutoff {
-                        LabeledContent("Eligible Before", value: cutoff.formatted(date: .complete, time: .shortened))
-                    }
-                    LabeledContent("Time Zone", value: report.retention?.timeZoneIdentifier ?? TimeZone.current.identifier)
+        }
+        .navigationTitle("Clean Up Device")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: policy) { _, _ in task?.cancel(); report = nil; outcome = nil; showsPreview = false }
+        .onDisappear { task?.cancel() }
+        .task { loadAlbums() }
+        .navigationDestination(isPresented: $showsPreview) { previewScreen }
+    }
+
+    private var previewScreen: some View {
+        List {
+            if let outcome {
+                Section {
+                    Label("Cleanup Complete", systemImage: "checkmark.circle")
+                    Text(outcome).accessibilityIdentifier("cleanup-outcome")
+                }
+            } else if let report {
+                Section {
                     LabeledContent("Ready to Remove", value: report.eligibleMedia.text)
                     LabeledContent("Kept on Device", value: report.keptMedia.text)
                     LabeledContent("Estimated Space", value: report.estimatedOriginalBytes.map {
                         ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
                     } ?? String(localized: "not yet known"))
-                    ForEach(CleanupRetentionReason.allCases, id: \.self) { reason in
-                        if let count = report.retainedReasons[reason], count.total > 0 {
-                            LabeledContent(reason.title, value: count.text)
+                }
+                Section {
+                    if let cutoff = report.retention?.cutoff {
+                        LabeledContent("Eligible Before", value: cutoff.formatted(date: .complete, time: .shortened))
+                    }
+                    DisclosureGroup("Retention Details") {
+                        ForEach(CleanupRetentionReason.allCases, id: \.self) { reason in
+                            if let count = report.retainedReasons[reason], count.total > 0 {
+                                LabeledContent(reason.title, value: count.text)
+                            }
                         }
                     }
-                    Text("An item can have more than one reason to keep it. The kept total counts each item once.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section {
                     Button("Verify and Remove \(report.eligibleMedia.text)", role: .destructive) { confirmation = true }
                         .disabled(report.eligible.isEmpty || isBusy)
                         .accessibilityIdentifier("cleanup-confirm-preview")
+                        .confirmationDialog("Remove Verified Device Copies?", isPresented: $confirmation, titleVisibility: .visible) {
+                            Button("Verify and Remove \(report.eligibleMedia.text)", role: .destructive) { remove(report) }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Device copies will be removed after verification. If iCloud Photos is enabled, this also removes them from iCloud and synced devices.")
+                        }
+                    if isBusy {
+                        ProgressView("Verifying with server...")
+                        Button("Cancel Verification", role: .cancel) { task?.cancel() }
+                    }
                 }
             }
-            if let outcome { Section { Text(outcome).accessibilityIdentifier("cleanup-outcome") } }
-            Section {
-                Text("If iCloud Photos is enabled, deleting here also deletes from iCloud and other devices on the same account. Space is released according to the system's Recently Deleted handling.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
         }
-        .navigationTitle("Clean Up Device")
+        .navigationTitle(outcome == nil ? String(localized: "Cleanup Preview") : String(localized: "Cleanup Complete"))
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: policy) { _, _ in task?.cancel(); report = nil; outcome = nil }
         .onDisappear { task?.cancel() }
-        .task { loadAlbums() }
-        .confirmationDialog("Remove Verified Device Copies?", isPresented: $confirmation, titleVisibility: .visible) {
-            if let report {
-                Button("Verify and Remove \(report.eligibleMedia.text)", role: .destructive) { remove(report) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Server originals will be read and checked again. Your retention choices will be rechecked before the system deletion confirmation.")
-        }
     }
 
     private func loadAlbums() {
@@ -118,6 +131,7 @@ struct CleanupSettingsScreen: View {
                 try Task.checkCancellation()
                 guard policy == selectedPolicy else { return }
                 report = preview
+                showsPreview = true
             } catch {
                 if !Task.isCancelled { ErrorToastCenter.shared.show(String(localized: "Couldn't verify cleanup candidates"), error: error) }
             }
@@ -125,7 +139,7 @@ struct CleanupSettingsScreen: View {
     }
 
     private func remove(_ preview: CleanupReport) {
-        guard let backup = session.backup, preview.retention?.policy == policy else { report = nil; return }
+        guard let backup = session.backup, preview.retention?.policy == policy else { report = nil; showsPreview = false; return }
         isBusy = true
         task = Task {
             defer { isBusy = false; report = nil }
@@ -133,6 +147,7 @@ struct CleanupSettingsScreen: View {
                 let result = try await backup.performCleanup(report: preview)
                 outcome = String(localized: "Removed \(result.deletedMedia.text). Kept \(result.keptMedia.text).")
             } catch {
+                showsPreview = false
                 if !Task.isCancelled && !PhotoLibraryService.isUserCancelled(error) { ErrorToastCenter.shared.show(String(localized: "Couldn't clean up this device"), error: error) }
             }
         }
