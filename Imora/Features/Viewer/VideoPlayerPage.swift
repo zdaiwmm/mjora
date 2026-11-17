@@ -780,6 +780,9 @@ struct VideoPlayerPage: View {
             return item
         }
         guard !asset.isLocal, let client = session.client else { return nil }
+        if asset.visibility != .locked,
+           let file = try? await client.retainedMediaFile(client.playbackURL(assetID: asset.id)),
+           !Task.isCancelled { return try? AVPlayerItem(asset: file.makeAsset()) }
         guard !Task.isCancelled,
               let stream = try? ControlledMediaStream(client: client, url: client.playbackURL(assetID: asset.id),
                                                        requiresElevation: asset.visibility == .locked) else { return nil }

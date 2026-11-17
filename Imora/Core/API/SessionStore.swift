@@ -213,6 +213,7 @@ final class SessionStore {
         // Revoke the working context immediately; logout uses a separate,
         // narrowly scoped client so old UI tasks cannot resume during await.
         signingOutClient.invalidate()
+        await OfflineAlbumDownloads.shared.signOut(signingOutClient)
         let logoutClient = ImoraClient(apiURL: signingOutClient.apiURL, accessToken: signingOutClient.accessToken)
         defer { logoutClient.invalidate() }
         do {

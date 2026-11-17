@@ -9,6 +9,7 @@ struct MainTabView: View {
     @Bindable private var timelineRouter = TimelineNavigationRouter.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(PhotosLibrarySource.preferenceKey) private var source = "all"
     @State private var cloudControls = PhotosGridControls()
     @State private var deviceControls = PhotosGridControls()
@@ -68,6 +69,10 @@ struct MainTabView: View {
     var body: some View {
         GeometryReader { geometry in
             content(bottomSafeArea: geometry.safeAreaInsets.bottom)
+        }
+        .task(id: session.client?.context.id) { await OfflineAlbumDownloads.shared.attach(session.client) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { OfflineAlbumDownloads.shared.pauseAll() }
         }
     }
 

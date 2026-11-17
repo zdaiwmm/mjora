@@ -237,6 +237,13 @@ nonisolated final class ImoraClient: Sendable {
     /// Nuke retains its caching/decoding pipeline; authenticated image bytes
     /// use the same fixed-identity connection selection as the API.
     func imageData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        if request.httpMethod == nil || request.httpMethod == "GET",
+           mediaDisplayScope.accountID != nil, let url = request.url, canReadMediaURL(url),
+           let file = try? await OfflineAlbumStore.shared.media(scope: mediaDisplayScope, url: url),
+           let data = try? Data(contentsOf: file.url, options: .mappedIfSafe), file.isCurrent() {
+            guard context.isActive, file.isCurrent() else { throw ServerTrustError.sessionExpired }
+            return (data, URLResponse(url: url, mimeType: file.mime, expectedContentLength: data.count, textEncodingName: nil))
+        }
         let request = try authorize(request)
         let result = try await transportSession(for: request).data(for: request)
         try Task.checkCancellation()
@@ -262,6 +269,31 @@ nonisolated final class ImoraClient: Sendable {
         return try authorize(request)
     }
 
+    /// Local cache scope is independent of whether the selected route can
+    /// currently send a request. This never grants transport permission.
+    func canReadMediaURL(_ url: URL) -> Bool {
+        guard context.isActive,
+              url.fragment == nil || url.fragment == "imora-session=\(context.id.uuidString)" else { return false }
+        if ServerTrustPolicy(apiURL: apiURL).contains(url) { return true }
+        guard let data = UserDefaults.standard.data(forKey: "imora.localServer"),
+              let config = try? JSONDecoder().decode(LocalServerConfig.self, from: data),
+              config.server == apiURL, config.isUsable, let local = config.apiURL else { return false }
+        return ServerTrustPolicy(apiURL: local).contains(url)
+    }
+
+    /// Nuke requires the immutable account header while preparing local work.
+    /// Never send this request directly: imageData reauthorizes every actual
+    /// network send through the route gate.
+    func scopedMediaRequest(url: URL) throws -> URLRequest {
+        guard context.isActive else { throw ServerTrustError.sessionExpired }
+        guard canReadMediaURL(url) else { throw ServerTrustError.untrustedTarget }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.fragment = nil
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
     private func authorize(_ request: URLRequest) throws -> URLRequest {
         try context.authorize(request, localAPIURL: ServerRoute.configuredLocal(for: apiURL))
     }
@@ -280,16 +312,19 @@ nonisolated final class ImoraClient: Sendable {
     }
 
     func invalidateMediaCache(assetIDs: [String]? = nil) async {
+        try? await OfflineAlbumStore.shared.invalidate(scope: mediaDisplayScope, ids: assetIDs.map(Set.init))
         let failure = ImageLoader.shared.invalidateSubjects(client: self, subjects: assetIDs?.map { .remoteAsset($0) })
         await MainActor.run {
             if let failure { MediaCacheRecovery.handle(client: self, failure: failure) }
             ImageLoadRecovery.shared.contentChanged()
         }
         await mediaStore.invalidateCachedFiles()
+        await OfflineAlbumDownloads.shared.reload()
     }
 
     func localMediaFile(_ url: URL, allowsExpensiveNetworkAccess: Bool = true, role: MediaFileRole = .playback,
                         contentRevision: String? = nil, requiresElevation: Bool = false) async throws -> ControlledMediaFile {
+        if role == .playback, !requiresElevation, let file = try await retainedMediaFile(url) { return file }
         var request = try authorizedRequest(url: url)
         request.allowsCellularAccess = allowsExpensiveNetworkAccess
         request.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
@@ -302,6 +337,16 @@ nonisolated final class ImoraClient: Sendable {
             if let lease, case ImoraError.http(let code, _) = error, code == 401 || code == 403 { rejectLockedMediaLease(lease) }
             throw error
         }
+    }
+
+    func retainedMediaFile(_ url: URL) async throws -> ControlledMediaFile? {
+        guard context.isActive else { throw ServerTrustError.sessionExpired }
+        guard canReadMediaURL(url) else { throw ServerTrustError.untrustedTarget }
+        guard mediaDisplayScope.accountID != nil else { return nil }
+        guard let file = try? await OfflineAlbumStore.shared.media(scope: mediaDisplayScope, url: url) else { return nil }
+        guard context.isActive else { throw ServerTrustError.sessionExpired }
+        return ControlledMediaFile(url: file.url,
+            access: .init(context: context, privateLease: nil, requiresElevation: false), additionalAuthorization: file.isCurrent, release: {})
     }
 
     // MARK: - server resolution
@@ -724,6 +769,14 @@ nonisolated final class ImoraClient: Sendable {
         guard context.isActive else { throw ServerTrustError.sessionExpired }
         guard let http = response as? HTTPURLResponse else { throw ImoraError.unreachable }
         guard (200..<300).contains(http.statusCode) else {
+            if method == "GET", [401, 403, 404].contains(http.statusCode) {
+                let parts = path.split(separator: "/").map(String.init)
+                if parts.count == 2, parts[0] == "albums" {
+                    try? await OfflineAlbumStore.shared.remove(scope: mediaDisplayScope, id: parts[1])
+                } else if parts.count == 2, parts[0] == "assets" {
+                    try? await OfflineAlbumStore.shared.invalidate(scope: mediaDisplayScope, ids: [parts[1]], remove: true)
+                }
+            }
             throw ImoraError.http(http.statusCode, Self.serverMessage(from: data))
         }
         return data
@@ -1102,7 +1155,13 @@ nonisolated final class ImoraClient: Sendable {
 
     // MARK: - assets
 
-    func assetDetail(id: String) async throws -> AssetDetail { try await get("assets/\(id)") }
+    func assetDetail(id: String) async throws -> AssetDetail {
+        let detail: AssetDetail = try await get("assets/\(id)")
+        if (try? await OfflineAlbumStore.shared.observe(detail.asAsset(), scope: mediaDisplayScope)) == true {
+            await OfflineAlbumDownloads.shared.reload()
+        }
+        return detail
+    }
 
     func authenticatedAsset(id: String) async throws -> AuthenticatedMediaRead {
         let scope = mediaDisplayScope, session = context.id
@@ -2472,6 +2531,28 @@ nonisolated struct AuthenticatedMediaRead: Sendable {
             && client.mediaDisplayScope == scope && scope.accountID != nil && !captured.isEmpty
             && (asset.visibility != .locked || privateLease?.isCurrent == true)
             && MediaContentGenerations.shared.matchesAccess(scope: scope, subject: .remoteAsset(asset.id), captured: captured)
+    }
+
+    /// Immich hides the motion asset of a normal Live Photo. This grant is
+    /// restricted to the exact pair in two current authenticated responses;
+    /// it cannot authorize a standalone hidden asset or a locked component.
+    func authorizeLinkedMotion(parent: Asset, parentGeneration: String, parentRead: AuthenticatedMediaRead, using candidate: ImoraClient) throws -> Bool {
+        guard client === candidate, parentRead.client === candidate, candidate.context.isActive,
+              session == candidate.context.id, parentRead.session == session,
+              scope == candidate.mediaDisplayScope, parentRead.scope == scope, scope.accountID != nil,
+              explicitVisibility, parentRead.explicitVisibility, parentRead.assets.contains(parent),
+              OfflineAlbumDownloads.canRetain(parent), let motionID = parent.livePhotoVideoId,
+              MediaContentGenerations.shared.isCurrent(scope: scope, subject: .remoteAsset(parent.id),
+                  sourceRevision: parent.thumbhash ?? "", generation: parentGeneration, visibilityPolicy: parent.visibility.rawValue),
+              let motion = assets.first(where: { $0.id == motionID }), motion.isVideo, !motion.isTrashed,
+              [.timeline, .archive, .hidden].contains(motion.visibility) else { return false }
+        if captured.needsConfirmation(subject: .remoteAsset(motion.id), visibilityPolicy: motion.visibility.rawValue) {
+            _ = try MediaContentGenerations.shared.authorize(scope: scope, subject: .remoteAsset(motion.id),
+                sourceRevision: motion.thumbhash ?? "", captured: captured, visibilityPolicy: motion.visibility.rawValue)
+        }
+        guard let generation = MediaContentGenerations.shared.current(scope: scope, subject: .remoteAsset(motion.id)) else { return false }
+        return MediaContentGenerations.shared.isCurrent(scope: scope, subject: .remoteAsset(motion.id),
+            sourceRevision: motion.thumbhash ?? "", generation: generation, visibilityPolicy: motion.visibility.rawValue)
     }
 
     /// Call only after accepting/publishing the canonical projection for this

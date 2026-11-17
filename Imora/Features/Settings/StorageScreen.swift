@@ -21,6 +21,11 @@ struct StorageScreen: View {
 
     var body: some View {
         List {
+            Section {
+                NavigationLink { OfflineAlbumsScreen() } label: {
+                    Label("Offline Albums", systemImage: "arrow.down.circle")
+                }
+            }
             serverSection
             deviceSection
             shareSection

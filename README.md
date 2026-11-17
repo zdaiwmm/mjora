@@ -51,6 +51,7 @@ A native iOS client for your self-hosted photos. Supports [Imora](https://imora.
 ### Albums and sharing
 
 - Albums with sharing, public links and covers, plus multi-select actions everywhere.
+- Keep an album on this device from its menu; find retained copies in Collections → Offline Albums or Storage → Offline Albums. Photos, video playback files and both Live Photo components persist separately from the ordinary cache. Downloads pause when the app leaves the foreground, updates are manual, and signing out removes this account's retained copies.
 - Comments and likes on shared albums.
 - Gallery's shared spaces and user groups.
 

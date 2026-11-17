@@ -19,14 +19,16 @@ nonisolated final class ControlledMediaFile: Sendable {
     private let fileURL: URL
     private let access: MediaFileAccess
     private let release: @Sendable () -> Void
+    private let additionalAuthorization: @Sendable () -> Bool
     private nonisolated(unsafe) static var associationKey: UInt8 = 0
-    init(url: URL, access: MediaFileAccess, release: @escaping @Sendable () -> Void) {
-        self.fileURL = url; self.access = access; self.release = release
+    init(url: URL, access: MediaFileAccess, additionalAuthorization: @escaping @Sendable () -> Bool = { true },
+         release: @escaping @Sendable () -> Void) {
+        self.fileURL = url; self.access = access; self.additionalAuthorization = additionalAuthorization; self.release = release
     }
     deinit { release() }
     var url: URL {
         get throws {
-            guard access.isCurrent else { throw ServerTrustError.sessionExpired }
+            guard access.isCurrent, additionalAuthorization() else { throw ServerTrustError.sessionExpired }
             return fileURL
         }
     }
@@ -37,7 +39,7 @@ nonisolated final class ControlledMediaFile: Sendable {
     }
     static func isAuthorized(_ asset: AVAsset) -> Bool {
         guard let file = objc_getAssociatedObject(asset, &Self.associationKey) as? ControlledMediaFile else { return true }
-        return file.access.isCurrent
+        return file.access.isCurrent && file.additionalAuthorization()
     }
 }
 

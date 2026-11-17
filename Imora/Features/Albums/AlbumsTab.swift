@@ -22,6 +22,7 @@ struct AlbumsTab: View {
     @State private var showLayoutEditor = false
     @State private var showPinnedEditor = false
     @State private var showSettings = false
+    @State private var showOfflineAlbums = false
     private let layoutStore = CollectionsLayoutStore()
     @State private var albums: [Album] = []
     @State private var filter: Filter = .all
@@ -86,6 +87,10 @@ struct AlbumsTab: View {
                     .sharedBackgroundVisibility(.hidden)
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            Button { showOfflineAlbums = true } label: {
+                                Label("Offline Albums", systemImage: "arrow.down.circle")
+                            }
+                            .accessibilityIdentifier("collections-offline-albums")
                             Button { showCreate = true } label: { Label("New Album", systemImage: "plus") }
                                 .accessibilityIdentifier("albums-create")
                             Button { showPinnedEditor = true } label: { Label("Edit Pinned Collections", systemImage: "pin") }
@@ -111,6 +116,7 @@ struct AlbumsTab: View {
                         isPinned: layout.pinnedIDs.contains("album:\(album.id)"),
                         onTogglePinned: { layout.togglePin("album:\(album.id)") })
                 }
+                .navigationDestination(isPresented: $showOfflineAlbums) { OfflineAlbumsScreen() }
                 .navigationDestination(for: CollectionsRoute.self) { route in
                     switch route {
                     case .albums: allAlbumsPage

@@ -27,6 +27,7 @@ struct AlbumDetailScreen: View {
     @State private var isAlbumMutationInFlight = false
     @State private var albumLoadGate = LatestAlbumLoadGate()
     @State private var activityStatistics: ActivityStatistics?
+    @State private var showOfflineAlbum = false
 
     init(
         album: Album,
@@ -93,6 +94,7 @@ struct AlbumDetailScreen: View {
             )
         }
         .id(timelineGeneration)
+        .navigationDestination(isPresented: $showOfflineAlbum) { OfflineAlbumScreen(album: album) }
         .overlay(alignment: .bottom) {
             if let feedback {
                 Text(feedback)
@@ -177,6 +179,10 @@ struct AlbumDetailScreen: View {
 
     private var menu: some View {
         Menu {
+            Button { showOfflineAlbum = true } label: {
+                Label("Keep on This Device", systemImage: "arrow.down.circle")
+            }
+            .accessibilityIdentifier("album-keep-offline")
             if let onTogglePinned {
                 Button(action: onTogglePinned) {
                     Label(isPinned ? "Unpin Collection" : "Pin Collection", systemImage: "pin")

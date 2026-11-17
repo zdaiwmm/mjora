@@ -333,6 +333,8 @@ final class RealtimeHub {
             scheduleResync()
 
         case "on_asset_delete", "on_asset_trash", "on_asset_hidden":
+            try? await OfflineAlbumStore.shared.invalidate(scope: client.mediaDisplayScope, ids: event.assetIDs, remove: true)
+            await OfflineAlbumDownloads.shared.reload()
             let change: BackupRemoteChange = name == "on_asset_delete" ? .deleted : (name == "on_asset_trash" ? .trashed : .hidden)
             onRemoteBackupChange?(event.assetIDs, change)
             if !event.assetIDs.isEmpty {
@@ -342,6 +344,8 @@ final class RealtimeHub {
 
         case "on_asset_update":
             if let detail = event.detail {
+                try? await OfflineAlbumStore.shared.observe(detail.asAsset(), scope: client.mediaDisplayScope)
+                await OfflineAlbumDownloads.shared.reload()
                 broadcast { $0.realtimeAssetUpdated(detail) }
             }
             scheduleResync()

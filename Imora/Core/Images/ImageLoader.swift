@@ -172,7 +172,7 @@ nonisolated final class ImageLoader: Sendable {
 
     func cachedSurface(for url: URL, targetPixelSize: CGFloat) -> (image: UIImage, localProvenance: LocalSurfaceProvenance?)? {
         guard let client = authorization.client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+              client.canReadMediaURL(url) else { return nil }
         let request = request(for: url, targetPixelSize: targetPixelSize)
         guard Self.isCurrent(request) else { return nil }
         let container = pipeline.cache[request]
@@ -191,7 +191,7 @@ nonisolated final class ImageLoader: Sendable {
     @concurrent
     func diskImage(for url: URL, targetPixelSize: CGFloat) async -> UIImage? {
         guard let client = authorization.client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil else { return nil }
+              client.canReadMediaURL(url) else { return nil }
         let request = request(for: url, targetPixelSize: targetPixelSize)
         guard Self.isCurrent(request) else { return nil }
         // storeOriginalData persists endpoint bytes without thumbnail options.
@@ -210,7 +210,7 @@ nonisolated final class ImageLoader: Sendable {
     func installPrepared(_ image: UIImage, url: URL, targetPixelSize: CGFloat, client: ImoraClient,
                          localProvenance: LocalSurfaceProvenance? = nil) {
         guard authorization.client.withLock({ $0 === client }),
-              (try? client.authorizedRequest(url: url)) != nil else { return }
+              client.canReadMediaURL(url) else { return }
         let request = request(for: url, targetPixelSize: targetPixelSize)
         guard Self.isCurrent(request) else { return }
         var container = ImageContainer(image: image)
@@ -363,7 +363,7 @@ nonisolated final class ImageLoader: Sendable {
 
     private func loadImage(for url: URL, targetPixelSize: CGFloat) async throws -> (UIImage, LocalSurfaceProvenance?) {
         guard let client = authorization.client.withLock({ $0 }) else { throw ServerTrustError.sessionExpired }
-        _ = try client.authorizedRequest(url: url)
+        _ = try client.scopedMediaRequest(url: url)
         var request = request(for: url, targetPixelSize: targetPixelSize)
         guard Self.isCurrent(request) else { throw CancellationError() }
         // A raw remote-result API must not strip the proof attached to a
@@ -666,7 +666,7 @@ nonisolated final class ImageLoader: Sendable {
 
     private func binding(for url: URL, pixels: CGFloat) -> MediaRequestBinding? {
         guard let client = authorization.client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil,
+              client.canReadMediaURL(url),
               let index = url.pathComponents.firstIndex(of: "assets"), url.pathComponents.indices.contains(index + 1) else { return nil }
         let revision = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "c" }?.value ?? ""
         let scope = client.mediaDisplayScope, subject = MediaDisplayKeyV1.Subject.remoteAsset(url.pathComponents[index + 1])
@@ -704,7 +704,7 @@ nonisolated final class ImageLoader: Sendable {
         }
         var request = ImageRequest(url: workURL)
         if let client = authorization.client.withLock({ $0 }),
-           (try? client.authorizedRequest(url: url)) != nil {
+           client.canReadMediaURL(url) {
             if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                 // Trust policy validates host/context first. Only then may a LAN/WAN
                 // route share content; query preserves edited/size/revision semantics.
@@ -815,7 +815,7 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
     nonisolated func dataCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any DataCaching)? {
         let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding
         guard let url = binding?.endpointURL ?? request.url, let client = client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil,
+              client.canReadMediaURL(url),
               binding?.isCurrent != false else { return nil }
         if binding?.requiresElevation == true { return nil }
         if let id = Self.assetID(in: url), ephemeralAssetIDs.withLock({ $0.contains(id) }) {
@@ -827,7 +827,7 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
     nonisolated func imageCache(for request: ImageRequest, pipeline: ImagePipeline) -> (any ImageCaching)? {
         let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding
         guard let url = binding?.endpointURL ?? request.url, let client = client.withLock({ $0 }),
-              (try? client.authorizedRequest(url: url)) != nil,
+              client.canReadMediaURL(url),
               binding?.isCurrent != false else { return nil }
         return pipeline.configuration.imageCache
     }
@@ -850,7 +850,7 @@ private final class AuthorizingDelegate: ImagePipeline.Delegate {
         let binding = request.userInfo[MediaRequestBinding.userInfoKey] as? MediaRequestBinding
         guard binding?.isCurrent != false else { throw CancellationError() }
         guard let client = client.withLock({ $0 }), let url = binding?.endpointURL ?? urlRequest.url else { throw ServerTrustError.sessionExpired }
-        return try client.authorizedRequest(url: ServerRoute.resolve(url))
+        return try client.scopedMediaRequest(url: ServerRoute.resolve(url))
     }
 
     /// a thumbnail that found nobody at the local address moves the rest of
