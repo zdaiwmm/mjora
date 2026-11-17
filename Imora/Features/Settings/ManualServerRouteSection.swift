@@ -1,10 +1,8 @@
 import Foundation
 import SwiftUI
 
-/// Shared by Backup and Local Network so route status and actions agree.
+/// One owner for connection status, mode selection and manual consent.
 struct ManualServerRouteSection: View {
-    var showsConfigurationLink = true
-
     @State private var confirmation: Confirmation?
     @State private var selectionTask: Task<Void, Never>?
     @State private var failure: String?
@@ -18,76 +16,47 @@ struct ManualServerRouteSection: View {
     }
 
     var body: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 6) {
-                LabeledContent("Connected Through", value: statusText)
-                    .accessibilityIdentifier("server-route-status")
-                if let endpoint = router.activeEndpoint {
-                    Text(endpoint.absoluteString)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .accessibilityIdentifier("server-route-endpoint")
+        Section("Current Connection") {
+            LabeledContent("Connected Through", value: statusText)
+                .accessibilityIdentifier("server-route-status")
+            if let endpoint = router.activeEndpoint {
+                Text(endpoint.absoluteString)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("server-route-endpoint")
+            }
+            if let failure {
+                Text(failure).foregroundStyle(.red)
+                    .accessibilityIdentifier("server-route-failure")
+            }
+            if router.status == .held {
+                Text(holdText).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("server-route-hold-reason")
+                if router.holdReason != .checking {
+                    Button("Confirm Local Address") { selectMode(.local) }
+                        .accessibilityIdentifier("server-route-retry-local")
                 }
             }
-
-            Button {
-                guard let url = router.config?.apiURL else { return }
-                failure = nil
-                confirmation = Confirmation(url: url, revision: router.selectionRevision, verifiesIdentity: router.config?.verifiedIdentity != nil)
-            } label: {
-                if router.isCheckingManualLocal || router.holdReason == .checking {
-                    HStack {
-                        ProgressView()
-                        Text("Checking Local Address...")
-                    }
-                } else {
-                    if router.holdReason == .confirmationRequired {
-                        Label("Confirm Local Address", systemImage: "wifi")
-                    } else {
-                        Label("Use Local Now", systemImage: "wifi")
-                    }
-                }
+            if router.isCheckingManualLocal || router.holdReason == .checking {
+                ProgressView("Checking Local Address...")
             }
-            .disabled(!router.canSelectManualLocal || router.isCheckingManualLocal || router.holdReason == .checking || (router.isManualLocal && router.status == .local))
-            .accessibilityIdentifier("server-route-use-local")
-
-            Button {
-                selectionTask?.cancel()
-                router.useExternal()
-                failure = nil
-            } label: {
-                Label("Use External Address", systemImage: "network")
+        }
+        Section("Connection Mode") {
+            Picker("Connection Mode", selection: Binding(
+                get: { router.connectionMode }, set: selectMode
+            )) {
+                Text("Automatic Selection").tag(LocalServerRouter.ConnectionMode.automatic)
+                    .accessibilityIdentifier("server-route-automatic")
+                Text("Use External Address").tag(LocalServerRouter.ConnectionMode.external)
+                    .accessibilityIdentifier("server-route-use-external")
+                Text("Manual Local Network").tag(LocalServerRouter.ConnectionMode.local)
+                    .accessibilityIdentifier("server-route-use-local")
             }
-            .accessibilityIdentifier("server-route-use-external")
-
-            if showsConfigurationLink {
-                NavigationLink {
-                    LocalNetworkScreen()
-                } label: {
-                    Label("Configure Local Address", systemImage: "gear")
-                }
-                .accessibilityIdentifier("server-route-configure-local")
-            }
-        } header: {
-            Text("Current Connection")
-        } footer: {
-            VStack(alignment: .leading, spacing: 6) {
-                if let failure {
-                    Text(failure)
-                        .foregroundStyle(.red)
-                        .accessibilityIdentifier("server-route-failure")
-                }
-                if router.status == .held {
-                    Text(holdText)
-                        .accessibilityIdentifier("server-route-hold-reason")
-                } else if router.config?.isUsable != true {
-                    Text("Enable and save a local address to select it here.")
-                } else if !router.canSelectManualLocal {
-                    Text("Connect to Wi-Fi to select the local address.")
-                }
-                Text("Manual local mode stays selected until you choose the external address, change local settings, sign out, or restart the app. It never switches to the external address on failure.")
-            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            .disabled(router.isCheckingManualLocal || router.holdReason == .checking)
+            .accessibilityIdentifier("server-route-mode")
         }
         .alert("Use This Local Address?", isPresented: Binding(
             get: { confirmation != nil },
@@ -110,6 +79,28 @@ struct ManualServerRouteSection: View {
         .onDisappear {
             selectionTask?.cancel()
             router.cancelManualSelection()
+        }
+    }
+
+    private func selectMode(_ mode: LocalServerRouter.ConnectionMode) {
+        selectionTask?.cancel()
+        failure = nil
+        switch mode {
+        case .automatic:
+            router.useAutomatic()
+        case .external:
+            router.useExternal()
+        case .local:
+            guard router.config?.isUsable == true, let url = router.config?.apiURL else {
+                failure = String(localized: "Save a local address first.")
+                return
+            }
+            guard router.canSelectManualLocal else {
+                failure = String(localized: "Connect to Wi-Fi to select the local address.")
+                return
+            }
+            confirmation = Confirmation(url: url, revision: router.selectionRevision,
+                                        verifiesIdentity: router.config?.verifiedIdentity != nil)
         }
     }
 

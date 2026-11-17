@@ -25,6 +25,43 @@ final class ManualServerRouteTests: XCTestCase {
         XCTAssertEqual(ServerRoute.configuredLocal(for: external, defaults: fixture.defaults), local)
     }
 
+    func testAutomaticSelectionClearsBothManualOverridesWithoutDiscardingConfiguration() async throws {
+        let fixture = try fixture()
+        defer { fixture.cleanUp() }
+        let result = await fixture.router.requestManualLocal(confirmedURL: local)
+        XCTAssertEqual(result, .selected)
+        XCTAssertEqual(fixture.router.connectionMode, .local)
+
+        fixture.router.useExternal()
+        XCTAssertEqual(fixture.router.connectionMode, .external)
+        fixture.router.useAutomatic()
+        XCTAssertEqual(fixture.router.connectionMode, .automatic)
+        XCTAssertEqual(fixture.router.config?.apiURL, local)
+        XCTAssertEqual(ServerRoute.resolve(externalAsset), externalAsset)
+
+        let resumed = await fixture.router.requestManualLocal(confirmedURL: local)
+        XCTAssertEqual(resumed, .selected)
+        fixture.router.useAutomatic()
+        XCTAssertEqual(fixture.router.connectionMode, .automatic)
+        XCTAssertFalse(fixture.router.isManualLocal)
+        XCTAssertEqual(ServerRoute.resolve(externalAsset), externalAsset)
+    }
+
+    func testAutomaticSelectionSupersedesAwaitingManualConsentProbe() async throws {
+        let probe = SuspendedRouteProbe()
+        let fixture = try fixture(probe: { await probe.answer($0) })
+        defer { fixture.cleanUp() }
+        let selection = Task { await fixture.router.requestManualLocal(confirmedURL: local) }
+        await probe.waitUntilRequested()
+        fixture.router.useAutomatic()
+        await probe.finish(true)
+
+        let result = await selection.value
+        XCTAssertEqual(result, .superseded)
+        XCTAssertEqual(fixture.router.connectionMode, .automatic)
+        XCTAssertEqual(ServerRoute.resolve(externalAsset), externalAsset)
+    }
+
     func testDisabledMissingAndWrongAccountConfigurationsCannotSelectLocal() async throws {
         let configurations: [LocalServerConfig?] = [
             nil,

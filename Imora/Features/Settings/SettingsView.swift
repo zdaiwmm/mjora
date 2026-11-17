@@ -46,138 +46,68 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
 
-                Section {
-                    preferenceToggle(String(localized: "Memories"), icon: "clock.arrow.circlepath", section: .memories)
-                    preferenceToggle(String(localized: "People"), icon: "person.2", section: .people)
-                    if showsUpdateStrategy {
-                        Picker(selection: Binding(
-                            get: { session.preferences?.peopleUpdateStrategy ?? .everyone },
-                            set: { updateStrategy($0) }
-                        )) {
-                            Text("Everyone With Access").tag(PersonUpdateStrategy.everyone)
-                            Text("Only Me").tag(PersonUpdateStrategy.onlyMe)
+                Section("Photos & Backup") {
+                    NavigationLink { BackupScreen() } label: {
+                        LabeledContent {
+                            if let summary = backupSummary { Text(summary) }
                         } label: {
-                            Label("Shared People Edits", systemImage: "person.2.badge.gearshape")
+                            Label("Photo Backup", systemImage: "arrow.triangle.2.circlepath.icloud")
                         }
-                        .accessibilityIdentifier("settings-people-update-strategy")
                     }
-                } header: {
-                    Text("Features")
-                } footer: {
-                    if showsUpdateStrategy {
-                        Text(session.preferences?.peopleUpdateStrategy == .onlyMe
-                            ? "Renaming a shared person or changing their birthday only changes your own copy."
-                            : "Renaming a shared person or changing their birthday also changes it for the owners who let you edit it.")
-                    }
-                }
-
-                if session.capabilities.supportsClusterGroups {
-                    Section {
-                        NavigationLink {
-                            FaceSharingScreen()
-                        } label: {
-                            Label("Face Sharing", systemImage: "person.2.crop.square.stack")
-                        }
-                        .accessibilityIdentifier("settings-face-sharing")
-                    }
-                }
-
-                Section {
-                    NavigationLink {
-                        NotificationSettingsScreen()
-                    } label: {
-                        Label("Notifications", systemImage: "bell")
-                    }
-                    .accessibilityIdentifier("settings-notifications")
-
-                    NavigationLink {
-                        AccountSecurityScreen()
-                    } label: {
-                        Label("Account Security", systemImage: "person.badge.key")
-                    }
-                    .accessibilityIdentifier("settings-account-security")
-
-                    NavigationLink {
-                        PrivacyScreen()
-                    } label: {
-                        Label("Privacy", systemImage: "hand.raised")
-                    }
-                    .accessibilityIdentifier("settings-privacy")
-
-                    NavigationLink {
-                        LockedFolderSettingsScreen()
-                    } label: {
-                        Label("Locked Folder", systemImage: "lock")
-                    }
-                    .accessibilityIdentifier("settings-locked-folder")
-
-                    NavigationLink {
-                        StorageScreen()
-                    } label: {
+                    .accessibilityIdentifier("settings-backup")
+                    NavigationLink { StorageScreen() } label: {
                         Label("Storage", systemImage: "internaldrive")
                     }
                     .accessibilityIdentifier("settings-storage")
-
-                    NavigationLink {
-                        BackupScreen()
-                    } label: {
-                        LabeledContent {
-                            if session.backup?.autoBackup == false {
-                                Text("Off")
-                                    .foregroundStyle(.secondary)
-                            }
-                        } label: {
-                            Label("Backup", systemImage: "arrow.triangle.2.circlepath.icloud")
-                        }
-                    }
-                    .accessibilityValue(session.backup?.autoBackup == false ? "Automatic backup off" : "")
-                    .accessibilityIdentifier("settings-backup")
                 }
 
-                Section {
-                    NavigationLink {
-                        AppUpdatesScreen()
-                    } label: {
-                        Label("About & Updates", systemImage: "info.circle")
+                Section("Preferences") {
+                    NavigationLink { photoPreferences } label: {
+                        Label("Photo Preferences", systemImage: "slider.horizontal.3")
                     }
-                    .accessibilityIdentifier("settings-app-updates")
+                    .accessibilityIdentifier("settings-photo-preferences")
+                    NavigationLink { NotificationSettingsScreen() } label: {
+                        Label("Notifications", systemImage: "bell")
+                    }
+                    .accessibilityIdentifier("settings-notifications")
+                }
+
+                Section("Account") {
+                    NavigationLink { accountSettings } label: {
+                        Label("Account & Security", systemImage: "checkmark.shield")
+                    }
+                    .accessibilityIdentifier("settings-account")
                 }
 
                 Section("Server") {
-                    LabeledContent("Address") {
-                        Text(session.client?.apiURL.host() ?? "")
-                            .lineLimit(1)
-                    }
-                    NavigationLink {
-                        LocalNetworkScreen()
-                    } label: {
+                    NavigationLink { LocalNetworkScreen() } label: {
                         Label("Local Network", systemImage: "wifi")
                     }
                     .accessibilityIdentifier("settings-local-network")
+                    LabeledContent("Address", value: session.client?.apiURL.host() ?? "")
                     if let about {
-                        LabeledContent(session.serverProduct.map { $0 == .immich ? String(localized: "Version") : $0.displayName } ?? String(localized: "Version")) {
-                            Text(about.version)
-                        }
+                        LabeledContent("Version", value: about.version)
                     }
                     if session.user?.isAdmin == true {
-                        NavigationLink {
-                            AdminScreen()
-                        } label: {
-                            Label("Administration", systemImage: "person.badge.key")
+                        NavigationLink { AdminScreen() } label: {
+                            Label("Administration", systemImage: "server.rack")
                         }
                         .accessibilityIdentifier("settings-administration")
                     }
                 }
 
+                Section("App") {
+                    NavigationLink { AppUpdatesScreen() } label: {
+                        Label("About & Updates", systemImage: "info.circle")
+                    }
+                    .accessibilityIdentifier("settings-app-updates")
+                }
+
                 Section {
-                    Button(role: .destructive) {
+                    Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                         confirmLogout = true
-                    } label: {
-                        Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                     }
                     .accessibilityIdentifier("settings-sign-out")
-                    // ios 26 morphs the dialog out of its source control, so it
-                    // sits on the row - on the screen root it floats detached.
                     .confirmationDialog("Sign out of this server?", isPresented: $confirmLogout, titleVisibility: .visible) {
                         Button("Sign Out", role: .destructive) {
                             dismiss()
@@ -188,22 +118,82 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .accessibilityIdentifier("settings-close")
+                    Button("Close", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .accessibilityIdentifier("settings-close")
                 }
             }
-            .task {
-                about = try? await session.client?.serverAbout()
-            }
+            .task { about = try? await session.client?.serverAbout() }
         }
         .tint(.accentColor)
+    }
+
+    private var backupSummary: String? {
+        guard let backup = session.backup else { return nil }
+        if backup.isConnectionOffline { return String(localized: "Offline") }
+        if backup.isRunning { return String(localized: "Backing up") }
+        if backup.requiresExplicitResume { return String(localized: "Backup Paused") }
+        if let status = backup.libraryStatus {
+            if status.pending > 0 { return String(localized: "\(status.pending) items waiting to back up") }
+            if status.isUpToDate { return String(localized: "Backup Complete") }
+        }
+        return backup.autoBackup ? String(localized: "On") : String(localized: "Off")
+    }
+
+    private var photoPreferences: some View {
+        List {
+            Section {
+                preferenceToggle(String(localized: "Memories"), icon: "clock.arrow.circlepath", section: .memories)
+                preferenceToggle(String(localized: "People"), icon: "person.2", section: .people)
+            }
+            if showsUpdateStrategy {
+                Section {
+                    Picker(selection: Binding(
+                        get: { session.preferences?.peopleUpdateStrategy ?? .everyone },
+                        set: { updateStrategy($0) }
+                    )) {
+                        Text("Everyone With Access").tag(PersonUpdateStrategy.everyone)
+                        Text("Only Me").tag(PersonUpdateStrategy.onlyMe)
+                    } label: {
+                        Label("Shared People Edits", systemImage: "person.2.badge.gearshape")
+                    }
+                    .accessibilityIdentifier("settings-people-update-strategy")
+                }
+            }
+            if session.capabilities.supportsClusterGroups {
+                Section {
+                    NavigationLink { FaceSharingScreen() } label: {
+                        Label("Face Sharing", systemImage: "person.2.crop.square.stack")
+                    }
+                    .accessibilityIdentifier("settings-face-sharing")
+                }
+            }
+        }
+        .navigationTitle("Photo Preferences")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var accountSettings: some View {
+        List {
+            Section {
+                NavigationLink { AccountSecurityScreen() } label: {
+                    Label("Account Security", systemImage: "person.badge.key")
+                }
+                .accessibilityIdentifier("settings-account-security")
+                NavigationLink { PrivacyScreen() } label: {
+                    Label("Privacy", systemImage: "hand.raised")
+                }
+                .accessibilityIdentifier("settings-privacy")
+                NavigationLink { LockedFolderSettingsScreen() } label: {
+                    Label("Locked Folder", systemImage: "lock")
+                }
+                .accessibilityIdentifier("settings-locked-folder")
+            }
+        }
+        .navigationTitle("Account & Security")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func updateStrategy(_ strategy: PersonUpdateStrategy) {

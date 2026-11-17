@@ -13,13 +13,11 @@ struct BackgroundBackupControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if backup.isRunning || backup.requiresExplicitResume {
-                Button(action: requestContinuation) {
-                    Label("Continue Backup in Background", systemImage: "arrow.up.forward.app")
-                }
-                .disabled(!continuation.canRequestContinuation)
-                .accessibilityIdentifier("backup-continue-background")
+            Button(action: requestContinuation) {
+                Label("Continue Backup in Background", systemImage: "arrow.up.forward.app")
             }
+            .disabled(!continuation.canRequestContinuation || (!backup.isRunning && !backup.canStartBackup))
+            .accessibilityIdentifier("backup-continue-background")
 
             if let message = statusMessage {
                 HStack(alignment: .top, spacing: 8) {
@@ -31,15 +29,8 @@ struct BackgroundBackupControls: View {
                 .accessibilityIdentifier("backup-background-status")
             }
 
-            Text("This control applies to whole-library backup. iOS handles prepared uploads; keep Imora open to prepare remaining files when background time is unavailable. Force-closing Imora stops background transfers.")
-                .font(.footnote)
-                .foregroundStyle(detailColor)
-
             if continuation.backgroundRefreshStatus == .denied {
-                Text(ProcessInfo.processInfo.isLowPowerModeEnabled
-                     ? String(localized: "Low Power Mode turns off Background App Refresh and limits automatic backup recovery.")
-                     : String(localized: "Background App Refresh is off. Enable it in Settings > General > Background App Refresh to allow automatic recovery opportunities."))
-                    .font(.footnote)
+                Text("Background App Refresh Is Off")
                     .foregroundStyle(detailColor)
                     .accessibilityIdentifier("backup-background-refresh-off")
                 Button("Open Settings", systemImage: "gear") {
@@ -47,11 +38,6 @@ struct BackgroundBackupControls: View {
                     Task { await UIApplication.shared.open(url) }
                 }
                 .accessibilityIdentifier("backup-background-settings")
-            } else if continuation.backgroundRefreshStatus == .available {
-                Text("Background App Refresh is available. iOS chooses when automatic recovery runs.")
-                    .font(.footnote)
-                    .foregroundStyle(detailColor)
-                    .accessibilityIdentifier("backup-background-refresh-available")
             }
         }
         .onAppear { continuation.refreshBackgroundRefreshStatus() }
@@ -59,33 +45,33 @@ struct BackgroundBackupControls: View {
 
     private var statusMessage: String? {
         if continuation.hasSystemHandoff, backup.isRunning {
-            return String(localized: "Prepared uploads are handled by iOS. Remaining files continue when background time is available.")
+            return String(localized: "Uploads Managed by iOS")
         }
         if backup.requiresExplicitResume, !continuation.status.isActive {
-            return String(localized: "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.")
+            return String(localized: "Backup Paused")
         }
         switch continuation.status {
         case .idle: return nil
         case .accepting:
-            return String(localized: "Requesting background time for whole-library backup...")
+            return String(localized: "Requesting Background Time…")
         case .accepted:
-            return String(localized: "Background request accepted. Waiting to start whole-library backup.")
+            return String(localized: "Waiting for iOS")
         case .running:
-            return String(localized: "Whole-library backup can continue while iOS grants background time.")
+            return String(localized: "Running in Background")
         case .paused:
             return nil
         case .denied(let reason):
             switch reason {
             case .systemBusy:
-                return String(localized: "iOS could not grant background time right now. Whole-library backup can continue while Imora is open.")
+                return String(localized: "iOS Is Busy")
             case .systemUnavailable:
-                return String(localized: "Background time is unavailable. Check Background App Refresh and power settings. Keep Imora open to continue.")
+                return String(localized: "Background Time Unavailable")
             case .notPermitted:
-                return String(localized: "Background backup is unavailable in this app installation. Keep Imora open to continue.")
+                return String(localized: "Background Backup Unavailable")
             case .tooManyRequests:
-                return String(localized: "Too many background requests are pending. Keep Imora open and try again later.")
+                return String(localized: "Too Many Background Requests")
             case .unknown:
-                return String(localized: "Could not request background time. Keep Imora open and try again.")
+                return String(localized: "Couldn't Request Background Time")
             }
         }
     }

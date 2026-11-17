@@ -12,11 +12,7 @@ struct BackupScreen: View {
     var body: some View {
         List {
             if let backup = session.backup {
-                autoSection(backup)
-                Section("Current Connection") {
-                    LabeledContent("Connected Through", value: connectionText)
-                    if let message = backup.syncHoldMessage { Text(message).foregroundStyle(.secondary) }
-                }
+                statusSection(backup)
                 if backup.hasBackupFailure {
                     Section {
                         NavigationLink { BackupFailuresScreen() } label: {
@@ -25,48 +21,59 @@ struct BackupScreen: View {
                         .accessibilityIdentifier("backup-review-failures")
                     }
                 }
-                repeatedFailuresSection(backup)
-                Section {
+                Section("Backup Settings") {
+                    Toggle("Back Up Automatically", isOn: Binding(
+                        get: { backup.autoBackup },
+                        set: { value in
+                            backup.autoBackup = value
+                            if value { reportsNextBackupFailure = true }
+                        }
+                    ))
+                    .accessibilityIdentifier("backup-auto-toggle")
+                    NavigationLink("Backup Content") {
+                        List { selectionSection(backup) }
+                            .navigationTitle("Backup Content")
+                            .navigationBarTitleDisplayMode(.inline)
+                    }
+                    .accessibilityIdentifier("backup-content")
+                    NavigationLink("Backup Conditions") {
+                        conditionsScreen(backup)
+                    }
+                    .accessibilityIdentifier("backup-conditions")
+                }
+                Section("Manage Backup") {
+                    if !backup.isRunning {
+                        NavigationLink("Transfer Details") { transfersScreen(backup) }
+                            .accessibilityIdentifier("backup-transfers")
+                    }
                     NavigationLink { CleanupSettingsScreen() } label: {
                         Label("Clean Up Device", systemImage: "trash.slash")
                     }
                     .accessibilityIdentifier("backup-cleanup")
-                    NavigationLink("Advanced Options") {
+                    NavigationLink("Advanced & Repair") {
                         List {
-                            ManualServerRouteSection()
-                            Section {
-                                Toggle("Use Cellular or Metered Wi-Fi", isOn: Binding(get: { backup.backUpOnCellular }, set: { backup.backUpOnCellular = $0 }))
-                                    .accessibilityIdentifier("backup-cellular-toggle")
-                            }
-                            selectionSection(backup)
-                            batterySection(backup)
-                            Section("Background Backup") {
-                                BackgroundBackupControls(backup: backup) {
-                                    if backup.manualBackupNeedsApproval { confirmBackgroundConditions = true }
-                                    else { startBackup(backup) }
-                                }
-                            }
                             advancedSection(backup)
                             Section {
                                 Button("Recheck Entire Library") { backup.requestFullReconciliation() }
                                     .disabled(backup.isRunning)
+                                    .accessibilityIdentifier("backup-recheck-library")
                             }
-                            statusSection(backup)
                         }
-                        .navigationTitle("Advanced Options")
+                        .navigationTitle("Advanced & Repair")
+                        .navigationBarTitleDisplayMode(.inline)
                     }
                     .accessibilityIdentifier("backup-advanced")
                 }
-                statusSection(backup, showsManualActions: false)
-                if !backup.activeTransfers.items.isEmpty {
-                    Section {
-                        ActiveBackupTransfersView(transfers: backup.activeTransfers)
+                Section {
+                    NavigationLink { LocalNetworkScreen() } label: {
+                        LabeledContent("Current Connection", value: connectionText)
                     }
+                    .accessibilityIdentifier("backup-connection")
                 }
             }
         }
         .task { await session.backup?.refreshLibraryStatus() }
-        .navigationTitle("Backup")
+        .navigationTitle("Photo Backup")
         .navigationBarTitleDisplayMode(.inline)
         .tint(.accentColor)
         .confirmationDialog("Back up now?", isPresented: $confirmBackgroundConditions, titleVisibility: .visible) {
@@ -104,24 +111,65 @@ struct BackupScreen: View {
         }
     }
 
-    // MARK: - automatic backup
-
-    private func autoSection(_ backup: BackupManager) -> some View {
-        return Section {
-            Toggle(isOn: Binding(
-                get: { backup.autoBackup },
-                set: { value in
-                    backup.autoBackup = value
-                    if value { reportsNextBackupFailure = true }
-                }
-            )) {
-                Label("Back Up Automatically", systemImage: "arrow.triangle.2.circlepath.icloud")
+    private func conditionsScreen(_ backup: BackupManager) -> some View {
+        List {
+            Section("Network") {
+                Toggle("Use Cellular or Metered Wi-Fi", isOn: Binding(
+                    get: { backup.backUpOnCellular }, set: { backup.backUpOnCellular = $0 }
+                ))
+                .accessibilityIdentifier("backup-cellular-toggle")
             }
-            .accessibilityIdentifier("backup-auto-toggle")
-
-        } footer: {
-            Text("New photos back up automatically when your connection and battery settings allow. iOS may pause background work; your progress is saved.")
+            batterySection(backup)
+            Section {
+                NavigationLink("Background Backup") {
+                    List {
+                        Section {
+                            BackgroundBackupControls(backup: backup) {
+                                requestBackgroundBackup(backup)
+                            }
+                        }
+                    }
+                    .navigationTitle("Background Backup")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+                .accessibilityIdentifier("backup-background")
+            }
         }
+        .navigationTitle("Backup Conditions")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func transfersScreen(_ backup: BackupManager) -> some View {
+        List {
+            Section {
+                Text(statusText(backup)).accessibilityIdentifier("backup-status")
+                if let status = backup.libraryStatus {
+                    Text(status.countText).foregroundStyle(.secondary)
+                }
+                if let fraction = progressFraction(backup.phase) {
+                    ProgressView(value: fraction).accessibilityIdentifier("backup-progress")
+                }
+            }
+            if !backup.activeTransfers.items.isEmpty {
+                Section { ActiveBackupTransfersView(transfers: backup.activeTransfers) }
+            }
+            if backup.isRunning {
+                Section {
+                    Button("Keep Screen Awake", systemImage: "moon") { activeBackupPresented = true }
+                        .accessibilityIdentifier("backup-keep-awake")
+                    BackgroundBackupControls(backup: backup) { requestBackgroundBackup(backup) }
+                    Button("Stop This Backup", role: .destructive) { backup.cancel() }
+                        .accessibilityIdentifier("backup-cancel")
+                }
+            }
+        }
+        .navigationTitle("Transfer Details")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func requestBackgroundBackup(_ backup: BackupManager) {
+        if backup.manualBackupNeedsApproval { confirmBackgroundConditions = true }
+        else { startBackup(backup) }
     }
 
     private func selectionSection(_ backup: BackupManager) -> some View {
@@ -156,8 +204,6 @@ struct BackupScreen: View {
             }
         } header: {
             Text("Backup Selection and Limits")
-        } footer: {
-            Text("Include screenshots in automatic backup and Back Up Now. When off, screenshots stay in your gallery and can still be selected for manual backup. The upload size limit is off by default. It applies to each request, including form data, for automatic and manual backup. For a 100 MB proxy limit, 95 MB leaves room for variation. Files over the limit show an exclusion icon and are not uploaded from this device. If a server copy is confirmed, they show the backed-up cloud. Transfers already in progress may finish.")
         }
     }
 
@@ -181,8 +227,6 @@ struct BackupScreen: View {
             }
         } header: {
             Text("Battery")
-        } footer: {
-            Text("Indexing and uploads pause at this battery level, including while charging. Sync This Time allows backup until the battery rises above the threshold. The metered-connection override ends when an unmetered connection is available. Transfers already handed to iOS may finish while backup is paused.")
         }
     }
 
@@ -217,193 +261,61 @@ struct BackupScreen: View {
             .accessibilityIdentifier("backup-media-priority")
         } header: {
             Text("Advanced")
-        } footer: {
-            Text("More indexing workers may be faster but use more memory, battery, and iCloud bandwidth. Ordering controls which photos and videos are indexed and queued first. Your backup exclusions still apply, and new captures keep priority. Changes apply to the next pass.")
         }
     }
 
-    // MARK: - status
-
     @ViewBuilder
-    private func repeatedFailuresSection(_ backup: BackupManager) -> some View {
-        if !backup.repeatedFailures.isEmpty {
-            Section {
-                ForEach(backup.repeatedFailures) { failure in
-                    HStack(alignment: .top, spacing: 12) {
-                        LocalPhotoImage(
-                            localIdentifier: failure.localIdentifier,
-                            targetPixelSize: 128,
-                            allowsNetwork: false
-                        )
-                        .frame(width: 56, height: 56)
-                        .clipShape(.rect(cornerRadius: 8))
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(failureTitle(failure))
-                                .font(.subheadline.weight(.semibold))
-                            Text("Failed \(failure.count) times · \(failure.lastFailedAt.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            Text(failure.kind.explanation)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 2)
+    private func statusSection(_ backup: BackupManager) -> some View {
+        Section {
+            Text(statusText(backup))
+                .accessibilityIdentifier("backup-status")
+            if let status = backup.libraryStatus {
+                Text(status.countText)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("backup-library-count")
+                LabeledContent("Pending Backup", value: status.pendingMedia.text)
+                if status.cloudDeleted > 0 {
+                    LabeledContent("Deleted in Cloud", value: status.cloudDeletedMedia.text)
+                        .accessibilityIdentifier("backup-cloud-deleted-count")
                 }
-            } header: {
-                Text("Needs Attention")
-            } footer: {
-                Text("These files remain on your device. Back Up Now retries them. A verified backup clears the warning; editing a file starts a new attempt count.")
+                if status.excluded > 0 {
+                    LabeledContent("Excluded Screenshots", value: status.excludedMedia.text)
+                        .accessibilityIdentifier("backup-excluded-count")
+                }
+                if backup.isConnectionOffline, let observed = status.lastSuccessfulCloudSync {
+                    LabeledContent("Last Successful Sync", value: observed.formatted(date: .abbreviated, time: .shortened))
+                        .accessibilityIdentifier("backup-history-as-of")
+                }
             }
-            .accessibilityIdentifier("backup-repeated-failures-list")
-        }
-    }
-
-    private func failureTitle(_ failure: RepeatedBackupFailure) -> String {
-        let type = failure.isVideo ? String(localized: "Video") : String(localized: "Photo")
-        guard let capturedAt = failure.capturedAt else { return type }
-        return "\(type) · \(capturedAt.formatted(date: .abbreviated, time: .omitted))"
-    }
-
-    @ViewBuilder
-    private func statusSection(_ backup: BackupManager, showsManualActions: Bool = true) -> some View {
-        Section("Status") {
+            if let fraction = progressFraction(backup.phase) {
+                ProgressView(value: fraction)
+                    .accessibilityIdentifier("backup-progress")
+            }
             if PhotoAccess.shared.canAsk {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Full photo library access is required for backup.")
-                        .font(.callout)
-                    Button("Allow Access") {
-                        requestAccess()
-                    }
-                    .font(.callout.weight(.semibold))
+                Button("Allow Photo Access") { requestAccess() }
                     .accessibilityIdentifier("backup-allow-access")
-                }
-                .padding(.vertical, 2)
             } else if PhotoAccess.shared.isBlocked {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Full photo library access is required for backup.")
-                        .font(.callout)
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        Link("Open Settings", destination: url)
-                            .font(.callout.weight(.semibold))
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    Link("Open Settings", destination: url)
+                }
+            } else {
+                if backup.isRunning {
+                    NavigationLink("Transfer Details") { transfersScreen(backup) }
+                        .accessibilityIdentifier("backup-transfers")
+                } else {
+                    Button(backup.requiresExplicitResume ? "Continue Backup" : "Back Up Now") {
+                        if backup.manualBackupNeedsApproval { confirmBackupConditions = true }
+                        else { startBackup(backup) }
                     }
-                }
-                .padding(.vertical, 2)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(statusText(backup))
-                    .font(.callout)
-                    .accessibilityIdentifier("backup-status")
-                if let message = backup.reconciliationMessage {
-                    Text(message).font(.footnote).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("backup-reconciliation-status")
-                }
-                if let status = backup.libraryStatus {
-                    Text(status.countText)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("backup-library-count")
-                    if backup.isConnectionOffline {
-                        if let observed = status.lastSuccessfulCloudSync {
-                            Text("Last successful cloud sync: \(observed.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.footnote).foregroundStyle(.secondary)
-                                .accessibilityIdentifier("backup-history-as-of")
-                        } else {
-                            Text("Last successful cloud sync time is unknown.")
-                                .font(.footnote).foregroundStyle(.secondary)
-                                .accessibilityIdentifier("backup-history-as-of-unknown")
-                        }
+                    .disabled(!backup.canStartBackup)
+                    .accessibilityIdentifier("backup-start")
+                    .confirmationDialog("Back up now?", isPresented: $confirmBackupConditions, titleVisibility: .visible) {
+                        Button("Back Up Now") { startBackup(backup) }
+                            .accessibilityIdentifier("backup-cellular-confirm")
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text(backup.manualBackupApprovalMessage)
                     }
-                    LabeledContent("Pending Backup", value: status.pendingMedia.text)
-                    if status.cloudDeleted > 0 {
-                        LabeledContent("Deleted in Cloud", value: status.cloudDeletedMedia.text)
-                            .accessibilityIdentifier("backup-cloud-deleted-count")
-                        Text("These originals stay on your device and will not upload again automatically.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if status.excluded > 0 {
-                        Text(status.excluded == 1 ? String(localized: "1 screenshot excluded") : String(localized: "\(status.excluded) screenshots excluded"))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("backup-excluded-count")
-                    }
-                }
-                if case .hashing = backup.phase {
-                    Text("Indexing your files to identify what's already on your server. Missing photos and videos upload after indexing and matching; new captures can back up while the older library is indexed.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                if let fraction = progressFraction(backup.phase) {
-                    ProgressView(value: fraction)
-                        .tint(.accentColor)
-                        .accessibilityIdentifier("backup-progress")
-                }
-            }
-            .padding(.vertical, 2)
-
-            if case .hashing = backup.phase, backup.downloadedOriginalsFromICloud {
-                Label(
-                    "Some originals are downloading from iCloud, so indexing may take longer.",
-                    systemImage: "icloud.and.arrow.down"
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("backup-icloud-download")
-            }
-
-            if let status = backup.recentBackupStatus {
-                Label(status, systemImage: "sparkles")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("backup-recent-status")
-            }
-
-            if backup.isRunning && showsManualActions {
-                Button {
-                    activeBackupPresented = true
-                } label: {
-                    Label("Active Mode", systemImage: "moon.stars")
-                }
-                .accessibilityIdentifier("backup-keep-awake")
-
-                Text("Active Mode keeps your screen awake on a dark screen while Imora indexes and backs up your library. Auto-Lock resumes when the backup finishes or you leave it.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Button("Cancel", role: .destructive) {
-                    backup.cancel()
-                }
-                .accessibilityIdentifier("backup-cancel")
-            } else if !backup.isRunning && (showsManualActions || backup.requiresExplicitResume || backup.syncHoldMessage != nil) {
-                let canStart = backup.canStartBackup
-                Button {
-                    if backup.manualBackupNeedsApproval {
-                        confirmBackupConditions = true
-                    } else {
-                        startBackup(backup)
-                    }
-                } label: {
-                    Label(showsManualActions ? String(localized: "Back Up Now") : String(localized: "Continue Backup"), systemImage: "icloud.and.arrow.up")
-                        .foregroundStyle(canStart ? Color.accentColor : Color.secondary)
-                }
-                .disabled(!canStart)
-                .accessibilityIdentifier("backup-start")
-                // ios 26 morphs the dialog out of its source control, so it
-                // sits on the row instead of the section, where it would
-                // float detached.
-                .confirmationDialog(
-                    "Back up now?",
-                    isPresented: $confirmBackupConditions,
-                    titleVisibility: .visible
-                ) {
-                    Button("Back Up Now") {
-                        startBackup(backup)
-                    }
-                    .accessibilityIdentifier("backup-cellular-confirm")
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text(backup.manualBackupApprovalMessage)
                 }
             }
         }
@@ -440,19 +352,21 @@ struct BackupScreen: View {
     }
 
     private func statusText(_ backup: BackupManager) -> String {
-        if backup.requiresExplicitResume {
-            return String(localized: "Whole-library backup paused. Continue Backup in Background or Back Up Now resumes the saved request.")
+        if PhotoAccess.shared.isBlocked || PhotoAccess.shared.canAsk {
+            return String(localized: "Photo Access Required")
         }
-        // the run itself just goes quiet on a metered connection, so the
-        // reason has to be said out loud or nothing explains the silence.
+        if backup.isConnectionOffline { return String(localized: "Offline") }
+        if backup.requiresExplicitResume {
+            return String(localized: "Backup Paused")
+        }
         if let message = backup.syncHoldMessage {
-            return String(localized: "Not currently syncing. \(message)")
+            return message
         }
         return switch backup.phase {
         case .idle:
             if let status = backup.libraryStatus {
-                status.isUpToDate ? BackupLibraryStatus.upToDateText
-                    : status.pending == 0 ? String(localized: "Some photos or videos use an unsupported format.") : String(localized: "Ready to index and back up.")
+                status.isUpToDate ? String(localized: "Backup Complete")
+                    : status.pending == 0 ? String(localized: "Some photos or videos use an unsupported format.") : String(localized: "Ready to Back Up")
             } else {
                 String(localized: "Checking backup status...")
             }
@@ -462,7 +376,7 @@ struct BackupScreen: View {
         case .uploading: backup.continuedSubtitle
         case .done(let summary): doneText(summary)
         case .error(let message): String(localized: "Error: \(message)")
-        case .cancelled: String(localized: "Backup cancelled.")
+        case .cancelled: String(localized: "Backup Stopped")
         }
     }
 

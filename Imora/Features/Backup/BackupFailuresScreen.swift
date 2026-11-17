@@ -45,8 +45,6 @@ struct BackupFailuresScreen: View {
                         }
                     } header: {
                         Text("\(backup.backupFailures.count) items failed to back up")
-                    } footer: {
-                        Text("Resolve the cause, then retry the affected photos or videos.")
                     }
                     Section {
                         BackupFailureRetryButton(localIDs: backup.backupFailures.map(\.localIdentifier), title: "Retry Failed Items")
