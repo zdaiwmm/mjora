@@ -188,6 +188,7 @@ struct PhotoPeriodsView: View {
             .overlay {
                 if let asset = period.cover {
                     PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion, size: layout.photoSize,
+                                            bucketID: period.representativeBucketID,
                                             gridViewportWidth: controls.viewportWidth, gridColumns: controls.columns)
                 }
             }
@@ -357,6 +358,7 @@ private struct PhotoMonthSection: View {
                 .frame(width: size.width, height: size.height)
                 .overlay {
                     PhotoPeriodCoverSurface(asset: day.cover, mode: .months, session: session, motion: motion, size: size,
+                                            bucketID: day.coverBucketID,
                                             gridViewportWidth: controls.viewportWidth, gridColumns: controls.columns)
                 }
                 .overlay {

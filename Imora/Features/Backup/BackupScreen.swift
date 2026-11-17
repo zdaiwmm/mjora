@@ -261,6 +261,8 @@ struct BackupScreen: View {
             .accessibilityIdentifier("backup-media-priority")
         } header: {
             Text("Advanced")
+        } footer: {
+            Text("The library indexing stage prepares up to three items at a time. Background activity, Low Power Mode and temperature may reduce this limit.")
         }
     }
 

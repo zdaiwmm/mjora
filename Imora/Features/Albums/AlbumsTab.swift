@@ -3,6 +3,7 @@ import SwiftUI
 
 struct AlbumsTab: View {
     @Environment(SessionStore.self) private var session
+    let covers: CollectionsCoverStore
 
     private enum Filter: String, CaseIterable {
         case all = "All"
@@ -43,7 +44,8 @@ struct AlbumsTab: View {
     @State private var pendingAlbumLoadGate = LatestAlbumLoadGate()
     private var router: NotificationRouter { .shared }
 
-    init(account: String? = nil) {
+    init(account: String? = nil, covers: CollectionsCoverStore) {
+        self.covers = covers
         _layout = State(initialValue: CollectionsLayoutStore().load(account: account))
     }
 
@@ -62,7 +64,7 @@ struct AlbumsTab: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            CollectionsHome(albums: albums, isLoading: !hasLoaded || isLoading,
+            CollectionsHome(covers: covers, albums: albums, isLoading: !hasLoaded || isLoading,
                             loadFailed: loadFailed, layout: $layout,
                             onRetry: reload, onEditPins: { showPinnedEditor = true })
                 .navigationTitle("")
@@ -144,8 +146,12 @@ struct AlbumsTab: View {
                 .task {
                     await load()
                 }
+                .task(id: session.client?.context.id) {
+                    guard let client = session.client else { return }
+                    await covers.prewarm(client: client, layout: layout,
+                        favoritesAcrossSpaces: session.capabilities.supportsFavoritesAcrossSpaces)
+                }
                 .task(id: router.pendingAlbumID) { await openPendingAlbum() }
-                .onAppear { if !albums.isEmpty { reload() } }
                 .onChange(of: session.realtime?.albumsGeneration ?? 0) { reload() }
                 .onChange(of: layout) { _, value in
                     layoutStore.save(value, account: session.client?.offlineAccountKey)

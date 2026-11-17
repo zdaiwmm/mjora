@@ -105,6 +105,7 @@ nonisolated struct BackupIndexSnapshot: Sendable {
     let backedUpLocalRevisions: [String: Date?]
     /// local files that exceeded the configured multipart request limit.
     let sizeExcludedRequestBytesByLocal: [String: Int64]
+    let remoteRemovedLocalIDs: Set<String>
 }
 
 /// account-scoped map of device assets to their server backup state, persisted as json.
@@ -687,11 +688,13 @@ actor BackupIndex {
         }
         var backedUpLocalRevisions: [String: Date?] = [:]
         var sizeExcludedRequestBytesByLocal: [String: Int64] = [:]
-        for (localId, entry) in entries where entry.hasHistoricalBackup {
-            backedUpLocalRevisions.updateValue(entry.modificationDate, forKey: localId)
-        }
-        for (localId, entry) in entries where !entry.isBackedUp {
-            if let requestBytes = entry.sizeExcludedRequestBytes {
+        var remoteRemovedLocalIDs: Set<String> = []
+        for (localId, entry) in entries {
+            if entry.isUploadBlockedByRemoteRemoval { remoteRemovedLocalIDs.insert(localId) }
+            if entry.hasHistoricalBackup {
+                backedUpLocalRevisions.updateValue(entry.modificationDate, forKey: localId)
+            }
+            if !entry.isBackedUp, let requestBytes = entry.sizeExcludedRequestBytes {
                 sizeExcludedRequestBytesByLocal[localId] = requestBytes
             }
         }
@@ -701,7 +704,8 @@ actor BackupIndex {
             renderableLocalByRemote: renderableRemoteToLocalMap().filter { visiblePairings[$0.key] != nil },
             backedUpRemoteIds: backedUpRemoteIds(),
             backedUpLocalRevisions: backedUpLocalRevisions,
-            sizeExcludedRequestBytesByLocal: sizeExcludedRequestBytesByLocal
+            sizeExcludedRequestBytesByLocal: sizeExcludedRequestBytesByLocal,
+            remoteRemovedLocalIDs: remoteRemovedLocalIDs
         )
     }
     func markHistoricallyPresent(localIDs: Set<String>) {

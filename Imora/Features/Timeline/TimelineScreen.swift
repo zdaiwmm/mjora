@@ -1469,12 +1469,16 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         if from == .all {
             tile = gridController.periodTile(assetID: controls.periodAnchor?.asset.id) ?? gridController.periodTile()
             if let asset = tile?.asset,
-               let bucket = model.sections.first(where: { $0.days?.contains(where: { $0.assets.contains(where: { $0.id == asset.id }) }) == true }) {
-                controls.periodAnchor = PhotoPeriodAnchor(asset: asset, bucketID: bucket.id, scrollOffset: gridController.scrollOffset)
+               let bucket = model.bucketID(containingAssetID: asset.id) {
+                controls.periodAnchor = PhotoPeriodAnchor(asset: asset, bucketID: bucket, scrollOffset: gridController.scrollOffset)
             }
+        } else if var visible = periodMotion.visibleAnchor(in: from, preferredAssetID: controls.periodAnchor?.asset.id) {
+            if visible.asset.id == controls.periodAnchor?.asset.id { visible.scrollOffset = controls.periodAnchor?.scrollOffset }
+            controls.periodAnchor = visible
         }
         guard let anchor = controls.periodAnchor else { periodMotion.cancel(); return }
-        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile, session: session, reduceMotion: periodMotion.reducesMotion)
+        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile,
+            gridSources: from == .all ? gridController.periodTiles() : [], session: session, reduceMotion: periodMotion.reducesMotion)
         if to == .all {
             controls.scrollRequest = PhotoScrollRequest(bucketID: anchor.bucketID, assetID: anchor.asset.id)
         }

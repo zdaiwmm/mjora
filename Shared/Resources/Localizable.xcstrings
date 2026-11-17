@@ -36244,6 +36244,108 @@
           }
         }
       }
+    },
+    "Preparing original": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing original"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备原件"
+          }
+        }
+      }
+    },
+    "Uploading file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uploading file"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上传文件"
+          }
+        }
+      }
+    },
+    "Verifying backup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying backup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "核验备份"
+          }
+        }
+      }
+    },
+    "Failure Details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failure Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失败详情"
+          }
+        }
+      }
+    },
+    "Exact error details were not saved for this attempt.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exact error details were not saved for this attempt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此次尝试未保存详细错误信息。"
+          }
+        }
+      }
+    },
+    "The library indexing stage prepares up to three items at a time. Background activity, Low Power Mode and temperature may reduce this limit.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The library indexing stage prepares up to three items at a time. Background activity, Low Power Mode and temperature may reduce this limit."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图库建立索引阶段最多同时准备三个项目。后台运行、低电量模式和温度可能降低此上限。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

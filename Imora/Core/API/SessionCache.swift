@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Synchronization
 
 /// last known account snapshot. a relaunch paints the signed-in ui from this
 /// on the very first frame instead of holding a spinner until the server
@@ -8,6 +9,9 @@ nonisolated enum SessionCache {
     private static let key = "imora.sessionSnapshot"
     private static let userKey = "imora.userId"
     private static let mediaBindingsKey = "imora.verifiedMediaBindings.v1"
+    private static let mediaBindingsRevision = Mutex<UInt64>(0)
+
+    static var mediaScopeRevision: UInt64 { mediaBindingsRevision.withLock { $0 } }
 
     /// A host snapshot is display metadata, not evidence that a token belongs to its user.
     static func verifiedMediaScope(credential: String) -> StableMediaScope? {
@@ -20,9 +24,12 @@ nonisolated enum SessionCache {
     static func bindMediaScope(_ scope: StableMediaScope, credential: String) {
         guard scope.accountID?.isEmpty == false, scope.credentialScope == nil,
               let data = try? JSONEncoder().encode(scope) else { return }
-        var bindings = UserDefaults.standard.dictionary(forKey: mediaBindingsKey) ?? [:]
-        bindings[credential] = data
-        UserDefaults.standard.set(bindings, forKey: mediaBindingsKey)
+        mediaBindingsRevision.withLock { revision in
+            var bindings = UserDefaults.standard.dictionary(forKey: mediaBindingsKey) ?? [:]
+            bindings[credential] = data
+            UserDefaults.standard.set(bindings, forKey: mediaBindingsKey)
+            revision &+= 1
+        }
     }
 
     struct Snapshot: Codable {

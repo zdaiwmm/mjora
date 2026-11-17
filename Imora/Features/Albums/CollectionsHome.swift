@@ -13,6 +13,7 @@ struct CollectionsHome: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.usesCompactPhotosNavigation) private var usesCompactPhotosNavigation
+    let covers: CollectionsCoverStore
     let albums: [Album]
     let isLoading: Bool
     let loadFailed: Bool
@@ -41,7 +42,7 @@ struct CollectionsHome: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 ForEach(availableSections) { section in
                     VStack(alignment: .leading, spacing: 10) {
                         sectionHeader(section)
@@ -57,6 +58,7 @@ struct CollectionsHome: View {
         .contentMargins(.bottom, usesCompactPhotosNavigation ? 70 : 0, for: .scrollContent)
         .ignoresSafeArea(edges: .bottom)
         .background(Color(.systemBackground))
+        .environment(covers)
         .accessibilityIdentifier("collections-home")
         .task(id: session.client?.offlineAccountKey) { await loadPeople() }
         .task(id: session.client?.offlineAccountKey) { await loadMemories() }
@@ -415,6 +417,7 @@ struct CollectionsHome: View {
 
 private struct CollectionsPreview: View {
     @Environment(SessionStore.self) private var session
+    @Environment(CollectionsCoverStore.self) private var covers
     @Environment(\.displayScale) private var displayScale
     let id: String
     let title: String
@@ -423,13 +426,14 @@ private struct CollectionsPreview: View {
     var previewSize: CollectionPreviewSize = .large
     var deviceCover: Asset? = nil
     var subtitle: String? = nil
-    @State private var cover: Asset?
-    @State private var portraitURL: URL?
     @ScaledMetric(relativeTo: .body) private var largeSide = 160.0
     @ScaledMetric(relativeTo: .body) private var smallSide = 112.0
     private var side: CGFloat { previewSize == .large ? largeSide : smallSide }
 
-    private var assetID: String? { albumCoverID ?? cover?.id }
+    private var cover: CollectionsCoverStore.Cover? {
+        session.client.flatMap { covers.cached(id, client: $0,
+            favoritesAcrossSpaces: session.capabilities.supportsFavoritesAcrossSpaces) }
+    }
     var body: some View {
         Group {
             if previewSize == .none {
@@ -448,7 +452,7 @@ private struct CollectionsPreview: View {
         }
         .accessibilityLabel(title)
         .accessibilityValue(subtitle ?? "")
-        .task(id: "\(session.client?.offlineAccountKey ?? ""):\(id):\(previewSize.rawValue)") {
+        .task(id: "\(session.client?.context.id.uuidString ?? ""):\(id):\(previewSize.rawValue):\(session.capabilities.supportsFavoritesAcrossSpaces)") {
             await loadCover()
         }
     }
@@ -459,15 +463,14 @@ private struct CollectionsPreview: View {
             .overlay {
                 if let deviceCover {
                     AssetTile(asset: deviceCover, targetPixelSize: side * displayScale, isGridTile: false)
-                } else if let assetID, let client = session.client {
-                    RemoteImage(url: client.thumbnailURL(assetID: assetID, cacheKey: cover?.id == assetID ? cover?.thumbhash : nil), targetPixelSize: 400,
-                                thumbhash: cover?.thumbhash)
-                } else if let portraitURL {
-                    RemoteImage(url: portraitURL, targetPixelSize: 400)
+                } else if let albumCoverID, let client = session.client {
+                    RemoteImage(url: client.thumbnailURL(assetID: albumCoverID), targetPixelSize: 400)
+                } else if let cover {
+                    RemoteImage(url: cover.url, targetPixelSize: 400, thumbhash: cover.thumbhash)
                 } else { Image(systemName: symbol).font(.largeTitle).foregroundStyle(.tertiary) }
             }
             .overlay {
-                if deviceCover != nil || assetID != nil || portraitURL != nil {
+                if deviceCover != nil || albumCoverID != nil || cover != nil {
                     LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
                 }
             }
@@ -476,7 +479,7 @@ private struct CollectionsPreview: View {
                     Text(title).font(.caption.weight(.semibold)).lineLimit(2)
                     if let subtitle { Text(subtitle).font(.caption2) }
                 }
-                    .foregroundStyle(deviceCover == nil && assetID == nil && portraitURL == nil ? Color.primary : .white)
+                    .foregroundStyle(deviceCover == nil && albumCoverID == nil && cover == nil ? Color.primary : .white)
                     .padding(10)
             }
             .clipShape(.rect(cornerRadius: 18))
@@ -484,26 +487,7 @@ private struct CollectionsPreview: View {
 
     private func loadCover() async {
         guard previewSize != .none, albumCoverID == nil, deviceCover == nil, let client = session.client else { return }
-        if id == "places" {
-            guard let asset = try? await client.cities().first, !Task.isCancelled, session.client === client else { return }
-            portraitURL = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
-            return
-        }
-        if id == "people" {
-            guard let person = try? await client.people().people.first, !Task.isCancelled, session.client === client else { return }
-            portraitURL = client.personThumbnailURL(personID: person.id, cacheKey: person.updatedAt)
-            return
-        }
-        let filter: TimelineFilter
-        if id == "recent" { filter = TimelineFilter(orderBy: "createdAt") }
-        else if id == "archive" { filter = TimelineFilter(visibility: .archive) }
-        else if id != "favorites" { return }
-        else if session.capabilities.supportsFavoritesAcrossSpaces {
-            filter = TimelineFilter(visibility: nil, withPartners: true, withSharedSpaces: true, isFavorite: true)
-        } else { filter = TimelineFilter(isFavorite: true) }
-        guard let bucket = try? await client.timeBuckets(filter).first,
-              let result = try? await client.timeBucket(bucket.timeBucket, filter: filter), !Task.isCancelled, session.client === client else { return }
-        cover = result.assets.first
+        await covers.load(id, client: client, favoritesAcrossSpaces: session.capabilities.supportsFavoritesAcrossSpaces)
     }
 }
 

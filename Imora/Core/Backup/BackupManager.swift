@@ -102,8 +102,8 @@ final class BackupManager {
         UserDefaults.standard.bool(forKey: cellularBackupKey) || UserDefaults.standard.bool(forKey: cellularOverrideKey)
     }
     static let dismissedRepeatedFailuresKey = "imora.backupRepeatedFailuresDismissed"
-    static let hashWorkerOptions = [1, 3, 5, 8, 16, 32]
-    static let defaultHashWorkers = 8
+    static let hashWorkerOptions = BackupRuntimePolicy.preparationWorkerOptions
+    static let defaultHashWorkers = BackupRuntimePolicy.defaultPreparationWorkers
     private static let uploadWorkers = 3
     private nonisolated static let verificationWorkers = 8
     private nonisolated static let checkBatchSize = 100
@@ -252,6 +252,11 @@ final class BackupManager {
 
     /// All automatic/manual/receipt paths share the same recovery and catch-up barrier.
     private func synchronizeBeforeBackup() async throws {
+        if uploadAuthorityPause != nil {
+            uploadAuthorityPause = nil
+            cloudSyncReady = false
+            syncInvalidationEpoch &+= 1
+        }
         while true {
             try Task.checkCancellation()
             do { try await synchronizeCloudRound(); return }
@@ -506,13 +511,13 @@ final class BackupManager {
         }
     }
 
-    /// bounded PhotoKit resource streams used by the prepare phase. the value
-    /// is captured when a pass begins, so changing it never reshapes a live
-    /// task group. the default stays modest for older devices and icloud
-    /// downloads; 32 matches the official immich ios batch limit.
+    /// Requested hash-preparation streams. Transport scheduling has its own budget.
+    private var hashWorkerRequest: Int
     var hashWorkers: Int {
-        didSet {
-            UserDefaults.standard.set(hashWorkers, forKey: Self.hashWorkersKey)
+        get { hashWorkerRequest }
+        set {
+            hashWorkerRequest = BackupRuntimePolicy.preparationRequest(stored: newValue)
+            UserDefaults.standard.set(hashWorkerRequest, forKey: Self.hashWorkersKey)
         }
     }
 
@@ -580,13 +585,15 @@ final class BackupManager {
         conditions.heldForBattery(pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
     }
 
+    var isHeldForThermal: Bool { BackupRuntimePolicy.pausesWork(thermal: thermalState) }
+
     var syncHoldMessage: String? {
         // a hold is actionable only with Photos access and work remaining.
         // unknown counts may still represent an initial backup waiting to scan.
         guard PhotoAccess.shared.status == .authorized,
               libraryStatus.map({ $0.pending > 0 }) ?? true else { return nil }
-        if ProcessInfo.processInfo.thermalState == .critical {
-            return String(localized: "Device is too warm. Backup will resume when it cools.")
+        if isHeldForThermal {
+            return BackupThermalHold().errorDescription
         }
         return switch (isHeldForMeteredConnection, isHeldForLowBattery) {
         case (true, true): String(localized: "\(meteredHoldMessage) Battery is at \(batteryThreshold)% or less.")
@@ -618,6 +625,7 @@ final class BackupManager {
 
     /// explicitly continue all currently displayed holds without changing settings.
     func syncThisTime() {
+        guard !isHeldForThermal else { return }
         conditions.overrideCurrentHolds(allowCellular: backUpOnCellular,
             pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
         // a recovering/cancelled worker may still be draining.
@@ -633,7 +641,7 @@ final class BackupManager {
     }
 
     private var conditionsAllowWork: Bool {
-        ProcessInfo.processInfo.thermalState != .critical && conditions.allowsWork(allowCellular: backUpOnCellular,
+        !isHeldForThermal && conditions.allowsWork(allowCellular: backUpOnCellular,
             pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
     }
 
@@ -669,6 +677,7 @@ final class BackupManager {
     private var networkWatcher: NetworkPathWatcher?
     private var batteryWatcher: BatteryLevelWatcher?
     @ObservationIgnored private var thermalObserver: (any NSObjectProtocol)?
+    private var thermalState = ProcessInfo.processInfo.thermalState
     private var isStopping = false
     private var isShutDown = false
     private var remoteReconciliationTask: Task<Void, Never>?
@@ -714,10 +723,7 @@ final class BackupManager {
         self.pauseOnLowBattery = UserDefaults.standard.object(forKey: Self.lowBatteryKey) as? Bool ?? true
         let threshold = UserDefaults.standard.object(forKey: Self.batteryThresholdKey) as? Int ?? 15
         self.batteryThreshold = min(50, max(1, threshold))
-        let storedHashWorkers = UserDefaults.standard.integer(forKey: Self.hashWorkersKey)
-        self.hashWorkers = Self.hashWorkerOptions.contains(storedHashWorkers)
-            ? storedHashWorkers
-            : Self.defaultHashWorkers
+        self.hashWorkerRequest = BackupRuntimePolicy.loadPreparationRequest(from: .standard, key: Self.hashWorkersKey)
         let storedMaxUploadMB = UserDefaults.standard.object(forKey: Self.maxUploadSizeMBKey) as? Int
         self.maxUploadSizeMB = UploadSizeLimit.bytes(forMegabytes: storedMaxUploadMB) == nil
             ? nil : storedMaxUploadMB
@@ -763,7 +769,11 @@ final class BackupManager {
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, !self.isShutDown else { return }
-                    self.conditionsChanged(recovered: self.conditionsAllowWork)
+                    let wasAllowed = self.conditionsAllowWork
+                    self.thermalState = ProcessInfo.processInfo.thermalState
+                    if wasAllowed != self.conditionsAllowWork {
+                        self.conditionsChanged(recovered: !wasAllowed && self.conditionsAllowWork)
+                    }
                 }
             }
     }
@@ -1041,6 +1051,7 @@ final class BackupManager {
             // bytes. stop preparation when connection or battery rules block it.
             policyInterruptedRun = true
             runTask?.cancel()
+            cloudSyncTask?.cancel()
         }
         guard !isStopping, conditionsAllowWork, PhotoLibraryService.hasFullAccess else { return }
         // the queueing loop has already walked past whatever it skipped, so
@@ -1163,6 +1174,7 @@ final class BackupManager {
             if case .uploading = uploadStates[localId] { uploadStates[localId] = nil }
             localChanged()
         }
+        var failureStage = BackupFailureDiagnostic.Stage.preparing
         do {
             try Task.checkCancellation()
             let current = await PhotoLibraryService.assetInfo(localIdentifier: localId)
@@ -1186,6 +1198,7 @@ final class BackupManager {
             }
             try Task.checkCancellation()
             guard automaticRecentUploadsPermitted else { return }
+            failureStage = .verifying
             transfer.reporter.verifying()
             let pending = try await checkPhase([current], updatesPhase: false)
             try Task.checkCancellation()
@@ -1194,6 +1207,7 @@ final class BackupManager {
                 if await index.entry(for: localId)?.isBackedUp == true { recentBackedUpMedia.add(current) }
                 return
             }
+            failureStage = .uploading
             let outcome = await Self.uploadOne(
                 asset: current, client: client, index: index,
                 deviceId: DeviceID.current,
@@ -1213,11 +1227,11 @@ final class BackupManager {
                 recentBackedUpMedia.add(current)
             case .sizeExcluded:
                 summary.skippedMedia.add(asset)
-            case .failed(let reason, let kind):
+            case .failed(let reason, let kind, let diagnostic):
                 guard !Task.isCancelled else { return }
                 summary.failedMedia.add(asset)
                 if lastFailure == nil { lastFailure = reason }
-                markUploadFailed(asset, reason: reason, kind: kind)
+                markUploadFailed(asset, reason: reason, kind: kind, diagnostic: diagnostic)
             case .skipped:
                 if !Task.isCancelled { summary.skippedMedia.add(asset) }
             case .paused(let pause):
@@ -1225,15 +1239,19 @@ final class BackupManager {
                 syncStatusMessage = Self.safeSyncFailureMessage(pause.underlying)
                 recentAttempted[localId] = nil
                 return
-            case .quota(let message):
+            case .quota(let message, let diagnostic):
                 recentQuotaReached = true
-                throw ImoraError.http(507, message)
+                summary.failedMedia.add(asset)
+                if lastFailure == nil { lastFailure = message }
+                markUploadFailed(asset, reason: message, kind: .cloudStorage, diagnostic: diagnostic)
+                return
             }
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return }
             summary.failedMedia.add(asset)
             if lastFailure == nil { lastFailure = error.localizedDescription }
-            markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error))
+            markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error),
+                diagnostic: .init(error: error, stage: failureStage))
         }
     }
 
@@ -1263,8 +1281,7 @@ final class BackupManager {
     /// the main actor was a visible hitch per upload on a large library.
     private func refreshLocalSnapshots() async {
         let snapshot = await index.localSnapshot()
-        let entries = await index.allEntries()
-        remoteRemovedLocalIDs = Set(entries.compactMap { $0.value.isUploadBlockedByRemoteRemoval ? $0.key : nil })
+        remoteRemovedLocalIDs = snapshot.remoteRemovedLocalIDs
         for id in remoteRemovedLocalIDs {
             repeatedFailureLedger.clear(account: accountKey, localIdentifier: id)
             uploadStates[id] = nil
@@ -1839,12 +1856,12 @@ final class BackupManager {
 
     private nonisolated enum HashOutcome: Sendable {
         case hashed(DeviceAsset, LocalResourceHashes)
-        case failed(DeviceAsset, message: String, kind: RepeatedBackupFailureKind)
+        case failed(DeviceAsset, message: String, kind: RepeatedBackupFailureKind, diagnostic: BackupFailureDiagnostic)
         case cancelled(DeviceAsset)
 
         var asset: DeviceAsset {
             switch self {
-            case .hashed(let asset, _), .failed(let asset, _, _), .cancelled(let asset): asset
+            case .hashed(let asset, _), .failed(let asset, _, _, _), .cancelled(let asset): asset
             }
         }
     }
@@ -1872,7 +1889,7 @@ final class BackupManager {
         phaseMediaCompleted = MediaCounts()
         phase = .hashing(done: 0, total: toHash.count)
         hashingAssetIDs = Set(toHash.map(\.localIdentifier))
-        let workerLimit = min(max(1, min(hashWorkers, Self.hashWorkerOptions.max() ?? 32)), toHash.count)
+        let workerLimit = min(BackupRuntimePolicy.preparationRequest(stored: hashWorkers), toHash.count)
         var cancelled = false
         var attempts: [String: UUID] = [:]
         defer {
@@ -1891,7 +1908,7 @@ final class BackupManager {
 
             @MainActor func addNext() {
                 guard next < toHash.count, !cancelled, !Task.isCancelled,
-                      conditionsAllowWork, active < BackupRuntimePolicy.currentWorkers(workerLimit) else { return }
+                      conditionsAllowWork, active < BackupRuntimePolicy.currentPreparationWorkers(workerLimit) else { return }
                 let asset = toHash[next]
                 next += 1
                 active += 1
@@ -1910,7 +1927,8 @@ final class BackupManager {
                     } catch is CancellationError {
                         return .cancelled(asset)
                     } catch {
-                        return .failed(asset, message: error.localizedDescription, kind: .init(error: error))
+                        return .failed(asset, message: error.localizedDescription, kind: .init(error: error),
+                            diagnostic: .init(error: error, stage: .preparing))
                     }
                 }
             }
@@ -1940,12 +1958,12 @@ final class BackupManager {
                         modificationDate: asset.modificationDate,
                         primaryByteCount: hashes.primaryBytes, motionByteCount: hashes.motionBytes
                     )
-                case .failed(let asset, let message, let kind):
+                case .failed(let asset, let message, let kind, let diagnostic):
                     backupLog.error("hash failed category: \(kind.rawValue)")
                     if lastFailure == nil { lastFailure = message }
                     summary.failedMedia.add(asset)
                     phaseMediaCompleted.add(asset)
-                    markUploadFailed(asset, reason: message, kind: kind)
+                    markUploadFailed(asset, reason: message, kind: kind, diagnostic: diagnostic)
                 case .cancelled(_):
                     cancelled = true
                     group.cancelAll()
@@ -2087,7 +2105,8 @@ final class BackupManager {
                         uploadStates[asset.localIdentifier] = nil
                     } else {
                         summary.failedMedia.add(asset)
-                        markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error))
+                        markUploadFailed(asset, reason: error.localizedDescription, kind: .init(error: error),
+                            diagnostic: .init(error: error, stage: .verifying))
                         if lastFailure == nil { lastFailure = error.localizedDescription }
                     }
                 } else { summary.duplicateMedia.add(asset) }
@@ -2211,10 +2230,10 @@ final class BackupManager {
                 case .sizeExcluded:
                     summary.skippedMedia.add(asset)
                     uploadStates[localId] = nil
-                case .failed(let reason, let kind):
+                case .failed(let reason, let kind, let diagnostic):
                     if lastFailure == nil { lastFailure = reason }
                     summary.failedMedia.add(asset)
-                    markUploadFailed(asset, reason: reason, kind: kind)
+                    markUploadFailed(asset, reason: reason, kind: kind, diagnostic: diagnostic)
                 case .skipped:
                     summary.skippedMedia.add(asset)
                     uploadStates[localId] = nil
@@ -2223,9 +2242,10 @@ final class BackupManager {
                     uploadStates[localId] = nil
                     localChanged()
                     return .pause
-                case .quota(let message):
+                case .quota(let message, let diagnostic):
                     quotaMessage = message
-                    markUploadFailed(asset, reason: message, kind: .cloudStorage)
+                    markUploadFailed(asset, reason: message, kind: .cloudStorage,
+                        diagnostic: diagnostic)
                     return .cancel
                 }
                 done += 1
@@ -2251,9 +2271,16 @@ final class BackupManager {
         updateRepeatedFailureSummary()
     }
 
+    private func clearResolvedRunFailure() {
+        guard runTask == nil, backupFailures.isEmpty else { return }
+        lastFailure = nil
+        if case .error = phase { phase = .idle }
+    }
+
     /// the short tile overlay remains transient; the gallery banner and
     /// Backup screen retain repeated failures until the asset is verified.
-    private func markUploadFailed(_ asset: DeviceAsset, reason: String, kind: RepeatedBackupFailureKind = .other) {
+    private func markUploadFailed(_ asset: DeviceAsset, reason: String, kind: RepeatedBackupFailureKind = .other,
+                                  diagnostic: BackupFailureDiagnostic? = nil) {
         let localId = asset.localIdentifier
         guard !remoteRemovedLocalIDs.contains(localId), cloudSyncReady else { uploadStates[localId] = nil; return }
         if !isShutDown, userId != nil, repeatedFailureLedger.recordFailure(
@@ -2262,6 +2289,7 @@ final class BackupManager {
                 modificationDate: asset.modificationDate,
                 isVideo: asset.isVideo,
                 kind: kind,
+                diagnostic: diagnostic,
                 capturedAt: asset.creationDate
             ) {
             saveRepeatedFailures()
@@ -2281,10 +2309,10 @@ final class BackupManager {
         case uploaded
         case duplicate
         case sizeExcluded(actualBytes: Int64, maximumBytes: Int64)
-        case failed(String, kind: RepeatedBackupFailureKind = .other)
+        case failed(String, kind: RepeatedBackupFailureKind = .other, diagnostic: BackupFailureDiagnostic)
         case skipped
         case paused(BackupUploadAuthorityPause)
-        case quota(String)
+        case quota(String, diagnostic: BackupFailureDiagnostic)
     }
 
     /// uploads every missing component of one asset. motion first for live
@@ -2343,12 +2371,15 @@ final class BackupManager {
             } catch is CancellationError {
                 return .skipped
             } catch {
-                return .failed(error.localizedDescription, kind: .init(error: error))
+                return .failed(error.localizedDescription, kind: .init(error: error),
+                    diagnostic: .init(error: error, stage: .preparing))
             }
         }
-        guard let entry else { return .failed(String(localized: "no index entry")) }
+        guard let entry else { return .failed(String(localized: "no index entry"), diagnostic: .init(stage: .preparing)) }
         if entry.isUploadBlockedByRemoteRemoval { return .skipped }
-        if entry.unsupported { return .failed(String(localized: "this file format is not supported by the server.")) }
+        if entry.unsupported {
+            return .failed(String(localized: "this file format is not supported by the server."), diagnostic: .init(stage: .preparing))
+        }
         if entry.isBackedUp { return .duplicate }
         if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes),
            let size = entry.sizeExcludedRequestBytes, let maximumRequestBytes {
@@ -2358,11 +2389,14 @@ final class BackupManager {
         let createdAt = current.creationDate ?? current.modificationDate ?? Date()
         let modifiedAt = current.modificationDate ?? createdAt
         var uploadedSomething = false
+        var failureStage = BackupFailureDiagnostic.Stage.uploading
 
         do {
             var motionRemoteId = entry.motionRemoteId
             if current.isLivePhoto, motionRemoteId == nil {
-                guard let motionChecksum = entry.motionChecksum else { return .failed(String(localized: "missing motion checksum")) }
+                guard let motionChecksum = entry.motionChecksum else {
+                    return .failed(String(localized: "missing motion checksum"), diagnostic: .init(stage: .preparing))
+                }
                 let upload = AssetUploadRequest(
                     checksum: motionChecksum,
                     deviceAssetId: current.localIdentifier,
@@ -2416,6 +2450,7 @@ final class BackupManager {
                 let resource = await PhotoLibraryService.primaryResourceInfo(localIdentifier: current.localIdentifier)
                 progressReporter.verifying(filename: resource?.filename)
             }
+            failureStage = .verifying
             try await verifyBackup(asset: current, entry: candidate, client: client, index: index, account: account)
             return uploadedSomething ? .uploaded : .duplicate
         } catch is CancellationError {
@@ -2437,7 +2472,8 @@ final class BackupManager {
                 }
                 return .skipped
             }
-            return .failed(error.localizedDescription, kind: .init(error: error))
+            return .failed(error.localizedDescription, kind: .init(error: error),
+                diagnostic: .init(error: error, stage: failureStage))
         } catch UploadSizeLimit.exceeded(let actualBytes, let maximumBytes) {
             await index.markSizeExcluded(localId: current.localIdentifier,
                                          revision: current.modificationDate,
@@ -2450,17 +2486,25 @@ final class BackupManager {
                let user = try? await client.currentUser(),
                let limit = user.quotaSizeInBytes, limit > 0,
                let usage = user.quotaUsageInBytes, usage >= limit {
-                return .quota(String(localized: "The server account's storage quota is full."))
+                return .quota(String(localized: "The server account's storage quota is full."),
+                    diagnostic: .init(error: error, stage: failureStage))
             }
-            return .failed(error.localizedDescription, kind: .init(error: error))
+            return .failed(error.localizedDescription, kind: .init(error: error),
+                diagnostic: .init(error: error, stage: failureStage))
+        } catch let preparation as BackupPreparationFailure {
+            if Task.isCancelled || preparation.underlying is CancellationError { return .skipped }
+            return .failed(preparation.underlying.localizedDescription, kind: .init(error: preparation.underlying),
+                diagnostic: .init(error: preparation, stage: .preparing))
         } catch let error as PhotoLibraryError {
             backupLog.error("export failed for \(asset.localIdentifier): \((error as NSError).code)")
-            return .failed(error.localizedDescription, kind: .init(error: error))
+            return .failed(error.localizedDescription, kind: .init(error: error),
+                diagnostic: .init(error: error, stage: failureStage))
         } catch {
             // a cancelled transfer comes back as a url error, not a cancellationerror.
             if Task.isCancelled { return .skipped }
             backupLog.error("upload failed for \(asset.localIdentifier): \((error as NSError).code)")
-            return .failed(error.localizedDescription, kind: .init(error: error))
+            return .failed(error.localizedDescription, kind: .init(error: error),
+                diagnostic: .init(error: error, stage: failureStage))
         }
     }
 
@@ -2517,8 +2561,8 @@ final class BackupManager {
         }
         // the body outlives this process when the app is suspended
         // mid-transfer, so it cannot live where the system may reclaim it.
-        let body = motion
-            ? try await PhotoLibraryService.exportMotion(
+        let body = try await BackupPreparationBoundary.performAsync {
+            motion ? try await PhotoLibraryService.exportMotion(
                 localIdentifier: upload.deviceAssetId, to: BackgroundUploader.bodyDirectory, form: upload.form,
                 onResourceProgress: resourceProgress
             )
@@ -2526,6 +2570,7 @@ final class BackupManager {
                 localIdentifier: upload.deviceAssetId, to: BackgroundUploader.bodyDirectory, form: upload.form,
                 onResourceProgress: resourceProgress
             )
+        }
         transfer?.uploading()
         return try await client.uploadAsset(
             upload, bodyURL: body.fileURL, account: account, source: source,
@@ -2560,6 +2605,7 @@ final class BackupManager {
     /// The existing per-item pipeline retains checksum deduplication, Live Photo
     /// ordering, background transfer support, and progress reporting.
     func backUp(localIdentifier: String) async throws -> String {
+        try BackupRuntimePolicy.requireThermalBudget(ProcessInfo.processInfo.thermalState)
         guard await PhotoLibraryService.requestFullAccess() else {
             throw ImoraError.http(0, String(localized: "full photo library access is required for backup."))
         }
@@ -2576,6 +2622,7 @@ final class BackupManager {
         if case .uploading = uploadStates[localIdentifier] {
             try await waitForUpload(localIdentifier: localIdentifier)
         }
+        try BackupRuntimePolicy.requireThermalBudget(ProcessInfo.processInfo.thermalState)
         if await index.entry(for: localIdentifier)?.isUploadBlockedByRemoteRemoval == true {
             throw SingleAssetBackupError.failed(String(localized: "The cloud copy was removed. Confirm Back Up Again to restore or recreate it."))
         }
@@ -2587,8 +2634,10 @@ final class BackupManager {
            BackupRoutineRecheckPolicy.hasUnchangedRevision(asset: asset, entry: entry),
            let remoteID = entry.primaryRemoteId {
             await refreshLocalSnapshots()
+            clearResolvedRunFailure()
             return remoteID
         }
+        try BackupRuntimePolicy.requireThermalBudget(ProcessInfo.processInfo.thermalState)
         let transfer = beginActiveTransfer(localIdentifier: localIdentifier)
         defer { activeTransfers.finish(localIdentifier: localIdentifier, attempt: transfer.attempt) }
         uploadStates[localIdentifier] = .uploading(0)
@@ -2617,8 +2666,8 @@ final class BackupManager {
             localChanged()
             throw SingleAssetBackupError.failed(UploadSizeLimit.exceeded(
                 actualBytes: actualBytes, maximumBytes: maximumBytes).localizedDescription)
-        case .failed(let reason, let kind):
-            markUploadFailed(asset, reason: reason, kind: kind)
+        case .failed(let reason, let kind, let diagnostic):
+            markUploadFailed(asset, reason: reason, kind: kind, diagnostic: diagnostic)
             throw SingleAssetBackupError.failed(reason)
         case .skipped:
             uploadStates[localIdentifier] = nil
@@ -2626,8 +2675,9 @@ final class BackupManager {
         case .paused(let pause):
             uploadStates[localIdentifier] = nil
             throw pause
-        case .quota(let message):
-            markUploadFailed(asset, reason: message, kind: .cloudStorage)
+        case .quota(let message, let diagnostic):
+            markUploadFailed(asset, reason: message, kind: .cloudStorage,
+                        diagnostic: diagnostic)
             throw ImoraError.http(507, message)
         }
 
@@ -2637,6 +2687,7 @@ final class BackupManager {
         guard let remoteID = await index.entry(for: localIdentifier)?.primaryRemoteId else {
             throw SingleAssetBackupError.failed(String(localized: "the server did not return a backup identifier."))
         }
+        clearResolvedRunFailure()
         return remoteID
     }
 
@@ -2690,6 +2741,7 @@ final class BackupManager {
     /// own progress overlay. like the single-asset path, this ignores the
     /// automatic-backup preference: the selection is an explicit ask.
     func backUp(localIdentifiers: [String], overridingCurrentHolds: Bool = false) async throws -> BulkBackupOutcome {
+        try BackupRuntimePolicy.requireThermalBudget(ProcessInfo.processInfo.thermalState)
         guard await PhotoLibraryService.requestFullAccess() else {
             throw ImoraError.http(0, String(localized: "full photo library access is required for backup."))
         }
@@ -2707,6 +2759,7 @@ final class BackupManager {
         adoptBackgroundUploads()
         await BackgroundUploader.shared.replayReceipts()
 
+        try BackupRuntimePolicy.requireThermalBudget(ProcessInfo.processInfo.thermalState)
         var outcome = BulkBackupOutcome()
         var queue: [DeviceAsset] = []
         for localId in localIdentifiers {
@@ -2729,6 +2782,7 @@ final class BackupManager {
         }
         guard !queue.isEmpty else {
             await refreshLocalSnapshots()
+            if outcome.alreadyBackedUp > 0 { clearResolvedRunFailure() }
             return outcome
         }
 
@@ -2747,10 +2801,20 @@ final class BackupManager {
         }
 
         var authorityPause: BackupUploadAuthorityPause?
+        var scheduledCount = 0
+        var thermalSchedulingWasHeld = false
+        try BackupRuntimePolicy.requireThermalBudget(ProcessInfo.processInfo.thermalState)
         await BackupUploadScheduler.run(queue, workers: Self.uploadWorkers,
             workerLimit: { BackupRuntimePolicy.currentWorkers(Self.uploadWorkers) },
-            canSchedule: { self.uploadAuthorityPause == nil && self.conditionsAllowWork },
+            canSchedule: {
+                if self.isHeldForThermal || BackupRuntimePolicy.pausesWork(thermal: ProcessInfo.processInfo.thermalState) {
+                    thermalSchedulingWasHeld = true
+                    return false
+                }
+                return self.uploadAuthorityPause == nil && self.conditionsAllowWork
+            },
             operation: { asset in
+                scheduledCount += 1
                 uploadStates[asset.localIdentifier] = .uploading(0)
                 let transfer = beginActiveTransfer(localIdentifier: asset.localIdentifier)
                 attempts[asset.localIdentifier] = transfer.attempt
@@ -2781,10 +2845,10 @@ final class BackupManager {
                 case .sizeExcluded:
                     outcome.skipped += 1
                     uploadStates[localId] = nil
-                case .failed(let reason, let kind):
+                case .failed(let reason, let kind, let diagnostic):
                     outcome.failed += 1
                     if outcome.firstFailure == nil { outcome.firstFailure = reason }
-                    markUploadFailed(asset, reason: reason, kind: kind)
+                    markUploadFailed(asset, reason: reason, kind: kind, diagnostic: diagnostic)
                 case .skipped:
                     outcome.skipped += 1
                     uploadStates[localId] = nil
@@ -2793,14 +2857,16 @@ final class BackupManager {
                     uploadStates[localId] = nil
                     localChanged()
                     return .pause
-                case .quota(let message):
+                case .quota(let message, let diagnostic):
                     quotaMessage = message
-                    markUploadFailed(asset, reason: message, kind: .cloudStorage)
+                    markUploadFailed(asset, reason: message, kind: .cloudStorage,
+                        diagnostic: diagnostic)
                     return .cancel
                 }
                 localChanged()
                 return .proceed
             })
+        let thermalInterrupted = scheduledCount < queue.count && thermalSchedulingWasHeld
         await stackEditedRevisions()
         await index.flush()
         await refreshLocalSnapshots()
@@ -2808,6 +2874,8 @@ final class BackupManager {
         if let quotaMessage {
             throw ImoraError.http(400, quotaMessage)
         }
+        if thermalInterrupted { throw BackupThermalHold() }
+        if outcome.failed == 0, outcome.uploaded + outcome.alreadyBackedUp > 0 { clearResolvedRunFailure() }
         return outcome
     }
 

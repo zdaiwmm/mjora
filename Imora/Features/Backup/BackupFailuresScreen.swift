@@ -3,6 +3,7 @@ import SwiftUI
 struct BackupFailuresScreen: View {
     @Environment(SessionStore.self) private var session
     @State private var confirmConditions = false
+    @State private var isRefreshing = false
 
     var body: some View {
         List {
@@ -36,6 +37,7 @@ struct BackupFailuresScreen: View {
                                     Text(failure.kind.explanation).font(.footnote).foregroundStyle(.secondary)
                                     if failure.kind == .connection || failure.kind == .other {
                                         BackupFailureRetryButton(localIDs: [failure.localIdentifier], title: "Retry This Item")
+                                            .disabled(isRefreshing)
                                     }
                                     NavigationLink("How to Fix") { BackupFailureRecoveryScreen(failure: failure) }
                                         .font(.subheadline)
@@ -48,6 +50,7 @@ struct BackupFailuresScreen: View {
                     }
                     Section {
                         BackupFailureRetryButton(localIDs: backup.backupFailures.map(\.localIdentifier), title: "Retry Failed Items")
+                            .disabled(isRefreshing)
                     }
                 }
             }
@@ -56,12 +59,39 @@ struct BackupFailuresScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("backup-failures-list")
         .task { await session.backup?.refreshLibraryStatus() }
+        .refreshable {
+            guard let backup = session.backup else { return }
+            if backup.isRunning { await backup.refreshLibraryStatus(); return }
+            if backup.manualBackupNeedsApproval { confirmConditions = true; return }
+            await retryFailedItems()
+        }
         .confirmationDialog("Back up now?", isPresented: $confirmConditions, titleVisibility: .visible) {
-            Button("Back Up Now") { session.backup?.start() }
+            if session.backup?.backupFailures.isEmpty == false {
+                Button("Retry Failed Items") { Task { await retryFailedItems() } }
+            } else {
+                Button("Back Up Now") { session.backup?.start() }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             if let backup = session.backup { Text(backup.manualBackupApprovalMessage) }
         }
+    }
+
+    private func retryFailedItems() async {
+        guard let backup = session.backup, !isRefreshing else { return }
+        let identifiers = backup.backupFailures.map(\.localIdentifier)
+        guard !identifiers.isEmpty else {
+            if case .error = backup.phase { backup.start() }
+            await backup.refreshLibraryStatus()
+            return
+        }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            let outcome = try await backup.backUp(localIdentifiers: identifiers, overridingCurrentHolds: true)
+            if outcome.failed > 0, let reason = outcome.firstFailure { ErrorToastCenter.shared.show(reason) }
+        } catch { ErrorToastCenter.shared.show(String(localized: "Couldn't back up"), error: error) }
+        await backup.refreshLibraryStatus()
     }
 }
 
@@ -75,6 +105,15 @@ private struct BackupFailureRecoveryScreen: View {
             Section {
                 Text(failure.kind.recoveryMessage)
                     .accessibilityIdentifier("backup-failure-recovery")
+            }
+            Section("Failure Details") {
+                if let diagnostic = failure.diagnostic {
+                    Text(diagnostic.stage.title).font(.subheadline.weight(.semibold))
+                    Text(diagnostic.detail).monospacedDigit()
+                } else {
+                    Text("Exact error details were not saved for this attempt.")
+                        .foregroundStyle(.secondary)
+                }
             }
             Section {
                 BackupFailureRetryButton(localIDs: [failure.localIdentifier], title: "Check Again and Retry")

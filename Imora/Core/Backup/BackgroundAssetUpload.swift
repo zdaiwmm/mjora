@@ -54,11 +54,13 @@ nonisolated enum BackgroundAssetUpload {
             throw ImoraError.decoding("Invalid background upload state")
         }
         let progress = OSAllocatedUnfairLock<BackgroundUploadState>(initialState: state)
-        try await PhotoLibraryService.streamChunks(
-            localIdentifier: upload.deviceAssetId, motion: motion, from: offset,
-            chunkBytes: chunkBytes, expectedBytes: resource.bytes, to: BackgroundUploader.bodyDirectory,
-            onResourceProgress: onResourceProgress
-        ) { chunk in
+        try await BackupPreparationBoundary.stream(produce: { consume in
+            try await PhotoLibraryService.streamChunks(
+                localIdentifier: upload.deviceAssetId, motion: motion, from: offset,
+                chunkBytes: chunkBytes, expectedBytes: resource.bytes, to: BackgroundUploader.bodyDirectory,
+                onResourceProgress: onResourceProgress, consume: consume
+            )
+        }, consume: { chunk in
             defer { try? FileManager.default.removeItem(at: chunk.fileURL) }
             try await beforeUpload()
             guard lifetime?.hasExpired != true else { throw CancellationError() }
@@ -66,11 +68,14 @@ nonisolated enum BackgroundAssetUpload {
             guard let key = current.key, let capability = current.capability else {
                 throw ImoraError.decoding("Missing background upload authorization")
             }
-            let sealed = try SealedUploadPart.seal(Data(contentsOf: chunk.fileURL), key: key, id: id, offset: chunk.offset)
-            let file = BackgroundUploader.bodyDirectory.appending(path: "sealed-\(UUID().uuidString)")
-            try sealed.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            try ProtectedTemporaryFiles.protect(file)
-            try FileManager.default.removeItem(at: chunk.fileURL)
+            let (sealed, file) = try BackupPreparationBoundary.perform {
+                let sealed = try SealedUploadPart.seal(Data(contentsOf: chunk.fileURL), key: key, id: id, offset: chunk.offset)
+                let file = BackgroundUploader.bodyDirectory.appending(path: "sealed-\(UUID().uuidString)")
+                try sealed.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                try ProtectedTemporaryFiles.protect(file)
+                try FileManager.default.removeItem(at: chunk.fileURL)
+                return (sealed, file)
+            }
             var retry = 0
             var needsUpload = true
             while true {
@@ -79,8 +84,10 @@ nonisolated enum BackgroundAssetUpload {
                 do {
                     if needsUpload {
                         if !FileManager.default.fileExists(atPath: file.path) {
-                            try sealed.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-                            try ProtectedTemporaryFiles.protect(file)
+                            try BackupPreparationBoundary.perform {
+                                try sealed.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                                try ProtectedTemporaryFiles.protect(file)
+                            }
                         }
                         // A failed response is ambiguous: check the committed offset before retrying bytes.
                         needsUpload = false
@@ -104,7 +111,7 @@ nonisolated enum BackgroundAssetUpload {
                     try await Task.sleep(for: .seconds(1 << (retry - 1)))
                 }
             }
-        }
+        })
         try await beforeUpload()
         state = try await client.backgroundUploadStatus(id)
         guard let result = state.result else { throw ImoraError.decoding("Background upload is incomplete") }

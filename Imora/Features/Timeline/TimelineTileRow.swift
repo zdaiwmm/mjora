@@ -341,6 +341,7 @@ final class TimelineTileView: UIView {
     private weak var motion: GridMotion?
     private weak var registry: AssetTileRegistry?
     private var showsBackupBadge = false
+    private var showsMediaBadges = true
     private var showsAllBackupStatuses = false
     private var targetPixelSize: CGFloat = 0
     private var registeredAsset: Asset?
@@ -411,6 +412,16 @@ final class TimelineTileView: UIView {
 
     func recycle() {
         removeFromSuperview()
+        prepareForReuse()
+        guard Self.pool.count < Self.poolLimit else { return }
+        alpha = 1
+        isUserInteractionEnabled = true
+        setProjectedRemoved(false, animated: false)
+        Self.pool.append(self)
+    }
+
+    /// A non-grid host reuses its own tile without putting it in the grid pool.
+    func prepareForReuse() {
         cancelLoads()
         // a pooled tile must not keep a bitmap alive outside nuke's budget.
         imageView.image = nil
@@ -426,11 +437,6 @@ final class TimelineTileView: UIView {
         showsPicture = false
         // forgets the photo too, so a tile handed it back loads it again.
         asset = nil
-        guard Self.pool.count < Self.poolLimit else { return }
-        alpha = 1
-        isUserInteractionEnabled = true
-        setProjectedRemoved(false, animated: false)
-        Self.pool.append(self)
     }
 
     override init(frame: CGRect) {
@@ -472,14 +478,16 @@ final class TimelineTileView: UIView {
         showsBackupBadge: Bool,
         showsAllBackupStatuses: Bool = false,
         targetPixelSize: CGFloat,
-        registry: AssetTileRegistry,
-        usesOriginalAspectRatio: Bool = false
+        registry: AssetTileRegistry?,
+        usesOriginalAspectRatio: Bool = false,
+        showsMediaBadges: Bool = true
     ) {
         imageView.contentMode = usesOriginalAspectRatio ? .scaleAspectFit : .scaleAspectFill
         let accountChanged = self.session !== session
         self.session = session
         self.motion = motion
         let changed = accountChanged || self.asset != asset
+            || self.showsMediaBadges != showsMediaBadges
             || self.showsBackupBadge != showsBackupBadge
             || self.showsAllBackupStatuses != showsAllBackupStatuses
             || self.targetPixelSize != targetPixelSize
@@ -487,6 +495,7 @@ final class TimelineTileView: UIView {
             unavailableLocalIdentifier = nil
         }
         self.asset = asset
+        self.showsMediaBadges = showsMediaBadges
         self.showsBackupBadge = showsBackupBadge
         self.showsAllBackupStatuses = showsAllBackupStatuses
         self.targetPixelSize = targetPixelSize
@@ -494,7 +503,7 @@ final class TimelineTileView: UIView {
             updateAssetBadges(for: asset)
             setNeedsUpdateProperties()
         }
-        register(in: registry)
+        if let registry { register(in: registry) }
         // Bind the source before this row's first UIKit layout can display it.
         updatePropertiesIfNeeded()
     }
@@ -1158,12 +1167,12 @@ final class TimelineTileView: UIView {
     private func updateAssetBadges(for asset: Asset) {
         topTrailingBadge?.removeFromSuperview()
         topTrailingBadge = nil
-        if asset.isLivePhoto {
+        if showsMediaBadges, asset.isLivePhoto {
             topTrailingBadge = TileGlyphBadge(.livePhoto)
         }
         durationBadge?.removeFromSuperview()
         durationBadge = nil
-        if let duration = asset.durationLabel {
+        if showsMediaBadges, let duration = asset.durationLabel {
             let label = UILabel()
             label.text = duration
             label.font = UIFontMetrics(forTextStyle: .caption2)
@@ -1179,13 +1188,13 @@ final class TimelineTileView: UIView {
 
         topLeadingBadge?.removeFromSuperview()
         topLeadingBadge = nil
-        if asset.isStacked, let count = asset.stackCount {
+        if showsMediaBadges, asset.isStacked, let count = asset.stackCount {
             topLeadingBadge = TileCapsuleBadge(symbol: "square.stack.fill", text: "\(count)")
         }
 
         favoriteBadge?.removeFromSuperview()
         favoriteBadge = nil
-        if asset.isFavorite {
+        if showsMediaBadges, asset.isFavorite {
             favoriteBadge = TileGlyphBadge(.favorite)
         }
 

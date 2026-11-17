@@ -992,6 +992,16 @@ struct AssetViewerScreen: View {
         onChange: @escaping (AssetChange) -> Void
     ) {
         let safeIndex = assets.indices.contains(initialIndex) ? initialIndex : 0
+        #if DEBUG || PHASE4_PERFORMANCE
+        let constructionSpan = GalleryFrameMetrics.shared.beginSpan("screen-construction", correlationID: presentationID)
+        defer { GalleryFrameMetrics.shared.endSpan(constructionSpan) }
+        GalleryFrameMetrics.shared.mark("screen-construction-inputs", correlationID: presentationID, values: [
+            "loadsContent": loadsViewerContent ? 1 : 0,
+            "mediaVisible": transitionMediaVisible ? 1 : 0,
+            "hostTop": mediaTopSafeAreaInset ?? -1,
+            "hostBottom": mediaBottomSafeAreaInset ?? -1,
+        ])
+        #endif
         _assets = State(initialValue: assets)
         _indexByAssetID = State(initialValue: indexByAssetID ?? Self.indexMap(for: assets))
         _currentIndex = State(initialValue: safeIndex)
@@ -1011,6 +1021,9 @@ struct AssetViewerScreen: View {
             initialValue: zoomCommandBridge ?? AssetViewerZoomCommandBridge()
         )
         openingAssetID = assets.indices.contains(safeIndex) ? assets[safeIndex].id : nil
+        let initialDuration = assets.indices.contains(safeIndex)
+            ? Double(assets[safeIndex].duration ?? 0) / 1_000 : 0
+        _playback = State(initialValue: VideoPlayback(seedDuration: initialDuration))
         _launchMediaBridge = State(
             initialValue: AssetViewerLaunchMediaBridge(
                 isVisible: AssetViewerOpeningMediaHandoff.startsWithScrollCoupledPreview(
@@ -1252,7 +1265,11 @@ struct AssetViewerScreen: View {
     }
 
     private var core: some View {
-        AnyView(viewerSurface)
+        #if DEBUG || PHASE4_PERFORMANCE
+        let bodySpan = GalleryFrameMetrics.shared.beginSpan("screen-core-expression", correlationID: presentationID)
+        defer { GalleryFrameMetrics.shared.endSpan(bodySpan) }
+        #endif
+        return AnyView(viewerSurface)
             .deviceCopyRemovalPresentation(deviceCopyRemoval)
             .sheet(isPresented: $showsBackupFailures) {
             NavigationStack { BackupFailuresScreen() }
@@ -1477,6 +1494,10 @@ struct AssetViewerScreen: View {
                     .onGeometryChange(for: CGFloat.self) { proxy in
                         proxy.safeAreaInsets.bottom
                     } action: { inset in
+                        #if DEBUG || PHASE4_PERFORMANCE
+                        GalleryFrameMetrics.shared.mark("screen-toolbar-bottom-inset", correlationID: presentationID,
+                            values: ["old": barsBottomInset, "new": inset, "changed": barsBottomInset != inset ? 1 : 0])
+                        #endif
                         barsBottomInset = inset
                     }
             }
@@ -1586,6 +1607,15 @@ struct AssetViewerScreen: View {
                 .onGeometryChange(for: EdgeInsets.self) { proxy in
                     proxy.safeAreaInsets
                 } action: { insets in
+                    #if DEBUG || PHASE4_PERFORMANCE
+                    GalleryFrameMetrics.shared.mark("screen-stage-safe-area", correlationID: presentationID, values: [
+                        "changed": stageSafeAreaInsets != insets ? 1 : 0,
+                        "oldTop": stageSafeAreaInsets.top, "oldBottom": stageSafeAreaInsets.bottom,
+                        "oldLeading": stageSafeAreaInsets.leading, "oldTrailing": stageSafeAreaInsets.trailing,
+                        "newTop": insets.top, "newBottom": insets.bottom,
+                        "newLeading": insets.leading, "newTrailing": insets.trailing,
+                    ])
+                    #endif
                     stageSafeAreaInsets = insets
                 }
         }
@@ -1710,6 +1740,14 @@ struct AssetViewerScreen: View {
             compactScrollTracker.offset = offset
         }
         .onScrollPhaseChange { oldPhase, phase, context in
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.mark("screen-compact-scroll-phase", correlationID: presentationID, values: [
+                "oldActive": compactScrollIsActive ? 1 : 0, "newActive": phase != .idle ? 1 : 0,
+                "oldSettledOffset": compactSettledOffset, "newVisibleOffset": context.geometry.visibleRect.minY,
+                "containerWidth": context.geometry.containerSize.width,
+                "containerHeight": context.geometry.containerSize.height,
+            ])
+            #endif
             let beginsInteraction = AssetViewerOpeningMediaHandoff.beginsCompactInteraction(
                 isTracking: phase == .tracking,
                 isInteracting: phase == .interacting,
@@ -1954,6 +1992,15 @@ struct AssetViewerScreen: View {
                 .allowsHitTesting(false)
 
             ViewerPhysicalSafeAreaReader { insets in
+                #if DEBUG || PHASE4_PERFORMANCE
+                GalleryFrameMetrics.shared.mark("screen-physical-safe-area", correlationID: presentationID, values: [
+                    "changed": physicalSafeAreaInsets != insets ? 1 : 0,
+                    "oldTop": physicalSafeAreaInsets.top, "oldBottom": physicalSafeAreaInsets.bottom,
+                    "oldLeft": physicalSafeAreaInsets.left, "oldRight": physicalSafeAreaInsets.right,
+                    "newTop": insets.top, "newBottom": insets.bottom,
+                    "newLeft": insets.left, "newRight": insets.right,
+                ])
+                #endif
                 physicalSafeAreaInsets = insets
             }
             .frame(width: 1, height: 1)
@@ -1973,6 +2020,13 @@ struct AssetViewerScreen: View {
                 launchMediaBridge.isVisible = false
             }
         }
+        .onChange(of: loadsViewerContent) { _, loads in
+            guard loads else { return }
+            launchMediaBridge.isVisible = AssetViewerOpeningMediaHandoff.startsWithScrollCoupledPreview(
+                loadsViewerContent: true, usesExternalBackdrop: usesExternalBackdrop,
+                isContextPreview: isContextPreview, hasOpeningImage: openingMediaSurface != nil
+            )
+        }
     }
 
     /// Accessories fade in place above the bottom toolbar. Keeping them in
@@ -1987,6 +2041,7 @@ struct AssetViewerScreen: View {
             }
             AssetViewerCarousel(
                 assets: assets,
+                indexByAssetID: indexByAssetID,
                 selection: $selectedAssetID,
                 aspectRatio: projectedAspectRatio(for:)
             )
@@ -2258,6 +2313,14 @@ struct AssetViewerScreen: View {
     }
 
     private func updateCompactEndpoint(_ endpoint: AssetViewerScrollEndpoint) {
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.mark("screen-compact-endpoint", correlationID: presentationID, values: [
+            "changed": compactScrollEndpoint != endpoint ? 1 : 0,
+            "oldMedia": compactScrollEndpoint == .media ? 1 : 0, "newMedia": endpoint == .media ? 1 : 0,
+            "oldInformation": compactScrollEndpoint == .information ? 1 : 0,
+            "newInformation": endpoint == .information ? 1 : 0,
+        ])
+        #endif
         compactScrollEndpoint = endpoint
         switch endpoint {
         case .media:
@@ -2272,6 +2335,15 @@ struct AssetViewerScreen: View {
 
     private func updateViewport(_ newViewport: ViewerViewport) {
         let oldViewport = viewport
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.mark("screen-viewport", correlationID: presentationID, values: [
+            "changed": oldViewport != newViewport ? 1 : 0,
+            "oldWidth": oldViewport.size.width, "oldHeight": oldViewport.size.height,
+            "oldBottom": oldViewport.bottomInset,
+            "newWidth": newViewport.size.width, "newHeight": newViewport.size.height,
+            "newBottom": newViewport.bottomInset,
+        ])
+        #endif
         viewport = newViewport
         viewportRetargetTask?.cancel()
 

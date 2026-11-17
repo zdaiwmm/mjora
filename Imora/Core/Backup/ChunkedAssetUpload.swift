@@ -124,16 +124,18 @@ nonisolated enum ChunkedAssetUpload {
             }
             try await send(PhotoLibraryService.ResourceChunk(fileURL: url, offset: offset, length: 0))
         } else {
-            try await PhotoLibraryService.streamChunks(
-                localIdentifier: upload.deviceAssetId,
-                motion: motion,
-                from: offset,
-                chunkBytes: policy.chunkBytes,
-                expectedBytes: size,
-                to: BackgroundUploader.bodyDirectory,
-                onResourceProgress: onResourceProgress,
-                consume: send
-            )
+            try await BackupPreparationBoundary.stream(produce: { consume in
+                try await PhotoLibraryService.streamChunks(
+                    localIdentifier: upload.deviceAssetId,
+                    motion: motion,
+                    from: offset,
+                    chunkBytes: policy.chunkBytes,
+                    expectedBytes: size,
+                    to: BackgroundUploader.bodyDirectory,
+                    onResourceProgress: onResourceProgress,
+                    consume: consume
+                )
+            }, consume: send)
         }
         return finished.withLock { $0 }
     }

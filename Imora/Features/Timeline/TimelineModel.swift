@@ -351,6 +351,7 @@ final class TimelineModel {
         let flatAssets: [Asset]?
         let flatAssetIndexByID: [String: Int]?
         let bucketIDByAssetID: [String: String]?
+        let geometryIndex: TimelineGeometryIndex?
     }
 
     let filter: TimelineFilter
@@ -377,7 +378,12 @@ final class TimelineModel {
     @ObservationIgnored private var calendarSections: [TimelineSection] = []
 
     func photoPeriods(mode: PhotoBrowseMode, year: Int? = nil, preferredAssetID: String? = nil) -> [PhotoPeriod] {
-        calendarCache.periods(in: calendarSections, mode: mode, year: year, preferredAssetID: preferredAssetID)
+        let preferred = preferredAssetID.flatMap { id -> PhotoPeriodAnchor? in
+            guard let index = flatAssetIndexByID[id], flatAssets.indices.contains(index),
+                  let bucket = bucketIDByAssetID[id] else { return nil }
+            return PhotoPeriodAnchor(asset: flatAssets[index], bucketID: bucket)
+        }
+        return calendarCache.periods(in: calendarSections, mode: mode, year: year, preferred: preferred)
     }
 
     func photoMonthContent(period: PhotoPeriod, preferredAssetID: String? = nil,
@@ -505,6 +511,8 @@ final class TimelineModel {
     private var flatAssetIndexByID: [String: Int] = [:]
     private var bucketIDByAssetID: [String: String] = [:]
     private var rowAssetLocationByID: [String: TimelineAssetProjection.Location] = [:]
+    @ObservationIgnored private var geometryIndex = TimelineGeometryIndex(sections: [])
+    @ObservationIgnored private var viewportEncodingTask: Task<Void, Never>?
     private var sectionProjectionByID: [String: SectionProjection] = [:]
     private var prefetchTask: Task<Void, Never>?
     private var prefetchID: UUID?
@@ -580,6 +588,7 @@ final class TimelineModel {
         restoreTask?.cancel()
         localRefreshTask?.cancel()
         visibilityReadbacks.values.forEach { $0.cancel() }
+        viewportEncodingTask?.cancel()
     }
 
     /// rows cover both server sections and merged device photos.
@@ -587,6 +596,10 @@ final class TimelineModel {
 
     func flatAssetIndex(for id: String) -> Int? {
         flatAssetIndexByID[id]
+    }
+
+    func bucketID(containingAssetID id: String) -> String? {
+        bucketIDByAssetID[id]
     }
 
     func rowIndex(containingAnyOf assetIDs: [String]) -> Int? {
@@ -1225,6 +1238,14 @@ final class TimelineModel {
         Self.buildProjection(makeProjectionInputs(rebuildAssets: false, columns: columns)).rows
     }
 
+    func framesForZoom(assetIDs: Set<String>, columns: Int, width: CGFloat, rightToLeft: Bool) -> [String: CGRect] {
+        let indices = Dictionary(uniqueKeysWithValues: assetIDs.compactMap { id in
+            flatAssetIndexByID[id].map { (id, $0) }
+        })
+        return geometryIndex.frames(for: indices, columns: columns, width: width,
+            grouped: showsDateHeaders, assetsPerDay: assetsPerDay, rightToLeft: rightToLeft)
+    }
+
     private func makeProjectionInputs(rebuildAssets: Bool, columns: Int? = nil) -> ProjectionInputs {
         ProjectionInputs(
             sections: sections,
@@ -1254,10 +1275,12 @@ final class TimelineModel {
             self.firstAssetIDByRowID = build.firstAssetIDByRowID
             if let flatAssets = build.flatAssets,
                let flatAssetIndexByID = build.flatAssetIndexByID,
-               let bucketIDByAssetID = build.bucketIDByAssetID {
+               let bucketIDByAssetID = build.bucketIDByAssetID,
+               let geometryIndex = build.geometryIndex {
                 self.flatAssets = flatAssets
                 self.flatAssetIndexByID = flatAssetIndexByID
                 self.bucketIDByAssetID = bucketIDByAssetID
+                self.geometryIndex = geometryIndex
                 self.projectedRemovalIDs.formIntersection(flatAssetIndexByID.keys)
                 self.flatAssetsVersion &+= 1
             }
@@ -1383,7 +1406,8 @@ final class TimelineModel {
             measuredAssetsPerDay: dayTally > 0 && assetTally > 0 ? ratio : nil,
             flatAssets: inputs.rebuildAssets ? flattened : nil,
             flatAssetIndexByID: inputs.rebuildAssets ? flattenedIndex : nil,
-            bucketIDByAssetID: inputs.rebuildAssets ? bucketByAssetID : nil
+            bucketIDByAssetID: inputs.rebuildAssets ? bucketByAssetID : nil,
+            geometryIndex: inputs.rebuildAssets ? TimelineGeometryIndex(sections: projectedSections) : nil
         )
     }
 
@@ -1583,7 +1607,7 @@ final class TimelineModel {
     /// imperfect packing are both priced in and the answer follows the column
     /// count through a pinch. a month cannot span more than 31 days, which is
     /// what keeps a busy month from being estimated as hundreds of tiny ones.
-    nonisolated private static func placeholderEstimate(
+    nonisolated static func placeholderEstimate(
         count: Int,
         columns: Int,
         assetsPerDay: Double
@@ -2133,6 +2157,14 @@ final class TimelineModel {
             assetsByID: changedAssets,
             indicesByID: flatAssetIndexByID
         )
+        // The calendar keeps the merged snapshot, including local-only items.
+        // Patch it alongside rows so a cached cover never reintroduces old edits.
+        for index in calendarSections.indices where changedBucketIDs.contains(calendarSections[index].id) {
+            guard let days = calendarSections[index].days else { continue }
+            calendarSections[index].days = days.map { day in
+                DayGroup(id: day.id, title: day.title, assets: day.assets.map { changedAssets[$0.id] ?? $0 })
+            }
+        }
         onAssetsChanged?(.updated(Array(changedAssets.values)))
         return ownedRetirements
     }
@@ -2359,45 +2391,64 @@ final class TimelineModel {
     func checkpointViewport(rowIDs: [String], layout: LaunchViewportSnapshot.Layout, pixels: CGFloat,
                             anchorOffset: Double, stable: Bool, surfaceProvider: GridSurfaceProvider? = nil) {
         guard let client, client.context.isActive, let filterKey = launchCacheKey else { return }
-        let visible = Set(rowIDs)
-        let assets = rows.filter { visible.contains($0.id) }.flatMap { row -> [Asset] in
+        let assets = rowIDs.compactMap { firstAssetIDByRowID[$0] }
+            .compactMap { rowAssetLocationByID[$0]?.row }
+            .flatMap { index -> [Asset] in
+            guard rows.indices.contains(index) else { return [] }
+            let row = rows[index]
             guard case .tiles(_, let runs) = row else { return [] }
             return runs.flatMap(\.assets)
         }
+        guard !assets.isEmpty, assets.allSatisfy({ !$0.isTrashed && $0.visibility != .locked && $0.visibility != .hidden }),
+              let bucketList = geometryIndex.bucketList else { return }
+        let keys = assets.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: pixels) }
+        let scope = client.mediaDisplayScope
+        let source = usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud")
+        let sort = filter.order ?? "desc"
+        var bucketsByAssetID: [String: String] = [:]
+        var leadingCounts: [String: Int] = [:]
+        var indicesByBucket: [String: [Int]] = [:]
+        for asset in assets {
+            guard let bucket = bucketIDByAssetID[asset.id], let index = flatAssetIndexByID[asset.id] else { return }
+            indicesByBucket[bucket, default: []].append(index)
+            bucketsByAssetID[asset.id] = bucket
+        }
+        for (id, indices) in indicesByBucket {
+            guard let sectionIndex = geometryIndex.sectionByID[id], let first = indices.min(), let last = indices.max(),
+                  last - first + 1 == indices.count else { return }
+            let section = geometryIndex.sections[sectionIndex]
+            leadingCounts[id] = section.leading + first - section.start
+        }
+        viewportEncodingTask?.cancel()
+        let version = rowsContentVersion
+        viewportEncodingTask = Task { [weak self] in
+            guard let metadata = await Self.encodeViewportAssets(assets), !Task.isCancelled,
+                  let self, self.rowsContentVersion == version, client.context.isActive else { return }
+            var encoded = LaunchViewportSnapshot(scope: scope, source: source, filter: filterKey,
+                sort: sort, anchor: assets[0].id, layout: layout, visibleKeys: keys, metadata: metadata)
+            encoded.bucketIDByAssetID = bucketsByAssetID
+            encoded.bucketLeadingAssetCounts = leadingCounts
+            encoded.bucketList = bucketList
+            encoded.anchorOffset = anchorOffset
+            if stable {
+                guard !self.isRebuildDeferred else { return }
+                MediaPresentationCoordinator.shared.checkpoint(snapshot: encoded, assets: assets, client: client,
+                    surfaceProvider: surfaceProvider, validateLocalSurface: { [weak self] provenance in
+                        if provenance.remoteIdentifier == nil { return true }
+                        return await self?.backup?.validatesLaunchSurface(provenance) ?? false
+                    })
+            } else {
+                MediaPresentationCoordinator.shared.cancelCheckpoint()
+                MediaPresentationCoordinator.shared.noteViewport(snapshot: encoded, client: client)
+            }
+        }
+    }
+
+    @concurrent nonisolated private static func encodeViewportAssets(_ assets: [Asset]) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        guard !assets.isEmpty, assets.allSatisfy({ !$0.isTrashed && $0.visibility != .locked && $0.visibility != .hidden }),
-              let metadata = try? encoder.encode(assets) else { return }
-        let keys = assets.map { MediaPresentationCoordinator.gridKey(asset: $0, client: client, pixels: pixels) }
-        var snapshot = LaunchViewportSnapshot(scope: client.mediaDisplayScope, source: usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud"),
-            filter: filterKey, sort: filter.order ?? "desc", anchor: assets[0].id, layout: layout,
-            visibleKeys: keys, metadata: metadata)
-        let projected = Self.mergedSections(sections, local: mergesLocal ? localMergeSource : nil)
-        var canonicalBuckets: [TimeBucket] = []
-        let visibleIDs = Set(assets.map(\.id))
-        for section in projected {
-            let known = section.days?.flatMap(\.assets) ?? []
-            let count = section.days == nil || section.hasPartialLaunchRange ? section.count : known.count
-            canonicalBuckets.append(.init(timeBucket: section.id, count: count))
-            let chosen = known.filter { visibleIDs.contains($0.id) }
-            guard let first = chosen.first else { continue }
-            guard let offset = known.firstIndex(where: { $0.id == first.id }),
-                  Array(known.dropFirst(offset).prefix(chosen.count)).map(\.id) == chosen.map(\.id) else { return }
-            snapshot.bucketLeadingAssetCounts[section.id] = section.leadingUnloadedAssetCount + offset
-            for asset in chosen { snapshot.bucketIDByAssetID[asset.id] = section.id }
-        }
-        guard snapshot.bucketIDByAssetID.count == assets.count else { return }
-        snapshot.bucketList = try? encoder.encode(canonicalBuckets)
-        snapshot.anchorOffset = anchorOffset
-        if stable { MediaPresentationCoordinator.shared.checkpoint(snapshot: snapshot, assets: assets, client: client,
-            surfaceProvider: surfaceProvider, validateLocalSurface: { [weak self] provenance in
-                if provenance.remoteIdentifier == nil { return true }
-                return await self?.backup?.validatesLaunchSurface(provenance) ?? false
-            }) }
-        else {
-            MediaPresentationCoordinator.shared.cancelCheckpoint()
-            MediaPresentationCoordinator.shared.noteViewport(snapshot: snapshot, client: client)
-        }
+        return try? encoder.encode(assets)
     }
 
     func commit(_ removal: TimelineRemoval, ids: Set<String>? = nil) {

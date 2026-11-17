@@ -551,10 +551,20 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
         guard let toController = transitionContext.viewController(forKey: .to),
               let toView = transitionContext.view(forKey: .to)
         else { return nil }
+        #if DEBUG || PHASE4_PERFORMANCE
+        let prepareSpan = GalleryFrameMetrics.shared.beginSpan("presentation-prepare", correlationID: controller?.route.id)
+        defer { GalleryFrameMetrics.shared.endSpan(prepareSpan) }
+        #endif
         let container = transitionContext.containerView
         toView.frame = transitionContext.finalFrame(for: toController)
         container.addSubview(toView)
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.measure("presentation-initial-layout", correlationID: controller?.route.id) {
+            toView.layoutIfNeeded()
+        }
+        #else
         toView.layoutIfNeeded()
+        #endif
         controller?.installDismissalGesture(on: container)
         // views below this threshold stop receiving touches. keeping a nearly
         // invisible destination live lets back and swipe reverse immediately.
@@ -1260,6 +1270,10 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         didDismiss: @escaping (UUID) -> Void,
         onChange: @escaping (AssetChange) -> Void
     ) {
+        #if DEBUG || PHASE4_PERFORMANCE
+        let constructionSpan = GalleryFrameMetrics.shared.beginSpan("host-construction", correlationID: route.id)
+        defer { GalleryFrameMetrics.shared.endSpan(constructionSpan) }
+        #endif
         let state = AssetViewerDisplayState(
             mode: startsAsContextPreview ? .contextPreview : .viewer,
             currentAssetID: route.sourceAssetID
@@ -1278,6 +1292,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         self.openingChromePresentation = openingChromePresentation
         self.sourceRegistry = sourceRegistry
 
+        #if DEBUG || PHASE4_PERFORMANCE
+        let rootValueSpan = GalleryFrameMetrics.shared.beginSpan("host-root-value-construction", correlationID: route.id)
+        #endif
         let root = AssetViewerHostRoot(
             route: route,
             displayState: state,
@@ -1289,6 +1306,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         )
         .environment(session)
         preparedViewerRoot = AnyView(root)
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.endSpan(rootValueSpan)
+        #endif
         let initialRoot: AnyView
         if startsAsContextPreview,
            let asset = route.assets[safe: route.initialIndex] {
@@ -1297,7 +1317,13 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         } else {
             initialRoot = AnyView(Color.clear.ignoresSafeArea())
         }
+        #if DEBUG || PHASE4_PERFORMANCE
+        let superInitSpan = GalleryFrameMetrics.shared.beginSpan("host-super-init", correlationID: route.id)
+        #endif
         super.init(rootView: initialRoot)
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.endSpan(superInitSpan)
+        #endif
 
         relay.controller = self
         transitionDriver.controller = self
@@ -1626,24 +1652,32 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             || !displayState.viewerChromeRevealed
         else { return }
         setTransitionMediaVisible(true)
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.measure("interactive-media-layout", correlationID: route.id) {
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+        }
+        #else
         view.setNeedsLayout()
         view.layoutIfNeeded()
+        #endif
         completeOpeningChromeHandoff()
         removePresentationZoomView()
     }
 
     fileprivate func prepareViewerContentForPresentation(defersMounting: Bool = false) {
         guard displayState.mode == .viewer else { return }
-        // Mount interactive pages and chrome during the opening transition.
-        // Waiting for its completion left only a snapshot accepting touches.
-        displayState.viewerContentReady = true
+        #if DEBUG || PHASE4_PERFORMANCE
+        let prepareSpan = GalleryFrameMetrics.shared.beginSpan("viewer-content-prepare", correlationID: route.id)
+        defer { GalleryFrameMetrics.shared.endSpan(prepareSpan) }
+        #endif
         displayState.viewerChromeRevealed = true
+        displayState.viewerContentReady = !defersMounting
+        // Real transport controls and the bounded thumbnail strip join the
+        // toolbar before the opening animation starts. Only media work waits.
+        installViewerRootIfNeeded()
         if defersMounting {
-            // Commit the thumbnail's first animation frames before building
-            // the SwiftUI pager, controls and metadata on the main thread.
-            scheduleViewerRootInstallation(after: .milliseconds(32))
-        } else {
-            installViewerRootIfNeeded()
+            scheduleViewerContentActivation(after: .milliseconds(32))
         }
     }
 
@@ -1659,14 +1693,25 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             displayState.transitionMediaVisible = visible
         }
         guard isViewLoaded else { return }
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.measure(visible ? "media-show-layout" : "media-hide-layout", correlationID: route.id) {
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+        }
+        #else
         view.setNeedsLayout()
         view.layoutIfNeeded()
+        #endif
     }
 
     fileprivate func makeOpeningChromeOverlay(
         in container: UIView
     ) -> AssetViewerOpeningChromeOverlay? {
         guard let openingChromePresentation else { return nil }
+        #if DEBUG || PHASE4_PERFORMANCE
+        let takeSpan = GalleryFrameMetrics.shared.beginSpan("opening-chrome-overlay-take", correlationID: route.id)
+        defer { GalleryFrameMetrics.shared.endSpan(takeSpan) }
+        #endif
         return AssetViewerOpeningChromeCache.shared.take(
             presentation: openingChromePresentation,
             in: container,
@@ -1763,8 +1808,19 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
     }
 
     private func synchronizeMediaSafeAreaInsets() {
-        guard view.window != nil else { return }
-        let insets = view.safeAreaInsets
+        guard let window = view.window else { return }
+        // Media is full bleed; native bar layout must not change its clearance.
+        let insets = window.safeAreaInsets
+        #if DEBUG || PHASE4_PERFORMANCE
+        let old = displayState.mediaSafeAreaInsets
+        GalleryFrameMetrics.shared.mark("host-media-safe-area", correlationID: route.id, values: [
+            "hadOld": old == nil ? 0 : 1, "changed": old != insets ? 1 : 0,
+            "oldTop": old?.top ?? 0, "oldBottom": old?.bottom ?? 0,
+            "oldLeft": old?.left ?? 0, "oldRight": old?.right ?? 0,
+            "newTop": insets.top, "newBottom": insets.bottom,
+            "newLeft": insets.left, "newRight": insets.right,
+        ])
+        #endif
         guard displayState.mediaSafeAreaInsets != insets else { return }
         displayState.mediaSafeAreaInsets = insets
     }
@@ -1981,7 +2037,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
     private func dismissWithoutBlockingTimeline() {
         guard dismissalRequested, let presenter = presentingViewController else { return }
         #if DEBUG || PHASE4_PERFORMANCE
-        GalleryFrameMetrics.shared.begin("viewer-close")
+        GalleryFrameMetrics.shared.begin("viewer-close", correlationID: route.id)
         #endif
         let wasPresenting = phase == .presenting
         phase = .dismissing
@@ -2081,7 +2137,10 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         #if DEBUG || PHASE4_PERFORMANCE
-        if phase == .presenting { GalleryFrameMetrics.shared.begin("viewer-open") }
+        if phase == .presenting {
+            GalleryFrameMetrics.shared.begin("viewer-open", correlationID: route.id)
+            GalleryFrameMetrics.shared.mark("host-view-will-appear", correlationID: route.id)
+        }
         #endif
         presentationController?.delegate = self
     }
@@ -2089,6 +2148,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.mark("host-view-did-appear", correlationID: route.id)
         GalleryFrameMetrics.shared.end("viewer-open")
         GalleryFrameMetrics.shared.end("viewer-close")
         #endif
@@ -2158,22 +2218,57 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         retryRequestedDismissalIfNeeded()
     }
 
-    private func scheduleViewerContentActivation() {
+    private func scheduleViewerContentActivation(after delay: Duration = .zero) {
         guard !displayState.viewerContentReady, viewerContentActivationTask == nil else { return }
+        #if DEBUG || PHASE4_PERFORMANCE
+        let activationID = route.id
+        GalleryFrameMetrics.shared.mark("media-activation-queued", correlationID: route.id)
+        #endif
         viewerContentActivationTask = Task { @MainActor [weak self] in
-            await Task.yield()
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.mark("media-activation-task-started", correlationID: activationID)
+            #endif
+            if delay > .zero {
+                do { try await Task.sleep(for: delay) } catch { return }
+            } else {
+                await Task.yield()
+            }
             guard let self else { return }
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.mark("media-activation-awake", correlationID: self.route.id)
+            #endif
             self.viewerContentActivationTask = nil
             guard !Task.isCancelled,
-                  self.phase == .presented,
+                  self.phase == .presenting || self.phase == .presented,
                   !self.dismissalRequested,
                   !self.isBeingDismissed
             else { return }
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.measure("media-activation-state", correlationID: self.route.id) {
+                self.displayState.viewerContentReady = true
+            }
+            #else
             self.displayState.viewerContentReady = true
+            #endif
             await Task.yield()
-            guard !Task.isCancelled, self.phase == .presented else { return }
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.mark("media-activation-post-yield", correlationID: self.route.id)
+            #endif
+            guard !Task.isCancelled, self.phase == .presenting || self.phase == .presented else { return }
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.measure("media-activation-layout", correlationID: self.route.id) {
+                self.view.layoutIfNeeded()
+            }
+            #else
             self.view.layoutIfNeeded()
+            #endif
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.measure("media-activation-gesture-priority", correlationID: self.route.id) {
+                self.transitionDriver.prioritizeDismissalGesture(in: self.view)
+            }
+            #else
             self.transitionDriver.prioritizeDismissalGesture(in: self.view)
+            #endif
             self.revealViewerChrome()
         }
     }
@@ -2193,9 +2288,17 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         guard !isViewerRootInstalled, let root = preparedViewerRoot else { return }
         isViewerRootInstalled = true
         preparedViewerRoot = nil
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.measure("host-root-assignment", correlationID: route.id) { rootView = root }
+        GalleryFrameMetrics.shared.measure("host-root-layout", correlationID: route.id) { view.layoutIfNeeded() }
+        GalleryFrameMetrics.shared.measure("host-root-gesture-priority", correlationID: route.id) {
+            transitionDriver.prioritizeDismissalGesture(in: view)
+        }
+        #else
         rootView = root
         view.layoutIfNeeded()
         transitionDriver.prioritizeDismissalGesture(in: view)
+        #endif
         if displayState.viewerContentReady { revealViewerChrome() }
     }
 
@@ -2242,7 +2345,11 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         withTransaction(transaction) {
             displayState.viewerChromeRevealed = true
         }
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.measure("chrome-handoff-layout", correlationID: route.id) { view.layoutIfNeeded() }
+        #else
         view.layoutIfNeeded()
+        #endif
         openingChromeOverlay?.removeFromSuperview()
         openingChromeOverlay = nil
     }
@@ -2458,7 +2565,7 @@ private struct AssetViewerHostRoot: View {
     let onChange: (AssetChange) -> Void
 
     @ViewBuilder var body: some View {
-        if displayState.viewerContentReady {
+        if displayState.mode == .viewer || displayState.viewerContentReady {
             ZStack {
                 AssetViewerScreen(
                     assets: route.assets,
@@ -2466,7 +2573,7 @@ private struct AssetViewerHostRoot: View {
                     initialIndex: route.initialIndex,
                     presentationID: route.id,
                     isContextPreview: displayState.mode == .contextPreview,
-                    loadsViewerContent: true,
+                    loadsViewerContent: displayState.viewerContentReady,
                     transitionMediaVisible: displayState.transitionMediaVisible,
                     usesExternalBackdrop: true,
                     mediaTopSafeAreaInset: displayState.mediaSafeAreaInsets?.top,
