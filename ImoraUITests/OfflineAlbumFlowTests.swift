@@ -335,14 +335,17 @@ final class OfflineAlbumFlowTests: XCTestCase {
         XCTAssertTrue(waitForHittable(remove, app: app, timeout: 10))
         capture(app, "offline-recovery-\(language)-before-removal")
         remove.tap()
-        capture(app, "offline-recovery-\(language)-confirmation")
-        let confirm = app.buttons["offline-recovery-confirm-remove"]
-        if waitForHittable(confirm, app: app, timeout: 3) { confirm.tap() }
+        let confirm = app.buttons["offline-recovery-confirm-remove"].firstMatch
+        if waitForHittable(confirm, app: app, timeout: 3) {
+            capture(app, "offline-recovery-\(language)-confirmation")
+            confirm.tap()
+        }
         else {
             let label = language == "en" ? "Remove Local Copy" : "移除本地副本"
             let query = app.buttons.matching(NSPredicate(format: "label == %@", label))
             let ready = NSPredicate { _, _ in query.allElementsBoundByIndex.contains(where: \.isHittable) }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 5), .completed)
+            capture(app, "offline-recovery-\(language)-confirmation")
             try XCTUnwrap(query.allElementsBoundByIndex.last(where: \.isHittable)).tap()
         }
         let gone = NSPredicate { _, _ in !remove.exists }
