@@ -10,6 +10,9 @@ final class OfflineAlbumFlowTests: XCTestCase {
     override func setUp() {
         super.setUp()
         addUIInterruptionMonitor(withDescription: "Dismiss synthetic password saving") { alert in
+            let title = NSPredicate(format: "label CONTAINS %@ OR label CONTAINS[cd] %@", "保存密码", "Save Password")
+            guard alert.label.contains("保存密码") || alert.label.localizedCaseInsensitiveContains("Save Password")
+                    || alert.descendants(matching: .any).matching(title).firstMatch.exists else { return false }
             for label in ["以后", "Not Now", "Later"] where alert.buttons[label].exists {
                 alert.buttons[label].tap()
                 return true
@@ -19,10 +22,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
     }
 
     private func dismissPasswordPrompt(_ app: XCUIApplication) {
+        let title = NSPredicate(format: "label CONTAINS %@ OR label CONTAINS[cd] %@", "保存密码", "Save Password")
         for surface in [app, XCUIApplication(bundleIdentifier: "com.apple.springboard")] {
+            guard surface.descendants(matching: .any).matching(title).firstMatch.exists else { continue }
             for label in ["以后", "Not Now", "Later"] {
                 let button = surface.buttons[label]
-                if button.exists, button.isHittable { button.tap(); return }
+                if button.exists { button.tap(); return }
             }
         }
     }
@@ -46,8 +51,9 @@ final class OfflineAlbumFlowTests: XCTestCase {
         app.descendants(matching: .any)[id].firstMatch
     }
 
-    private func waitForHittable(_ target: XCUIElement, timeout: TimeInterval = 15) -> Bool {
+    private func waitForHittable(_ target: XCUIElement, app: XCUIApplication, timeout: TimeInterval = 15) -> Bool {
         let ready = NSPredicate { _, _ in
+            self.dismissPasswordPrompt(app)
             guard target.exists else { return false }
             let frame = target.frame
             return frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite
@@ -66,6 +72,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         }
         var target: XCUIElement?
         let ready = NSPredicate { _, _ in
+            self.dismissPasswordPrompt(app)
             target = app.descendants(matching: .any).matching(identifier: id)
                 .allElementsBoundByIndex.first { $0.isHittable && $0.isEnabled }
             return target != nil
@@ -76,11 +83,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
     }
 
     private func enter(_ value: String, in field: XCUIElement, app: XCUIApplication) {
-        guard waitForHittable(field) else { XCTFail("Input field is not hittable: \(field.identifier)"); return }
+        guard waitForHittable(field, app: app) else { XCTFail("Input field is not hittable: \(field.identifier)"); return }
         field.tap()
         var previousFrame = field.frame
         var stableFrames = 0
         let keyboardReady = NSPredicate { _, _ in
+            self.dismissPasswordPrompt(app)
             guard field.isHittable, app.keyboards.firstMatch.exists else { stableFrames = 0; return false }
             let currentFrame = field.frame
             stableFrames = currentFrame == previousFrame ? stableFrames + 1 : 0
@@ -103,6 +111,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         let offline = destination == "offline-album-progress"
         var content: XCUIElement?
         let active = NSPredicate { _, _ in
+            self.dismissPasswordPrompt(app)
             guard offline || app.buttons["shell-albums"].isSelected else { return false }
             let candidates = offline
                 ? app.descendants(matching: .any).matching(identifier: "offline-albums").allElementsBoundByIndex
@@ -120,6 +129,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         var target: XCUIElement?
         for attempt in 0..<4 {
             let ready = NSPredicate { _, _ in
+                self.dismissPasswordPrompt(app)
                 let containers = content.buttons.matching(label).allElementsBoundByIndex
                     + content.links.matching(label).allElementsBoundByIndex
                     + content.cells.containing(.staticText, identifier: title).allElementsBoundByIndex
@@ -134,15 +144,16 @@ final class OfflineAlbumFlowTests: XCTestCase {
                 return target != nil
             }
             if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 3) == .completed { break }
-            if attempt < 3 { content.swipeUp() }
+            if attempt < 3 { dismissPasswordPrompt(app); content.swipeUp() }
         }
         guard let target else {
             capture(app, "offline-album-link-unavailable")
             XCTFail("No hittable album navigation container"); return
         }
+        dismissPasswordPrompt(app)
         target.tap()
         let arrived = element(app, destination)
-        guard waitForHittable(arrived) else {
+        guard waitForHittable(arrived, app: app) else {
             capture(app, "offline-album-navigation-failed")
             XCTFail("Album navigation did not reach \(destination)"); return
         }
@@ -164,8 +175,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 30))
         dismissPasswordPrompt(app)
-        let notNow = app.buttons.matching(NSPredicate(format: "label IN %@", ["Not Now", "Later", "以后", "稍后"])).firstMatch
-        if notNow.waitForExistence(timeout: 2), notNow.isHittable { notNow.tap() }
+        dismissPasswordPrompt(app)
     }
 
     private func collections(_ app: XCUIApplication) {
@@ -173,9 +183,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
         let albums = app.buttons["shell-albums"], library = app.buttons["shell-photos"]
         for attempt in 0..<2 {
             if attempt == 1 {
-                guard waitForHittable(library, timeout: 5) else { break }
+                guard waitForHittable(library, app: app, timeout: 5) else { break }
                 library.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
-                let selectedLibrary = NSPredicate { _, _ in library.isSelected }
+                let selectedLibrary = NSPredicate { _, _ in
+                    self.dismissPasswordPrompt(app)
+                    return library.isSelected
+                }
                 guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selectedLibrary, object: nil)], timeout: 5) == .completed else { break }
             }
             let expand = app.buttons["photos-show-navigation"]
@@ -183,6 +196,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
             var previousFrame = CGRect.zero
             var stableFrames = 0
             let ready = NSPredicate { _, _ in
+                self.dismissPasswordPrompt(app)
                 guard albums.exists, !app.keyboards.firstMatch.exists else { stableFrames = 0; return false }
                 let frame = albums.frame
                 guard frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
@@ -194,8 +208,10 @@ final class OfflineAlbumFlowTests: XCTestCase {
                 return stableFrames >= 2
             }
             guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 8) == .completed else { continue }
+            dismissPasswordPrompt(app)
             albums.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
             let selectedCollections = NSPredicate { _, _ in
+                self.dismissPasswordPrompt(app)
                 guard albums.isSelected, !library.isSelected else { return false }
                 let home = app.scrollViews["collections-home"]
                 guard home.exists else { return false }
@@ -227,7 +243,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         tap(app, "album-menu")
         tap(app, "album-keep-offline")
         tap(app, "offline-album-download")
-        XCTAssertTrue(waitForHittable(app.buttons["Download on Wi-Fi"], timeout: 5))
+        XCTAssertTrue(waitForHittable(app.buttons["Download on Wi-Fi"], app: app, timeout: 5))
         app.buttons["Download on Wi-Fi"].tap()
         XCTAssertTrue(app.staticTexts["Available Offline"].waitForExistence(timeout: 30))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-asset-'")).count, 3)
@@ -242,13 +258,13 @@ final class OfflineAlbumFlowTests: XCTestCase {
         tap(app, "settings-storage")
         let clear = app.buttons["storage-clear-cache"]
         if clear.exists, clear.isEnabled {
-            XCTAssertTrue(waitForHittable(clear))
+            XCTAssertTrue(waitForHittable(clear, app: app))
             clear.tap()
             let confirm = app.buttons.matching(NSPredicate(format: "label == 'Clear Cache' AND identifier != 'storage-clear-cache'")).firstMatch
-            XCTAssertTrue(waitForHittable(confirm, timeout: 5)); confirm.tap()
+            XCTAssertTrue(waitForHittable(confirm, app: app, timeout: 5)); confirm.tap()
         }
         let offline = app.buttons["Offline Albums"].firstMatch
-        XCTAssertTrue(waitForHittable(offline, timeout: 8)); offline.tap()
+        XCTAssertTrue(waitForHittable(offline, app: app, timeout: 8)); offline.tap()
         openAlbum(app, destination: "offline-album-progress")
         XCTAssertTrue(app.staticTexts["Available Offline"].waitForExistence(timeout: 15))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-asset-'")).count, 3)
@@ -286,7 +302,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         tap(app, "album-keep-offline")
         if !app.staticTexts["可离线使用"].waitForExistence(timeout: 2) {
             tap(app, "offline-album-download")
-            XCTAssertTrue(waitForHittable(app.buttons["通过 Wi-Fi 下载"], timeout: 5))
+            XCTAssertTrue(waitForHittable(app.buttons["通过 Wi-Fi 下载"], app: app, timeout: 5))
             app.buttons["通过 Wi-Fi 下载"].tap()
             XCTAssertTrue(app.staticTexts["可离线使用"].waitForExistence(timeout: 30))
         }
@@ -314,12 +330,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
         let healthy = app.staticTexts["Offline acceptance"].firstMatch
         XCTAssertTrue(healthy.waitForExistence(timeout: 10))
         let remove = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-recovery-remove-'")).firstMatch
-        XCTAssertTrue(waitForHittable(remove, timeout: 10))
+        XCTAssertTrue(waitForHittable(remove, app: app, timeout: 10))
         capture(app, "offline-recovery-\(language)-before-removal")
         remove.tap()
         capture(app, "offline-recovery-\(language)-confirmation")
         let confirm = app.buttons["offline-recovery-confirm-remove"]
-        if waitForHittable(confirm, timeout: 3) { confirm.tap() }
+        if waitForHittable(confirm, app: app, timeout: 3) { confirm.tap() }
         else {
             let label = language == "en" ? "Remove Local Copy" : "移除本地副本"
             let query = app.buttons.matching(NSPredicate(format: "label == %@", label))
