@@ -3,8 +3,9 @@ import XCTest
 
 @MainActor
 final class OfflineAlbumFlowTests: XCTestCase {
-    private let api = "http://127.0.0.1:43891/api"
-    private let simulator = "8F6070E7-63F5-4128-AD09-27518349CD0C"
+    private var api: String { ProcessInfo.processInfo.environment["IMORA_OFFLINE_API"] ?? "http://127.0.0.1:43891/api" }
+    private var simulator: String { ProcessInfo.processInfo.environment["IMORA_OFFLINE_SIMULATOR"] ?? "8F6070E7-63F5-4128-AD09-27518349CD0C" }
+    private var controlRoot: URL { URL(string: api)!.deletingLastPathComponent().appending(path: "control") }
 
     override func setUp() {
         super.setUp()
@@ -30,12 +31,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["SIMULATOR_UDID"] == simulator else {
             throw XCTSkip("Offline UI acceptance uses only its separately allocated simulator.")
         }
-        let (statusData, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:43891/control/status")!)
+        let (statusData, _) = try await URLSession.shared.data(from: controlRoot.appending(path: "status"))
         guard let status = try JSONSerialization.jsonObject(with: statusData) as? [String: Any],
               status["ownerID"] as? String == "0d685e47-ddcb-4477-b3cc-199cf85f1100" else {
             throw NSError(domain: "Unowned offline UI fixture", code: 1)
         }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:43891/control/\(command)")!)
+        var request = URLRequest(url: controlRoot.appending(path: command))
         request.httpMethod = "POST"
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
@@ -179,6 +180,47 @@ final class OfflineAlbumFlowTests: XCTestCase {
         app.staticTexts["Offline acceptance"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["可离线使用"].waitForExistence(timeout: 10))
         capture(app, "offline-zh-dark-restarted")
+    }
+
+    private func recoveryFlow(language: String) async throws {
+        guard ProcessInfo.processInfo.environment["IMORA_OFFLINE_RECOVERY_TEST"] == "1" else {
+            throw XCTSkip("Recovery flow requires an explicitly injected, owned corrupt-download fixture")
+        }
+        continueAfterFailure = false
+        try await control("offline")
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", language == "en" ? "en_US" : "zh_CN"]
+        app.launch(); defer { app.terminate() }
+        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
+        openOfflineList(app)
+        let healthy = app.staticTexts["Offline acceptance"].firstMatch
+        XCTAssertTrue(healthy.waitForExistence(timeout: 10))
+        let remove = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-recovery-remove-'")).firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        capture(app, "offline-recovery-\(language)-before-removal")
+        remove.tap()
+        let confirm = app.buttons["offline-recovery-confirm-remove"]
+        if confirm.waitForExistence(timeout: 3) { confirm.tap() }
+        else {
+            let label = language == "en" ? "Remove Local Copy" : "移除本地副本"
+            let buttons = app.buttons.matching(NSPredicate(format: "label == %@", label)).allElementsBoundByIndex
+            try XCTUnwrap(buttons.last).tap()
+        }
+        let gone = NSPredicate { _, _ in !remove.exists }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: gone, object: nil)], timeout: 15), .completed)
+        XCTAssertTrue(healthy.exists)
+        capture(app, "offline-recovery-\(language)-after-removal")
+        healthy.tap()
+        XCTAssertTrue(app.staticTexts["offline-album-progress"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-asset-'")).count, 3)
+    }
+
+    func testDRecoveryKeepsHealthyAlbumAndRemovesIncompleteLocalCopy() async throws {
+        try await recoveryFlow(language: "en")
+    }
+
+    func testEChineseRecoveryKeepsHealthyAlbumAndRemovesIncompleteLocalCopy() async throws {
+        try await recoveryFlow(language: "zh-Hans")
     }
 
     func testCClearFixtureLoginBeforeNativeRegressions() async throws {

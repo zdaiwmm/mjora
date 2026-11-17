@@ -149,18 +149,48 @@ actor OfflineAlbumStore {
         recoveryRecords[scope]?.removeAll { $0.id == directory.lastPathComponent }
     }
 
+    private struct ComponentIdentity: Hashable {
+        let kind: String
+        let assetID: String
+        let revision: String?
+        let edited: Bool?
+        let visibility: String
+        let generation: String
+        let pairID: String?
+        let parentID: String?
+        let parentRevision: String?
+        let parentEdited: Bool?
+        let parentVisibility: String?
+        let parentPairID: String?
+        let parentGeneration: String?
+
+        init(_ component: OfflineAlbum.Component) {
+            kind = component.kind.rawValue; assetID = component.asset.id
+            revision = component.asset.thumbhash; edited = component.asset.isEdited
+            visibility = component.asset.visibility.rawValue; generation = component.generation
+            pairID = component.asset.livePhotoVideoId
+            parentID = component.parentAsset?.id; parentRevision = component.parentAsset?.thumbhash
+            parentEdited = component.parentAsset?.isEdited; parentVisibility = component.parentAsset?.visibility.rawValue
+            parentPairID = component.parentAsset?.livePhotoVideoId; parentGeneration = component.parentGeneration
+        }
+    }
+
     func prepare(album: Album, items: [OfflineAlbum.Item], scope: StableMediaScope) throws {
         let previous = try self.album(scope: scope, id: album.id)
+        var reusable: [ComponentIdentity: OfflineAlbum.Component] = [:]
+        for item in previous?.items ?? [] {
+            for component in item.components where file(component, albumID: album.id, scope: scope) != nil {
+                reusable[ComponentIdentity(component)] = component
+            }
+        }
         var next = OfflineAlbum(album: album, items: items, state: .downloading)
         for index in next.items.indices {
-            let item = next.items[index]
-            if let old = previous?.items.first(where: { $0.asset == item.asset }),
-               old.components.map(\.generation) == item.components.map(\.generation) {
-                next.items[index] = old
-                for componentIndex in old.components.indices where file(old.components[componentIndex], albumID: album.id, scope: scope) == nil {
-                    next.items[index].components[componentIndex].filename = nil
-                    next.items[index].components[componentIndex].bytes = 0
-                }
+            for componentIndex in next.items[index].components.indices {
+                let component = next.items[index].components[componentIndex]
+                let old = reusable[ComponentIdentity(component)]
+                next.items[index].components[componentIndex].filename = old?.filename
+                next.items[index].components[componentIndex].mime = old?.mime
+                next.items[index].components[componentIndex].bytes = old?.bytes ?? 0
             }
         }
         try write(next, scope: scope)
