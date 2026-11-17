@@ -533,6 +533,42 @@ final class OfflineAlbumTests: XCTestCase {
         await downloads.remove("album")
     }
 
+    func testRecoveryRemovalBlocksRedownloadAcrossSameAccountClientReplacement() async throws {
+        let server = try fixtureServer(image: png())
+        try await server.start(); defer { server.stop() }
+        let first = ImoraClient(apiURL: server.apiURL, accessToken: "first"), second = ImoraClient(apiURL: server.apiURL, accessToken: "second")
+        let user = UUID().uuidString
+        first.confirmMediaAccount(user); second.confirmMediaAccount(user)
+        defer { first.invalidate(); second.invalidate() }
+        let scope = first.mediaDisplayScope
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let orphan = OfflineAlbumStore.rootDirectory.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+            .appending(path: OfflineAlbumStore.directoryKey(albumID: "album"))
+        try ProtectedTemporaryFiles.prepareDirectory(orphan)
+        let downloads = OfflineAlbumDownloads(), value = try album()
+        await downloads.attach(first)
+        let entry = try XCTUnwrap(downloads.recoveryEntries.first)
+        var reachedRemoval = false
+        var releaseRemoval: CheckedContinuation<Void, Never>?
+        downloads.beforeStorageRemoval = { _ in
+            reachedRemoval = true
+            await withCheckedContinuation { releaseRemoval = $0 }
+        }
+        let removal = Task { await downloads.removeRecovery(entry) }
+        try await waitUntil { reachedRemoval }
+        await downloads.attach(second)
+        downloads.download(value, client: second)
+        XCTAssertFalse(downloads.workingIDs.contains("album"), "A replacement client bypassed the recovery-removal barrier")
+        releaseRemoval?.resume(); await removal.value
+        XCTAssertTrue(downloads.recoveryEntries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        downloads.beforeStorageRemoval = nil
+        downloads.download(value, client: second)
+        try await waitUntil { !downloads.workingIDs.contains("album") }
+        XCTAssertEqual(downloads.albums.first?.state, .ready)
+        await downloads.remove("album")
+    }
+
     func testRemovingAnAlbumBlocksRedownloadAcrossSameAccountClientReplacement() async throws {
         let server = try fixtureServer(image: png())
         try await server.start(); defer { server.stop() }

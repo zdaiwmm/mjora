@@ -199,6 +199,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         XCTAssertTrue(remove.waitForExistence(timeout: 10))
         capture(app, "offline-recovery-\(language)-before-removal")
         remove.tap()
+        capture(app, "offline-recovery-\(language)-confirmation")
         let confirm = app.buttons["offline-recovery-confirm-remove"]
         if confirm.waitForExistence(timeout: 3) { confirm.tap() }
         else {
