@@ -249,6 +249,7 @@ nonisolated final class ImoraClient: Sendable {
         try Task.checkCancellation()
         guard context.isActive else { throw ServerTrustError.sessionExpired }
         guard let response = result.1 as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            await rejectMediaResponse(url: request.url, statusCode: (result.1 as? HTTPURLResponse)?.statusCode ?? 0)
             throw ImoraError.http((result.1 as? HTTPURLResponse)?.statusCode ?? 0, "")
         }
         return result
@@ -322,6 +323,25 @@ nonisolated final class ImoraClient: Sendable {
         await OfflineAlbumDownloads.shared.reload()
     }
 
+    func revokeMediaAccess(assetIDs: Set<String>) async {
+        guard context.isActive, !assetIDs.isEmpty else { return }
+        let failure = ImageLoader.shared.invalidateSubjects(client: self,
+            subjects: assetIDs.map { .remoteAsset($0) }, retiresSourceRevisions: false, blocksAccess: true)
+        await MainActor.run {
+            if let failure { MediaCacheRecovery.handle(client: self, failure: failure) }
+            ImageLoadRecovery.shared.contentChanged()
+        }
+    }
+
+    func rejectMediaResponse(url: URL?, statusCode: Int) async {
+        guard [401, 403, 404].contains(statusCode), let path = url?.pathComponents,
+              let index = path.lastIndex(of: "assets"), path.indices.contains(index + 1) else { return }
+        let ids: Set<String> = [path[index + 1]]
+        await revokeMediaAccess(assetIDs: ids)
+        try? await OfflineAlbumStore.shared.invalidate(scope: mediaDisplayScope, ids: ids, remove: true)
+        await OfflineAlbumDownloads.shared.reload()
+    }
+
     func localMediaFile(_ url: URL, allowsExpensiveNetworkAccess: Bool = true, role: MediaFileRole = .playback,
                         contentRevision: String? = nil, requiresElevation: Bool = false) async throws -> ControlledMediaFile {
         if role == .playback, !requiresElevation, let file = try await retainedMediaFile(url) { return file }
@@ -334,6 +354,9 @@ nonisolated final class ImoraClient: Sendable {
             return try await mediaStore.file(request: request, session: transportSession(for: request), context: context,
                 role: role, contentRevision: contentRevision, privateLease: lease, requiresElevation: requiresElevation)
         } catch {
+            if case ImoraError.http(let code, _) = error {
+                await rejectMediaResponse(url: url, statusCode: code)
+            }
             if let lease, case ImoraError.http(let code, _) = error, code == 401 || code == 403 { rejectLockedMediaLease(lease) }
             throw error
         }
@@ -774,7 +797,7 @@ nonisolated final class ImoraClient: Sendable {
                 if parts.count == 2, parts[0] == "albums" {
                     try? await OfflineAlbumStore.shared.remove(scope: mediaDisplayScope, id: parts[1])
                 } else if parts.count == 2, parts[0] == "assets" {
-                    try? await OfflineAlbumStore.shared.invalidate(scope: mediaDisplayScope, ids: [parts[1]], remove: true)
+                    await rejectMediaResponse(url: request.url, statusCode: http.statusCode)
                 }
             }
             throw ImoraError.http(http.statusCode, Self.serverMessage(from: data))
@@ -1157,7 +1180,15 @@ nonisolated final class ImoraClient: Sendable {
 
     func assetDetail(id: String) async throws -> AssetDetail {
         let detail: AssetDetail = try await get("assets/\(id)")
-        if (try? await OfflineAlbumStore.shared.observe(detail.asAsset(), scope: mediaDisplayScope)) == true {
+        let asset = detail.asAsset()
+        if !OfflineAlbumDownloads.canRetain(asset),
+           let retained = try? await OfflineAlbumStore.shared.albums(scope: mediaDisplayScope),
+           retained.contains(where: { album in album.items.contains { item in item.components.contains {
+               $0.asset.id == id && ($0.asset.visibility == .timeline || $0.asset.visibility == .archive)
+           } } }) {
+            await revokeMediaAccess(assetIDs: [id])
+        }
+        if (try? await OfflineAlbumStore.shared.observe(asset, scope: mediaDisplayScope)) == true {
             await OfflineAlbumDownloads.shared.reload()
         }
         return detail

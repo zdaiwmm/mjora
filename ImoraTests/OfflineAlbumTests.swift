@@ -73,6 +73,75 @@ final class OfflineAlbumTests: XCTestCase {
         XCTAssertNil(original, "An edited offline display must never stand in for editor/backup original bytes")
     }
 
+    func testDamagedAlbumManifestsDoNotBlockHealthyOfflineMedia() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let context = AccountRequestContext(apiURL: URL(string: scope.serverIdentity)!, token: "synthetic")
+        let store = OfflineAlbumStore(root: root), part = try component(asset(), scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: part.asset, components: [part])], scope: scope)
+        let bytes = try png()
+        try await install(bytes, component: part, store: store, scope: scope, context: context)
+        try await store.setState(.ready, scope: scope, id: "album")
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let directory = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+        let incomplete = directory.appending(path: MediaDisplayKeyV1.digest(Data("interrupted".utf8)))
+        try ProtectedTemporaryFiles.prepareDirectory(incomplete)
+        for corrupt in [false, true] {
+            if corrupt { try Data("invalid-json".utf8).write(to: incomplete.appending(path: "manifest.json")) }
+            let restarted = OfflineAlbumStore(root: root)
+            let albums = try await restarted.albums(scope: scope)
+            XCTAssertEqual(albums.map(\.id), ["album"])
+            let file = try await restarted.media(scope: scope,
+                url: URL(string: "https://offline.invalid/api/assets/still/original?edited=true&c=v1")!)
+            XCTAssertEqual(try Data(contentsOf: XCTUnwrap(file).url), bytes)
+        }
+    }
+
+    func testRecoveryEntriesAreScopedRemovableAndDisappearAfterRedownload() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let directory = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+        let orphan = directory.appending(path: OfflineAlbumStore.directoryKey(albumID: "album"))
+        try ProtectedTemporaryFiles.prepareDirectory(orphan)
+        let store = OfflineAlbumStore(root: root)
+        var snapshot = try await store.snapshot(scope: scope)
+        let entry = try XCTUnwrap(snapshot.recoveryEntries.first)
+        XCTAssertEqual(entry.reason, .missingManifest)
+        let other = StableMediaScope.verified(server: scope.serverIdentity, accountID: UUID().uuidString)
+        do { try await store.removeRecovery(entry, scope: other); XCTFail("A foreign scope removed a recovery entry") } catch {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path))
+        let part = try component(asset(), scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: part.asset, components: [part])], scope: scope)
+        snapshot = try await store.snapshot(scope: scope)
+        XCTAssertTrue(snapshot.recoveryEntries.isEmpty)
+        try await store.removeRecovery(entry, scope: scope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.appending(path: "manifest.json").path),
+                      "An obsolete recovery action deleted a successfully rebuilt album")
+        let broken = directory.appending(path: OfflineAlbumStore.directoryKey(albumID: "broken"))
+        try ProtectedTemporaryFiles.prepareDirectory(broken)
+        try Data("bad-json".utf8).write(to: broken.appending(path: "manifest.json"))
+        snapshot = try await store.snapshot(scope: scope, refresh: true)
+        let corrupt = try XCTUnwrap(snapshot.recoveryEntries.first)
+        XCTAssertEqual(corrupt.reason, .invalidManifest)
+        try await store.removeRecovery(corrupt, scope: scope)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: broken.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path))
+    }
+
+    func testAnUnavailableScopeRootIsNotAnEmptyAlbumList() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try ProtectedTemporaryFiles.prepareDirectory(root)
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let directory = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+        try Data("not-a-directory".utf8).write(to: directory)
+        do { _ = try await OfflineAlbumStore(root: root).snapshot(scope: scope); XCTFail("A broken root was reported as an empty scope") } catch {}
+    }
+
     func testIncompleteLivePhotoIsNotReadyAndMissingFileCanBeDownloadedAgain() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -161,6 +230,62 @@ final class OfflineAlbumTests: XCTestCase {
         XCTAssertEqual(saved.bytes, 0)
         let availableAssets = await store.availableAssets(saved, scope: scope)
         XCTAssertTrue(availableAssets.isEmpty)
+    }
+
+    func testMotionRevisionUpdatesAreDurableAcrossRepeatedObservation() async throws {
+        for visibility in [AssetVisibility.timeline, .archive, .hidden] {
+            let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+            let context = AccountRequestContext(apiURL: URL(string: scope.serverIdentity)!, token: "synthetic")
+            let store = OfflineAlbumStore(root: root), parent = asset(motion: "motion")
+            var motion = asset("motion", video: true, revision: "motion-v1"); motion.visibility = visibility
+            let still = try component(parent, scope: scope)
+            var oldMotion = try component(motion, scope: scope, kind: .video)
+            oldMotion.parentAsset = parent; oldMotion.parentGeneration = still.generation
+            try await store.prepare(album: album(), items: [.init(asset: parent, components: [still, oldMotion])], scope: scope)
+            try await install(png(), component: still, store: store, scope: scope, context: context)
+            try await install(Data("old-motion".utf8), component: oldMotion, store: store, scope: scope, context: context, index: 1)
+            motion.thumbhash = "motion-v2"
+            let changed = try await store.observe(motion, scope: scope)
+            XCTAssertTrue(changed)
+            var updated = try component(motion, scope: scope, kind: .video)
+            updated.parentAsset = parent; updated.parentGeneration = still.generation
+            try await store.prepare(album: album(), items: [.init(asset: parent, components: [still, updated])], scope: scope)
+            try await install(png(), component: still, store: store, scope: scope, context: context)
+            try await install(Data("new-motion".utf8), component: updated, store: store, scope: scope, context: context, index: 1)
+            try await store.setState(.ready, scope: scope, id: "album")
+            let savedRecord = try await store.album(scope: scope, id: "album")
+            let saved = try XCTUnwrap(savedRecord)
+            XCTAssertEqual(saved.items[0].components[1].asset.thumbhash, "motion-v2")
+            let changedAgain = try await store.observe(motion, scope: scope)
+            XCTAssertFalse(changedAgain, "The same motion version invalidated completed files")
+            let repeatedRecord = try await store.album(scope: scope, id: "album")
+            let repeated = try XCTUnwrap(repeatedRecord)
+            XCTAssertEqual(repeated.bytes, saved.bytes)
+            XCTAssertEqual(repeated.state, .ready)
+        }
+    }
+
+    func testFavoriteMetadataUpdatesReuseCompleteComponents() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let context = AccountRequestContext(apiURL: URL(string: scope.serverIdentity)!, token: "synthetic")
+        let store = OfflineAlbumStore(root: root), part = try component(asset(), scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: part.asset, components: [part])], scope: scope)
+        try await install(png(), component: part, store: store, scope: scope, context: context)
+        let savedRecord = try await store.album(scope: scope, id: "album")
+        let saved = try XCTUnwrap(savedRecord)
+        var favorite = part.asset; favorite.isFavorite = true
+        let fresh = try component(favorite, scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: favorite, components: [fresh])], scope: scope)
+        let updatedRecord = try await store.album(scope: scope, id: "album")
+        let updated = try XCTUnwrap(updatedRecord)
+        XCTAssertTrue(updated.items[0].asset.isFavorite)
+        XCTAssertTrue(updated.items[0].components[0].asset.isFavorite)
+        XCTAssertEqual(updated.items[0].components[0].filename, saved.items[0].components[0].filename)
+        XCTAssertEqual(updated.bytes, saved.bytes)
     }
 
     func testPrivateAndTrashedMediaAndInvalidFilesAreRejected() async throws {
@@ -312,7 +437,15 @@ final class OfflineAlbumTests: XCTestCase {
         XCTFail("Timed out waiting for the owned asynchronous operation")
     }
 
-    private func fixtureServer(image: Data, video: Data = Data()) throws -> LocalHTTPServer {
+    private nonisolated final class DownloadFixtureState: Sendable {
+        struct Value: Sendable {
+            var favorite = false
+            var mediaRequests: [String: Int] = [:]
+        }
+        let value = Mutex(Value())
+    }
+
+    private func fixtureServer(image: Data, video: Data = Data(), state: DownloadFixtureState? = nil) throws -> LocalHTTPServer {
         try LocalHTTPServer { request in
             if request.path == "/api/albums/album" { return .init(body: Self.albumData()) }
             if request.path == "/api/server/version" { return .init(body: Data(#"{"major":3,"minor":4,"patch":1}"#.utf8)) }
@@ -322,22 +455,74 @@ final class OfflineAlbumTests: XCTestCase {
                     : Data(#"{"assets":{"items":[{"id":"still"},{"id":"live"},{"id":"video"}]}}"#.utf8))
             }
             if request.path.contains("/original?") || request.path.contains("/thumbnail?") {
+                state?.value.withLock { $0.mediaRequests[request.path, default: 0] += 1 }
                 return .init(headers: ["Content-Type": "image/png"], body: image)
             }
-            if request.path.hasSuffix("/video/playback") { return .init(headers: ["Content-Type": "video/quicktime"], body: video) }
+            if request.path.hasSuffix("/video/playback") {
+                state?.value.withLock { $0.mediaRequests[request.path, default: 0] += 1 }
+                return .init(headers: ["Content-Type": "video/quicktime"], body: video)
+            }
             if request.path.hasPrefix("/api/assets/") {
                 let id = String(request.path.split(separator: "/").last!)
                 let isVideo = id == "video" || id == "motion"
                 let day = id == "video" ? 3 : id == "live" ? 2 : 1
                 let pairing = id == "live" ? #", "livePhotoVideoId":"motion""# : ""
+                let favorite = state?.value.withLock { $0.favorite } ?? false
                 return .init(body: Data("""
                 {"id":"\(id)","ownerId":"fixture","type":"\(isVideo ? "VIDEO" : "IMAGE")","originalFileName":"\(id)",
-                "fileCreatedAt":"2026-01-0\(day)T12:00:00Z","localDateTime":"2026-01-0\(day)T12:00:00Z","isFavorite":false,
+                "fileCreatedAt":"2026-01-0\(day)T12:00:00Z","localDateTime":"2026-01-0\(day)T12:00:00Z","isFavorite":\(favorite),
                 "isTrashed":false,"visibility":"\(id == "motion" ? "hidden" : "timeline")","thumbhash":"v1","width":32,"height":32\(pairing)}
                 """.utf8))
             }
             return .init(status: 404)
         }
+    }
+
+    func testActualHTTPRetryReusesCompleteMediaAndRedownloadsMissingOrTruncatedFiles() async throws {
+        let image = try png(), state = DownloadFixtureState()
+        let server = try fixtureServer(image: image, state: state)
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "reuse-synthetic")
+        client.confirmMediaAccount(UUID().uuidString)
+        defer { client.invalidate() }
+        let scope = client.mediaDisplayScope, downloads = OfflineAlbumDownloads(), value = try album()
+        await downloads.attach(client)
+        let download: @MainActor () async throws -> Void = {
+            downloads.download(value, client: client)
+            try await self.waitUntil { !downloads.workingIDs.contains("album") }
+            XCTAssertNil(downloads.error)
+            XCTAssertEqual(downloads.albums.first?.state, .ready)
+        }
+        try await download()
+        let initialRequests = state.value.withLock { $0.mediaRequests }
+        XCTAssertEqual(initialRequests.values.reduce(0, +), 1, "The initial photo should make one actual media request")
+
+        try await download()
+        XCTAssertEqual(state.value.withLock { $0.mediaRequests }, initialRequests, "The same version downloaded a completed component again")
+
+        state.value.withLock { $0.favorite = true }
+        try await download()
+        XCTAssertEqual(state.value.withLock { $0.mediaRequests }, initialRequests, "A favorite-only change downloaded media again")
+        let metadata = try XCTUnwrap(downloads.albums.first)
+        XCTAssertTrue(metadata.items[0].asset.isFavorite)
+        XCTAssertTrue(metadata.items[0].components[0].asset.isFavorite)
+
+        let originalURL = client.editedOriginalURL(assetID: "still")
+        let saved = try await OfflineAlbumStore.shared.media(scope: scope, url: originalURL)
+        let missing = try XCTUnwrap(saved)
+        try FileManager.default.removeItem(at: missing.url)
+        try await download()
+        XCTAssertEqual(state.value.withLock { $0.mediaRequests.values.reduce(0, +) }, 2, "A missing component did not make a replacement HTTP request")
+        let recovered = try await OfflineAlbumStore.shared.media(scope: scope, url: originalURL)
+        let recoveredFile = try XCTUnwrap(recovered)
+        XCTAssertEqual(try Data(contentsOf: recoveredFile.url), image)
+
+        try Data(image.prefix(8)).write(to: recoveredFile.url, options: .atomic)
+        try await download()
+        XCTAssertEqual(state.value.withLock { $0.mediaRequests.values.reduce(0, +) }, 3, "A truncated component did not make a replacement HTTP request")
+        let repaired = try await OfflineAlbumStore.shared.media(scope: scope, url: originalURL)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(repaired).url), image)
+        await downloads.remove("album")
     }
 
     func testActualHTTPDownloadReadsPhotoVideoAndLiveAfterServerStops() async throws {
@@ -405,6 +590,42 @@ final class OfflineAlbumTests: XCTestCase {
         releaseRemoval?.resume(); await signOut.value
         XCTAssertEqual(downloads.albums.first?.state, .ready, "An old account's late cleanup cleared the new account")
         downloads.beforeStorageRemoval = nil
+        await downloads.remove("album")
+    }
+
+    func testRecoveryRemovalBlocksRedownloadAcrossSameAccountClientReplacement() async throws {
+        let server = try fixtureServer(image: png())
+        try await server.start(); defer { server.stop() }
+        let first = ImoraClient(apiURL: server.apiURL, accessToken: "first"), second = ImoraClient(apiURL: server.apiURL, accessToken: "second")
+        let user = UUID().uuidString
+        first.confirmMediaAccount(user); second.confirmMediaAccount(user)
+        defer { first.invalidate(); second.invalidate() }
+        let scope = first.mediaDisplayScope
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let orphan = OfflineAlbumStore.rootDirectory.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+            .appending(path: OfflineAlbumStore.directoryKey(albumID: "album"))
+        try ProtectedTemporaryFiles.prepareDirectory(orphan)
+        let downloads = OfflineAlbumDownloads(), value = try album()
+        await downloads.attach(first)
+        let entry = try XCTUnwrap(downloads.recoveryEntries.first)
+        var reachedRemoval = false
+        var releaseRemoval: CheckedContinuation<Void, Never>?
+        downloads.beforeStorageRemoval = { _ in
+            reachedRemoval = true
+            await withCheckedContinuation { releaseRemoval = $0 }
+        }
+        let removal = Task { await downloads.removeRecovery(entry) }
+        try await waitUntil { reachedRemoval }
+        await downloads.attach(second)
+        downloads.download(value, client: second)
+        XCTAssertFalse(downloads.workingIDs.contains("album"), "A replacement client bypassed the recovery-removal barrier")
+        releaseRemoval?.resume(); await removal.value
+        XCTAssertTrue(downloads.recoveryEntries.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        downloads.beforeStorageRemoval = nil
+        downloads.download(value, client: second)
+        try await waitUntil { !downloads.workingIDs.contains("album") }
+        XCTAssertEqual(downloads.albums.first?.state, .ready)
         await downloads.remove("album")
     }
 

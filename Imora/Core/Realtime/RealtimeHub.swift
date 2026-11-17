@@ -333,6 +333,7 @@ final class RealtimeHub {
             scheduleResync()
 
         case "on_asset_delete", "on_asset_trash", "on_asset_hidden":
+            await client.revokeMediaAccess(assetIDs: event.assetIDs)
             try? await OfflineAlbumStore.shared.invalidate(scope: client.mediaDisplayScope, ids: event.assetIDs, remove: true)
             await OfflineAlbumDownloads.shared.reload()
             let change: BackupRemoteChange = name == "on_asset_delete" ? .deleted : (name == "on_asset_trash" ? .trashed : .hidden)
