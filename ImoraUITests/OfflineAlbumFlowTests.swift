@@ -46,17 +46,83 @@ final class OfflineAlbumFlowTests: XCTestCase {
         app.descendants(matching: .any)[id].firstMatch
     }
 
+    private func waitForHittable(_ target: XCUIElement, timeout: TimeInterval = 15) -> Bool {
+        let ready = NSPredicate { _, _ in target.exists && target.isHittable && target.isEnabled }
+        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: timeout) == .completed
+    }
+
     private func tap(_ app: XCUIApplication, _ id: String) {
         dismissPasswordPrompt(app)
-        let target = element(app, id)
         if id == "settings-sign-out" {
             let list = app.collectionViews.firstMatch
-            for _ in 0..<6 where !target.exists || !target.isHittable {
+            for _ in 0..<6 where !app.buttons[id].isHittable {
                 if list.exists { list.swipeUp() } else { app.swipeUp() }
             }
         }
-        XCTAssertTrue(target.waitForExistence(timeout: 15), id)
+        var target: XCUIElement?
+        let ready = NSPredicate { _, _ in
+            target = app.descendants(matching: .any).matching(identifier: id)
+                .allElementsBoundByIndex.first { $0.isHittable && $0.isEnabled }
+            return target != nil
+        }
+        guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 15) == .completed,
+              let target else { XCTFail("No hittable control: \(id)"); return }
         target.tap()
+    }
+
+    private func enter(_ value: String, in field: XCUIElement, app: XCUIApplication) {
+        guard waitForHittable(field) else { XCTFail("Input field is not hittable: \(field.identifier)"); return }
+        field.tap()
+        var previousFrame = field.frame
+        var stableFrames = 0
+        let keyboardReady = NSPredicate { _, _ in
+            guard field.isHittable, app.keyboards.firstMatch.exists else { stableFrames = 0; return false }
+            let currentFrame = field.frame
+            stableFrames = currentFrame == previousFrame ? stableFrames + 1 : 0
+            previousFrame = currentFrame
+            return stableFrames >= 2
+        }
+        guard XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: keyboardReady, object: nil)], timeout: 6) == .completed
+        else { XCTFail("Keyboard or input layout did not settle: \(field.identifier)"); return }
+        field.tap()
+        if let existing = field.value as? String, !existing.isEmpty, existing != field.placeholderValue {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+        }
+        field.typeText(value)
+    }
+
+    private func openAlbum(_ app: XCUIApplication, destination: String = "album-menu") {
+        dismissPasswordPrompt(app)
+        let title = "Offline acceptance"
+        let label = NSPredicate(format: "label CONTAINS %@", title)
+        var target: XCUIElement?
+        for attempt in 0..<4 {
+            let ready = NSPredicate { _, _ in
+                let containers = app.buttons.matching(label).allElementsBoundByIndex
+                    + app.links.matching(label).allElementsBoundByIndex
+                    + app.cells.containing(.staticText, identifier: title).allElementsBoundByIndex
+                    + app.otherElements.matching(NSPredicate(format: "label == %@", title)).allElementsBoundByIndex
+                target = containers.first { $0.isHittable && $0.isEnabled }
+                return target != nil
+            }
+            if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 3) == .completed { break }
+            if attempt < 3 {
+                let home = app.scrollViews["collections-home"]
+                if home.exists { home.swipeUp() }
+                else if app.collectionViews.firstMatch.exists { app.collectionViews.firstMatch.swipeUp() }
+                else { app.swipeUp() }
+            }
+        }
+        guard let target else {
+            capture(app, "offline-album-link-unavailable")
+            XCTFail("No hittable album navigation container"); return
+        }
+        target.tap()
+        let arrived = element(app, destination)
+        guard arrived.waitForExistence(timeout: 15) else {
+            capture(app, "offline-album-navigation-failed")
+            XCTFail("Album navigation did not reach \(destination)"); return
+        }
     }
 
     private func capture(_ app: XCUIApplication, _ name: String) {
@@ -67,13 +133,11 @@ final class OfflineAlbumFlowTests: XCTestCase {
     private func signIn(_ app: XCUIApplication) {
         let server = app.textFields["auth-server"]
         if server.waitForExistence(timeout: 3) {
-            server.tap(); server.typeText(api); app.buttons["auth-continue"].tap()
-            let email = app.textFields["auth-email"]
-            XCTAssertTrue(email.waitForExistence(timeout: 15))
-            email.tap(); email.typeText("offline@imora-offline-fixture.invalid")
-            app.secureTextFields["auth-password"].tap()
-            app.secureTextFields["auth-password"].typeText("synthetic-offline-fixture")
-            app.buttons["auth-sign-in"].tap()
+            enter(api, in: server, app: app)
+            tap(app, "auth-continue")
+            enter("offline@imora-offline-fixture.invalid", in: app.textFields["auth-email"], app: app)
+            enter("synthetic-offline-fixture", in: app.secureTextFields["auth-password"], app: app)
+            tap(app, "auth-sign-in")
         }
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 30))
         dismissPasswordPrompt(app)
@@ -104,12 +168,11 @@ final class OfflineAlbumFlowTests: XCTestCase {
         app.launch(); defer { app.terminate() }
         signIn(app)
         collections(app)
-        let album = app.staticTexts["Offline acceptance"].firstMatch
-        XCTAssertTrue(album.waitForExistence(timeout: 15)); album.tap()
+        openAlbum(app)
         tap(app, "album-menu")
         tap(app, "album-keep-offline")
         tap(app, "offline-album-download")
-        XCTAssertTrue(app.buttons["Download on Wi-Fi"].waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(app.buttons["Download on Wi-Fi"], timeout: 5))
         app.buttons["Download on Wi-Fi"].tap()
         XCTAssertTrue(app.staticTexts["Available Offline"].waitForExistence(timeout: 30))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-asset-'")).count, 3)
@@ -119,18 +182,19 @@ final class OfflineAlbumFlowTests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
         // Clear the ordinary cache before using the independent retained list.
-        app.buttons["photos-source-menu"].tap()
-        app.buttons["Account & Settings"].tap()
+        tap(app, "photos-source-menu")
+        tap(app, "Account & Settings")
         tap(app, "settings-storage")
         let clear = app.buttons["storage-clear-cache"]
         if clear.exists, clear.isEnabled {
+            XCTAssertTrue(waitForHittable(clear))
             clear.tap()
             let confirm = app.buttons.matching(NSPredicate(format: "label == 'Clear Cache' AND identifier != 'storage-clear-cache'")).firstMatch
-            XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+            XCTAssertTrue(waitForHittable(confirm, timeout: 5)); confirm.tap()
         }
         let offline = app.buttons["Offline Albums"].firstMatch
-        XCTAssertTrue(offline.waitForExistence(timeout: 8)); offline.tap()
-        app.staticTexts["Offline acceptance"].firstMatch.tap()
+        XCTAssertTrue(waitForHittable(offline, timeout: 8)); offline.tap()
+        openAlbum(app, destination: "offline-album-progress")
         XCTAssertTrue(app.staticTexts["Available Offline"].waitForExistence(timeout: 15))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-asset-'")).count, 3)
         capture(app, "offline-en-restarted-after-cache-clear")
@@ -162,13 +226,12 @@ final class OfflineAlbumFlowTests: XCTestCase {
         app.launch(); defer { app.terminate() }
         signIn(app)
         collections(app)
-        let album = app.staticTexts["Offline acceptance"].firstMatch
-        XCTAssertTrue(album.waitForExistence(timeout: 15)); album.tap()
+        openAlbum(app)
         tap(app, "album-menu")
         tap(app, "album-keep-offline")
         if !app.staticTexts["可离线使用"].waitForExistence(timeout: 2) {
             tap(app, "offline-album-download")
-            XCTAssertTrue(app.buttons["通过 Wi-Fi 下载"].waitForExistence(timeout: 5))
+            XCTAssertTrue(waitForHittable(app.buttons["通过 Wi-Fi 下载"], timeout: 5))
             app.buttons["通过 Wi-Fi 下载"].tap()
             XCTAssertTrue(app.staticTexts["可离线使用"].waitForExistence(timeout: 30))
         }
@@ -177,7 +240,7 @@ final class OfflineAlbumFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
         openOfflineList(app)
         XCTAssertTrue(app.staticTexts["Offline acceptance"].waitForExistence(timeout: 10))
-        app.staticTexts["Offline acceptance"].firstMatch.tap()
+        openAlbum(app, destination: "offline-album-progress")
         XCTAssertTrue(app.staticTexts["可离线使用"].waitForExistence(timeout: 10))
         capture(app, "offline-zh-dark-restarted")
     }
@@ -196,22 +259,24 @@ final class OfflineAlbumFlowTests: XCTestCase {
         let healthy = app.staticTexts["Offline acceptance"].firstMatch
         XCTAssertTrue(healthy.waitForExistence(timeout: 10))
         let remove = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-recovery-remove-'")).firstMatch
-        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForHittable(remove, timeout: 10))
         capture(app, "offline-recovery-\(language)-before-removal")
         remove.tap()
         capture(app, "offline-recovery-\(language)-confirmation")
         let confirm = app.buttons["offline-recovery-confirm-remove"]
-        if confirm.waitForExistence(timeout: 3) { confirm.tap() }
+        if waitForHittable(confirm, timeout: 3) { confirm.tap() }
         else {
             let label = language == "en" ? "Remove Local Copy" : "移除本地副本"
-            let buttons = app.buttons.matching(NSPredicate(format: "label == %@", label)).allElementsBoundByIndex
-            try XCTUnwrap(buttons.last).tap()
+            let query = app.buttons.matching(NSPredicate(format: "label == %@", label))
+            let ready = NSPredicate { _, _ in query.allElementsBoundByIndex.contains(where: \.isHittable) }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 5), .completed)
+            try XCTUnwrap(query.allElementsBoundByIndex.last(where: \.isHittable)).tap()
         }
         let gone = NSPredicate { _, _ in !remove.exists }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: gone, object: nil)], timeout: 15), .completed)
         XCTAssertTrue(healthy.exists)
         capture(app, "offline-recovery-\(language)-after-removal")
-        healthy.tap()
+        openAlbum(app, destination: "offline-album-progress")
         XCTAssertTrue(app.staticTexts["offline-album-progress"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'offline-asset-'")).count, 3)
     }
