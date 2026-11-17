@@ -27,6 +27,18 @@ nonisolated struct OfflineAlbum: Codable, Identifiable, Sendable {
     var completedCount: Int { items.filter { $0.components.allSatisfy { $0.filename != nil } }.count }
 }
 
+nonisolated struct OfflineAlbumRecovery: Identifiable, Equatable, Sendable {
+    enum Reason: Equatable, Sendable { case missingManifest, invalidManifest, unavailable }
+    let scope: StableMediaScope
+    let id: String
+    let reason: Reason
+}
+
+nonisolated struct OfflineAlbumSnapshot: Sendable {
+    let albums: [OfflineAlbum]
+    let recoveryEntries: [OfflineAlbumRecovery]
+}
+
 nonisolated struct OfflineMediaFile: Sendable {
     let url: URL
     let mime: String
@@ -43,6 +55,7 @@ actor OfflineAlbumStore {
     private let root: URL
     private struct IndexedComponent { let albumID: String; let component: OfflineAlbum.Component }
     private var records: [StableMediaScope: [OfflineAlbum]] = [:]
+    private var recoveryRecords: [StableMediaScope: [OfflineAlbumRecovery]] = [:]
     private var mediaIndex: [StableMediaScope: [String: [IndexedComponent]]] = [:]
     init(root: URL = rootDirectory) { self.root = root }
 
@@ -50,19 +63,63 @@ actor OfflineAlbumStore {
         guard scope.accountID != nil else { throw ServerTrustError.sessionExpired }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         var result = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
-        if let albumID { result.append(path: MediaDisplayKeyV1.digest(Data(albumID.utf8))) }
+        if let albumID { result.append(path: Self.directoryKey(albumID: albumID)) }
         return result
+    }
+
+    nonisolated static func directoryKey(albumID: String) -> String {
+        MediaDisplayKeyV1.digest(Data(albumID.utf8))
+    }
+
+    func snapshot(scope: StableMediaScope, refresh: Bool = false) throws -> OfflineAlbumSnapshot {
+        if refresh { records[scope] = nil; recoveryRecords[scope] = nil; mediaIndex[scope] = nil }
+        return try OfflineAlbumSnapshot(albums: albums(scope: scope), recoveryEntries: recoveryRecords[scope] ?? [])
     }
 
     func albums(scope: StableMediaScope) throws -> [OfflineAlbum] {
         if let cached = records[scope] { return cached }
         let directory = try directory(scope)
-        guard FileManager.default.fileExists(atPath: directory.path) else { cache([], scope: scope); return [] }
-        let albums = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey])
-            .filter { try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true }
-            .map { try JSONDecoder().decode(OfflineAlbum.self, from: Data(contentsOf: $0.appending(path: "manifest.json"))) }
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            cache([], scope: scope); recoveryRecords[scope] = []; return []
+        }
+        var albums: [OfflineAlbum] = [], recovery: [OfflineAlbumRecovery] = []
+        for child in children {
+            let key = child.lastPathComponent
+            guard key.count == 64, key.allSatisfy({ "0123456789abcdef".contains($0) }) else { continue }
+            do {
+                let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isDirectory == true, values.isSymbolicLink != true else {
+                    recovery.append(.init(scope: scope, id: key, reason: .invalidManifest)); continue
+                }
+                let album = try JSONDecoder().decode(OfflineAlbum.self, from: Data(contentsOf: child.appending(path: "manifest.json")))
+                guard Self.directoryKey(albumID: album.id) == key else {
+                    recovery.append(.init(scope: scope, id: key, reason: .invalidManifest)); continue
+                }
+                albums.append(album)
+            } catch is DecodingError {
+                recovery.append(.init(scope: scope, id: key, reason: .invalidManifest))
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                recovery.append(.init(scope: scope, id: key, reason: .missingManifest))
+            } catch {
+                recovery.append(.init(scope: scope, id: key, reason: .unavailable))
+            }
+        }
         cache(albums, scope: scope)
+        recoveryRecords[scope] = recovery.sorted { $0.id < $1.id }
         return records[scope] ?? []
+    }
+
+    func removeRecovery(_ entry: OfflineAlbumRecovery, scope: StableMediaScope) throws {
+        guard entry.scope == scope else { throw ServerTrustError.sessionExpired }
+        let current = try snapshot(scope: scope, refresh: true)
+        guard current.recoveryEntries.contains(entry) else { return }
+        let directory = try directory(scope).appending(path: entry.id)
+        try FileManager.default.removeItem(at: directory)
+        recoveryRecords[scope]?.removeAll { $0.id == entry.id }
     }
 
     private func cache(_ albums: [OfflineAlbum], scope: StableMediaScope) {
@@ -81,13 +138,15 @@ actor OfflineAlbumStore {
     }
 
     private func write(_ album: OfflineAlbum, scope: StableMediaScope) throws {
+        let data = try JSONEncoder().encode(album)
         let directory = try directory(scope, albumID: album.id)
         try ProtectedTemporaryFiles.prepareDirectory(directory)
-        try JSONEncoder().encode(album).write(to: directory.appending(path: "manifest.json"), options: .atomic)
+        try data.write(to: directory.appending(path: "manifest.json"), options: .atomic)
         try ProtectedTemporaryFiles.protect(directory.appending(path: "manifest.json"))
         var albums = try self.albums(scope: scope)
         albums.removeAll { $0.id == album.id }; albums.append(album)
         cache(albums, scope: scope)
+        recoveryRecords[scope]?.removeAll { $0.id == directory.lastPathComponent }
     }
 
     func prepare(album: Album, items: [OfflineAlbum.Item], scope: StableMediaScope) throws {
@@ -245,6 +304,8 @@ actor OfflineAlbumStore {
         if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
         if let id { cache((try albums(scope: scope)).filter { $0.id != id }, scope: scope) }
         else { cache([], scope: scope) }
+        if let id { recoveryRecords[scope]?.removeAll { $0.id == Self.directoryKey(albumID: id) } }
+        else { recoveryRecords[scope] = [] }
     }
 
     private func prune(_ album: OfflineAlbum, scope: StableMediaScope) throws {

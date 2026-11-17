@@ -98,6 +98,50 @@ final class OfflineAlbumTests: XCTestCase {
         }
     }
 
+    func testRecoveryEntriesAreScopedRemovableAndDisappearAfterRedownload() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let directory = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+        let orphan = directory.appending(path: OfflineAlbumStore.directoryKey(albumID: "album"))
+        try ProtectedTemporaryFiles.prepareDirectory(orphan)
+        let store = OfflineAlbumStore(root: root)
+        var snapshot = try await store.snapshot(scope: scope)
+        let entry = try XCTUnwrap(snapshot.recoveryEntries.first)
+        XCTAssertEqual(entry.reason, .missingManifest)
+        let other = StableMediaScope.verified(server: scope.serverIdentity, accountID: UUID().uuidString)
+        do { try await store.removeRecovery(entry, scope: other); XCTFail("A foreign scope removed a recovery entry") } catch {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path))
+        let part = try component(asset(), scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: part.asset, components: [part])], scope: scope)
+        snapshot = try await store.snapshot(scope: scope)
+        XCTAssertTrue(snapshot.recoveryEntries.isEmpty)
+        try await store.removeRecovery(entry, scope: scope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.appending(path: "manifest.json").path),
+                      "An obsolete recovery action deleted a successfully rebuilt album")
+        let broken = directory.appending(path: OfflineAlbumStore.directoryKey(albumID: "broken"))
+        try ProtectedTemporaryFiles.prepareDirectory(broken)
+        try Data("bad-json".utf8).write(to: broken.appending(path: "manifest.json"))
+        snapshot = try await store.snapshot(scope: scope, refresh: true)
+        let corrupt = try XCTUnwrap(snapshot.recoveryEntries.first)
+        XCTAssertEqual(corrupt.reason, .invalidManifest)
+        try await store.removeRecovery(corrupt, scope: scope)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: broken.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path))
+    }
+
+    func testAnUnavailableScopeRootIsNotAnEmptyAlbumList() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try ProtectedTemporaryFiles.prepareDirectory(root)
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let directory = root.appending(path: MediaDisplayKeyV1.digest(try encoder.encode(scope)))
+        try Data("not-a-directory".utf8).write(to: directory)
+        do { _ = try await OfflineAlbumStore(root: root).snapshot(scope: scope); XCTFail("A broken root was reported as an empty scope") } catch {}
+    }
+
     func testIncompleteLivePhotoIsNotReadyAndMissingFileCanBeDownloadedAgain() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

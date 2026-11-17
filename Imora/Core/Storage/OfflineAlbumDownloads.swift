@@ -7,13 +7,21 @@ import Observation
 final class OfflineAlbumDownloads {
     static let shared = OfflineAlbumDownloads()
     private(set) var albums: [OfflineAlbum] = []
+    private(set) var recoveryEntries: [OfflineAlbumRecovery] = []
     private(set) var workingIDs: Set<String> = []
     private(set) var error: String?
     @ObservationIgnored private var client: ImoraClient?
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var operations: [String: UUID] = [:]
     @ObservationIgnored private var purgingScopes: Set<StableMediaScope> = []
-    private struct Removal: Hashable { let scope: StableMediaScope; let albumID: String }
+    private struct Removal: Hashable {
+        let scope: StableMediaScope
+        let directoryKey: String
+        init(scope: StableMediaScope, albumID: String) {
+            self.scope = scope; directoryKey = OfflineAlbumStore.directoryKey(albumID: albumID)
+        }
+        init(scope: StableMediaScope, directoryKey: String) { self.scope = scope; self.directoryKey = directoryKey }
+    }
     @ObservationIgnored private var removals: Set<Removal> = []
     #if DEBUG
     var beforeStorageRemoval: ((String?) async -> Void)?
@@ -24,17 +32,18 @@ final class OfflineAlbumDownloads {
             pauseAll()
             tasks = [:]; operations = [:]; workingIDs = []
             self.client = client
-            albums = []; error = nil
+            albums = []; recoveryEntries = []; error = nil
         }
-        await reload()
+        await reload(refresh: true)
     }
 
-    func reload() async {
-        guard let client, client.context.isActive else { albums = []; return }
+    func reload(refresh: Bool = false) async {
+        guard let client, client.context.isActive else { albums = []; recoveryEntries = []; return }
         do {
-            let records = try await OfflineAlbumStore.shared.albums(scope: client.mediaDisplayScope)
+            let snapshot = try await OfflineAlbumStore.shared.snapshot(scope: client.mediaDisplayScope, refresh: refresh)
             guard self.client === client, client.context.isActive else { return }
-            albums = records
+            albums = snapshot.albums; recoveryEntries = snapshot.recoveryEntries
+            if refresh { error = nil }
         } catch {
             if self.client === client, client.context.isActive { self.error = error.localizedDescription }
         }
@@ -174,6 +183,22 @@ final class OfflineAlbumDownloads {
         await reload()
     }
 
+    func removeRecovery(_ entry: OfflineAlbumRecovery) async {
+        guard let client, entry.scope == client.mediaDisplayScope else { return }
+        let removal = Removal(scope: entry.scope, directoryKey: entry.id)
+        guard removals.insert(removal).inserted else { return }
+        defer { removals.remove(removal) }
+        let pending = tasks.filter { OfflineAlbumStore.directoryKey(albumID: $0.key) == entry.id }.map(\.value)
+        pending.forEach { $0.cancel() }
+        for task in pending { await task.value }
+        #if DEBUG
+        await beforeStorageRemoval?(entry.id)
+        #endif
+        do { try await OfflineAlbumStore.shared.removeRecovery(entry, scope: entry.scope) }
+        catch { if self.client === client { self.error = error.localizedDescription } }
+        await reload()
+    }
+
     func signOut(_ client: ImoraClient) async {
         let scope = client.mediaDisplayScope
         purgingScopes.insert(scope)
@@ -182,7 +207,7 @@ final class OfflineAlbumDownloads {
         if self.client === client {
             pauseAll()
             pending = Array(tasks.values)
-            self.client = nil; albums = []; tasks = [:]; operations = [:]; workingIDs = []
+            self.client = nil; albums = []; recoveryEntries = []; tasks = [:]; operations = [:]; workingIDs = []
         }
         for task in pending { await task.value }
         #if DEBUG

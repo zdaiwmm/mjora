@@ -3,10 +3,12 @@ import SwiftUI
 struct OfflineAlbumsScreen: View {
     @Environment(SessionStore.self) private var session
     private var downloads: OfflineAlbumDownloads { .shared }
+    @State private var pendingRecovery: OfflineAlbumRecovery?
+    @State private var confirmRecoveryRemoval = false
 
     var body: some View {
         List {
-            if downloads.albums.isEmpty {
+            if downloads.albums.isEmpty && downloads.recoveryEntries.isEmpty {
                 ContentUnavailableView("No Offline Albums", systemImage: "arrow.down.circle",
                     description: Text("Open an album and choose Keep on This Device to download its photos, videos and Live Photos."))
             }
@@ -19,11 +21,45 @@ struct OfflineAlbumsScreen: View {
                     }
                 }
             }
+            if !downloads.recoveryEntries.isEmpty {
+                Section {
+                    ForEach(downloads.recoveryEntries) { entry in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(entry.reason == .unavailable ? String(localized: "Download Unavailable")
+                                  : String(localized: "Incomplete Download"), systemImage: "exclamationmark.circle")
+                            if entry.reason == .unavailable {
+                                Text("This local download could not be read. Pull down to try again.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button("Remove Local Copy", role: .destructive) {
+                                pendingRecovery = entry; confirmRecoveryRemoval = true
+                            }
+                            .accessibilityIdentifier("offline-recovery-remove-\(entry.id)")
+                        }
+                        .accessibilityElement(children: .contain)
+                    }
+                } header: {
+                    Text("Downloads Need Attention")
+                } footer: {
+                    Text("Open the original album to download it again.")
+                }
+                .accessibilityIdentifier("offline-recovery-section")
+            }
             if let error = downloads.error { Text(verbatim: error).foregroundStyle(.secondary) }
         }
         .navigationTitle("Offline Albums")
         .accessibilityIdentifier("offline-albums")
         .task(id: session.client?.context.id) { await downloads.attach(session.client) }
+        .refreshable { await downloads.reload(refresh: true) }
+        .confirmationDialog("Remove Incomplete Download?", isPresented: $confirmRecoveryRemoval, titleVisibility: .visible) {
+            Button("Remove Local Copy", role: .destructive) {
+                if let entry = pendingRecovery { Task { await downloads.removeRecovery(entry) } }
+                pendingRecovery = nil
+            }
+            .accessibilityIdentifier("offline-recovery-confirm-remove")
+        } message: {
+            Text("Only this app's downloaded copies are removed. Server photos and your system photo library are kept.")
+        }
     }
 }
 
