@@ -274,7 +274,7 @@ nonisolated enum TimelineRow: Identifiable, Hashable {
 /// month-keyed and sorted once per photo-library change, so a rebuild never
 /// pays tens of thousands of calendar lookups again. paired items keep their
 /// server twin id so a loaded twin can hide them.
-nonisolated private struct LocalMergeSource {
+nonisolated struct LocalMergeSource {
     struct Paired {
         let remoteId: String
         let asset: Asset
@@ -337,6 +337,7 @@ final class TimelineModel {
     /// everything a finished build hands back for one synchronous commit.
     nonisolated private struct ProjectionBuild {
         let rows: [TimelineRow]
+        let calendarSections: [TimelineSection]
         let rowsChanged: Bool
         let spans: [TimelineSectionSpan]
         let monthByRowID: [String: String]
@@ -345,6 +346,7 @@ final class TimelineModel {
         let sectionProjectionByID: [String: SectionProjection]
         let titleBandCount: Int
         let tileRowCount: Int
+        let totalItemCount: Int
         let measuredAssetsPerDay: Double?
         let flatAssets: [Asset]?
         let flatAssetIndexByID: [String: Int]?
@@ -365,18 +367,22 @@ final class TimelineModel {
         let project = assetProjection
         updateAssets(ids: Set(flatAssets.map(\.id))) { $0 = project($0) }
     }
+    private(set) var totalItemCount = 0
+    private var hasProjectedLocalSource = false
+    var hasProjectedLocalInventory: Bool { !mergesLocal || backup == nil || hasProjectedLocalSource }
     private(set) var sections: [TimelineSection] = [] {
         didSet { calendarCache.invalidate() }
     }
     @ObservationIgnored private var calendarCache = PhotoCalendarCache()
+    @ObservationIgnored private var calendarSections: [TimelineSection] = []
 
     func photoPeriods(mode: PhotoBrowseMode, year: Int? = nil, preferredAssetID: String? = nil) -> [PhotoPeriod] {
-        calendarCache.periods(in: sections, mode: mode, year: year, preferredAssetID: preferredAssetID)
+        calendarCache.periods(in: calendarSections, mode: mode, year: year, preferredAssetID: preferredAssetID)
     }
 
     func photoMonthContent(period: PhotoPeriod, preferredAssetID: String? = nil,
                            preferredBucketID: String? = nil, retainedCoverIDs: [String: String] = [:]) -> PhotoMonthContent {
-        calendarCache.month(in: sections, period: period, preferredAssetID: preferredAssetID,
+        calendarCache.month(in: calendarSections, period: period, preferredAssetID: preferredAssetID,
                             preferredBucketID: preferredBucketID, retainedCoverIDs: retainedCoverIDs)
     }
     private(set) var rows: [TimelineRow] = []
@@ -690,7 +696,7 @@ final class TimelineModel {
 
     func attachCachedLaunch(_ handle: CachedLaunchHandle?, client: ImoraClient, backup: BackupManager?) {
         guard let handle, let key = launchCacheKey else { return }
-        let source = usesSuppliedAssets ? "device" : "cloud"
+        let source = usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud")
         guard handle.matches(client: client, source: source, filter: key) else { handle.cancel(); return }
         attach(client, backup: backup, preparesLaunchViewport: true)
         cachedLaunchHandle = handle
@@ -716,7 +722,7 @@ final class TimelineModel {
         // remain outside this dependency chain.
         if !restoredLaunchViewport, let key = launchCacheKey, let layout = launchLayout {
             let handle = cachedLaunchHandle
-            let source = usesSuppliedAssets ? "device" : "cloud"
+            let source = usesSuppliedAssets ? "device" : (mergesLocal ? "mixed" : "cloud")
             let shared = await handle?.value(client: client, source: source, filter: key)
             if let shared, adoptPreparedViewport(shared) {
                 handle?.finish()
@@ -1215,11 +1221,15 @@ final class TimelineModel {
         projectionInputVersion &+= 1
     }
 
-    private func makeProjectionInputs(rebuildAssets: Bool) -> ProjectionInputs {
+    func rowsForZoom(columns: Int) -> [TimelineRow] {
+        Self.buildProjection(makeProjectionInputs(rebuildAssets: false, columns: columns)).rows
+    }
+
+    private func makeProjectionInputs(rebuildAssets: Bool, columns: Int? = nil) -> ProjectionInputs {
         ProjectionInputs(
             sections: sections,
             localSource: mergesLocal ? localMergeSource : nil,
-            columns: columns,
+            columns: columns ?? self.columns,
             showsDateHeaders: showsDateHeaders,
             assetsPerDay: assetsPerDay,
             projectionCache: sectionProjectionByID,
@@ -1230,6 +1240,10 @@ final class TimelineModel {
 
     private func commitProjection(_ build: ProjectionBuild, animated: Bool, viaHook: Bool = true) {
         let commit = {
+            self.calendarSections = build.calendarSections
+            self.calendarCache.invalidate()
+            self.totalItemCount = build.totalItemCount
+            self.hasProjectedLocalSource = self.localMergeSource != nil
             self.rows = build.rows
             self.rowsLayoutVersion &+= 1
             self.rowsContentVersion &+= 1
@@ -1356,6 +1370,7 @@ final class TimelineModel {
 
         return ProjectionBuild(
             rows: result,
+            calendarSections: projectedSections,
             rowsChanged: result != inputs.previousRows,
             spans: spans,
             monthByRowID: monthByRowID,
@@ -1364,6 +1379,7 @@ final class TimelineModel {
             sectionProjectionByID: nextSectionProjectionByID,
             titleBandCount: titleBands,
             tileRowCount: tileRows,
+            totalItemCount: projectedSections.reduce(0) { $0 + $1.count },
             measuredAssetsPerDay: dayTally > 0 && assetTally > 0 ? ratio : nil,
             flatAssets: inputs.rebuildAssets ? flattened : nil,
             flatAssetIndexByID: inputs.rebuildAssets ? flattenedIndex : nil,
@@ -1841,10 +1857,11 @@ final class TimelineModel {
     private func updateLocalItems() async -> Bool {
         guard mergesLocal, let backup else { return false }
         let items = await backup.localTimelineAssets()
-        guard items != localItems else { return false }
-        let source = await Self.makeLocalMergeSource(items)
+        guard items != localItems || localMergeSource == nil else { return false }
+        let source = await Self.makeLocalMergeSource(items, favoritesOnly: filter.isFavorite == true)
         localItems = items
         localMergeSource = source
+        calendarCache.invalidate()
         noteProjectionInputsChanged()
         return true
     }
@@ -1853,13 +1870,13 @@ final class TimelineModel {
     /// tens of thousands of device assets costs a calendar lookup each, which
     /// used to run inside every rebuild.
     @concurrent
-    nonisolated private static func makeLocalMergeSource(
-        _ items: [LocalTimelineItem]
+    nonisolated static func makeLocalMergeSource(
+        _ items: [LocalTimelineItem], favoritesOnly: Bool = false
     ) async -> LocalMergeSource {
         var unpaired: [String: [Asset]] = [:]
         var paired: [String: [LocalMergeSource.Paired]] = [:]
         var pairedRemoteIDs = Set<String>()
-        for item in items {
+        for item in items where !favoritesOnly || item.device.isFavorite {
             let asset = item.device.asAsset(backedUp: item.backedUp)
             let key = monthKey(for: asset.localDate)
             if let remoteId = item.remoteId {
@@ -1923,7 +1940,7 @@ final class TimelineModel {
     /// server sections with device-only assets woven in. server data stays
     /// untouched in `sections`; the merge is recomputed on every rebuild from
     /// the pre-shaped source.
-    nonisolated private static func mergedSections(
+    nonisolated static func mergedSections(
         _ sections: [TimelineSection],
         local: LocalMergeSource?
     ) -> [TimelineSection] {
@@ -1961,13 +1978,20 @@ final class TimelineModel {
         for section in sections {
             let key = Self.bucketDate(section.id).map { Self.monthKey(for: $0) } ?? section.id
             if let locals = byMonth[key], section.days != nil {
-                merged.append(Self.mergeSection(section, locals: locals))
+                let extra = section.hasPartialLaunchRange ? locals.filter { !$0.isLocalBackedUp } : locals
+                merged.append(Self.mergeSection(section, locals: extra))
                 remainingMonths.remove(key)
             } else {
-                // unloaded buckets keep their placeholder; their local
-                // photos appear once the prefetch loads the month.
-                if section.days == nil { remainingMonths.remove(key) }
-                merged.append(section)
+                // Device-only originals are available even when the cloud
+                // month is still paged out or offline. Paired copies remain
+                // represented by the cloud slots until that month loads.
+                let extra = local.unpairedByMonth[key] ?? []
+                if section.days == nil, !extra.isEmpty {
+                    merged.append(TimelineSection(id: section.id, monthTitle: section.monthTitle,
+                        count: section.count + extra.count, days: Self.groupByDay(extra),
+                        leadingUnloadedAssetCount: section.count))
+                } else { merged.append(section) }
+                remainingMonths.remove(key)
             }
         }
 
@@ -2016,7 +2040,9 @@ final class TimelineModel {
             id: section.id,
             monthTitle: section.monthTitle,
             count: section.count + locals.count,
-            days: days
+            days: days,
+            leadingUnloadedAssetCount: section.leadingUnloadedAssetCount,
+            trailingUnloadedAssetCount: section.trailingUnloadedAssetCount
         )
     }
 

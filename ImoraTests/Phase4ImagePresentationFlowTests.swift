@@ -1183,6 +1183,8 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         }
         try await server.start(); defer { gate.signal(); server.stop() }
         let client = ImoraClient(apiURL: server.apiURL, accessToken: "startup-sweep")
+        // A retired gallery's scroll hold cannot pause the new session.
+        ImageLoader.shared.setSweepPaused(true)
         client.confirmMediaAccount("startup-sweep-\(UUID())"); ImageLoader.shared.configure(client: client)
         let coordinator = MediaPresentationCoordinator.shared
         defer { coordinator.cancelCheckpoint(); ImageLoader.shared.configure(client: nil); client.invalidate() }
@@ -4207,7 +4209,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         let requests = server.received.count
         server.stop()
         try await assertEndpointBytesFlushed(bytes, url: url, client: client, asset: value)
-        ImageLoader.shared.configure(client: client) // Evict decoded memory; retain real endpoint disk bytes.
+        NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil) // Evict offscreen pixels, retain endpoint bytes.
         XCTAssertNil(ImageLoader.shared.cachedImage(for: url, targetPixelSize: 1024))
         let disk = await ImageLoader.shared.diskImage(for: url, targetPixelSize: 768)
         let restored = try XCTUnwrap(disk, "Disk-only read must find storeOriginalData's unsized endpoint key")
@@ -4250,7 +4252,7 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         let requests = server.received.count
         server.stop()
         try await assertEndpointBytesFlushed(preview, url: previewURL, client: client, asset: value)
-        ImageLoader.shared.configure(client: client)
+        NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         XCTAssertNil(ImageLoader.shared.cachedGridImage(thumbnailURL: url, previewURL: previewURL,
             targetPixelSize: 416, aspectRatio: value.ratio))
         let key = MediaPresentationCoordinator.gridKey(asset: value, client: client, pixels: 416)

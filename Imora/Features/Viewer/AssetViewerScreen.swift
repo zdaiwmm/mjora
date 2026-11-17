@@ -822,6 +822,7 @@ struct AssetViewerFittedMedia<Content: View>: View {
 
 struct AssetViewerScreen: View {
     @State private var pendingRebackup: RebackupConfirmation?
+    @State private var showsBackupFailures = false
     /// pages either side of the current one kept warm. the pager mounts a page
     /// as it scrolls in, which on a quick swipe leaves no time for a download,
     /// so the neighbours are fetched while the current one is being looked at.
@@ -1253,7 +1254,10 @@ struct AssetViewerScreen: View {
     private var core: some View {
         AnyView(viewerSurface)
             .deviceCopyRemovalPresentation(deviceCopyRemoval)
-            .confirmationDialog("Back Up Again?", isPresented: Binding(
+            .sheet(isPresented: $showsBackupFailures) {
+            NavigationStack { BackupFailuresScreen() }
+        }
+        .confirmationDialog("Back Up Again?", isPresented: Binding(
                 get: { pendingRebackup != nil }, set: { if !$0 { pendingRebackup = nil } }
             ), titleVisibility: .visible, presenting: pendingRebackup) { confirmation in
                 Button("Back Up Again") {
@@ -1467,10 +1471,7 @@ struct AssetViewerScreen: View {
 
     private var viewerRoot: some View {
         AnyView(viewerStage)
-            .safeAreaBar(edge: .bottom, spacing: 4) {
-                bottomAccessoryBar
-            }
-            // the bars alone, without the carousel bar inside them.
+            // the native bars alone; accessories are anchored to the stage.
             .background {
                 Color.clear
                     .onGeometryChange(for: CGFloat.self) { proxy in
@@ -1559,6 +1560,10 @@ struct AssetViewerScreen: View {
                         .padding(.leading, 16)
                         .padding(.top, physicalSafeAreaInsets.top + 58)
                 }
+            }
+            .overlay(alignment: .bottom) {
+                bottomAccessoryBar
+                    .padding(.bottom, physicalSafeAreaInsets.bottom + 60)
             }
         }
         .ignoresSafeArea()
@@ -1970,27 +1975,26 @@ struct AssetViewerScreen: View {
         }
     }
 
-    /// Every page keeps the same filmstrip slot. Video transport overlays it,
-    /// so changing media type cannot rebase the pager during a swipe.
+    /// Accessories fade in place above the bottom toolbar. Keeping them in
+    /// the full-bleed stage avoids following the toolbar's animated safe area.
+    /// The transport occupies real layout space so all of it receives touches.
     private var bottomAccessoryBar: some View {
-        AssetViewerCarousel(
-            assets: assets,
-            selection: $selectedAssetID,
-            aspectRatio: projectedAspectRatio(for:)
-        )
-        .opacity(chromePresentation.showsCarousel ? 1 : 0)
-        .allowsHitTesting(chromePresentation.showsCarousel)
-        .accessibilityHidden(!chromePresentation.showsCarousel)
-        .overlay(alignment: .bottom) {
+        VStack(spacing: 14) {
             if chromePresentation.reservesTransportControls {
                 VideoControlsBar(playback: playback)
                     .environment(\.colorScheme, .dark)
-                    .opacity(chromePresentation.showsTransportControls ? 1 : 0)
-                    .allowsHitTesting(chromePresentation.showsTransportControls)
                     .accessibilityHidden(!chromePresentation.showsTransportControls)
-                    .offset(y: -66)
             }
+            AssetViewerCarousel(
+                assets: assets,
+                selection: $selectedAssetID,
+                aspectRatio: projectedAspectRatio(for:)
+            )
+            .accessibilityHidden(!chromePresentation.showsCarousel)
         }
+        .opacity(chromePresentation.showsCarousel ? 1 : 0)
+        .allowsHitTesting(chromePresentation.showsCarousel)
+        .accessibilityHidden(!chromePresentation.showsCarousel)
         .padding(.bottom, 4)
     }
 
@@ -3079,8 +3083,7 @@ struct AssetViewerScreen: View {
                 }
                 .accessibilityLabel("Deleted in Cloud")
                 .accessibilityIdentifier("viewer-cloud-deleted")
-            } else if current.isLocalBackedUp
-                || session.backup?.hasVerifiedBackup(localIdentifier: localID) == true {
+            } else if PhotoBackupStatus.resolve(asset: current, backup: session.backup) == .backedUp {
                 Menu {
                     Button {} label: {
                         Label("Backed Up", systemImage: "checkmark.icloud")
@@ -3096,7 +3099,7 @@ struct AssetViewerScreen: View {
                 }
                 .accessibilityLabel("Backed up")
             } else {
-                switch session.backup?.uploadStates[localID] {
+                switch PhotoBackupStatus.resolve(asset: current, backup: session.backup) {
                 case .uploading(let fraction):
                     ProgressView(value: fraction)
                         .progressViewStyle(.circular)
@@ -3104,11 +3107,17 @@ struct AssetViewerScreen: View {
                         .accessibilityLabel("Backing up")
                         .accessibilityValue("\(Int(fraction * 100)) percent")
                 case .failed:
-                    Button { Task { await backUpCurrent() } } label: {
+                    Menu {
+                        Button("Retry Backup") { Task { await backUpCurrent() } }
+                        Button("Review Failed Items") { showsBackupFailures = true }
+                    } label: {
                         Image(systemName: "exclamationmark.icloud")
                     }
                     .accessibilityLabel("Backup failed. Try again")
-                case nil:
+                    .accessibilityIdentifier("viewer-backup-failed")
+                case .backedUp, .cloudDeleted:
+                    EmptyView()
+                case .notBackedUp, .sizeExcluded:
                     if session.backup?.sizeExcludedLocalIdentifiers.contains(localID) == true {
                         Menu {
                             Button {} label: {

@@ -12,6 +12,11 @@ struct TimelineTileActions {
     var makeViewer: (_ asset: Asset, _ startsAsContextPreview: Bool, _ bounds: CGSize) -> AssetViewerHostingController?
 }
 
+struct TimelineReflowTile {
+    let view: TimelineTileView
+    let frame: CGRect
+}
+
 /// everything one row of tiles is drawn from. tiles are plain views placed
 /// by column arithmetic, and the row owns the one tap recognizer and menu
 /// interaction, finding the tile under the finger by its frame.
@@ -68,6 +73,24 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
     }
 
     func apply(_ row: TimelineTileRowConfiguration, animated: Bool) {
+        var reusable: [String: TimelineReflowTile] = [:]
+        apply(row, animated: animated, reusing: &reusable)
+    }
+
+    func takeTilesForReflow(in grid: UIView) -> [TimelineReflowTile] {
+        let result = tiles.map { tile in
+            let frame = tile.layer.presentation()?.frame ?? tile.frame
+            let visible = tile.superview?.convert(frame, to: grid) ?? tile.convert(tile.bounds, to: grid)
+            tile.layer.removeAllAnimations()
+            return TimelineReflowTile(view: tile, frame: visible)
+        }
+        tiles = []
+        columns = []
+        return result
+    }
+
+    func apply(_ row: TimelineTileRowConfiguration, animated: Bool,
+               reusing reusable: inout [String: TimelineReflowTile]) {
         self.row = row
         side = row.side
 
@@ -79,7 +102,14 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
             for (offset, asset) in run.assets.enumerated() {
                 let column = run.colStart + offset
                 let tile: TimelineTileView
-                if let index = leftovers.firstIndex(where: { $0.asset?.id == asset.id }) {
+                if let retained = reusable.removeValue(forKey: asset.id) {
+                    tile = retained.view
+                    UIView.performWithoutAnimation {
+                        let start = superview.map { convert(retained.frame, from: $0) } ?? retained.frame
+                        addSubview(tile)
+                        tile.frame = start
+                    }
+                } else if let index = leftovers.firstIndex(where: { $0.asset?.id == asset.id }) {
                     tile = leftovers.remove(at: index)
                 } else if !animated, !leftovers.isEmpty {
                     // a row reused for other photos, e.g. a bucket landing
@@ -324,7 +354,6 @@ final class TimelineTileView: UIView {
     private var favoriteBadge: UIView?
     private var backupBadge: TileGlyphBadge?
     private var backupBadgeName: String?
-    private var uploadOverlay: TileUploadOverlayView?
     private var selectionIndicator: UIImageView?
     private var selectionAppearance: (isSelecting: Bool, isSelected: Bool, isSelectable: Bool)?
     private(set) var isProjectedRemoved = false
@@ -385,6 +414,13 @@ final class TimelineTileView: UIView {
         cancelLoads()
         // a pooled tile must not keep a bitmap alive outside nuke's budget.
         imageView.image = nil
+        boundSurface = nil
+        boundSurfaceID = nil
+        requestBinding = nil
+        activeDisplayKey = nil
+        shownDisplayKey = nil
+        visibleLocalIdentifier = nil
+        visibleLocalRevision = nil
         loadKey = nil
         loadedKey = nil
         showsPicture = false
@@ -518,6 +554,13 @@ final class TimelineTileView: UIView {
 
     func projectImage(asset: Asset, source: AssetThumbnailSource, client: ImoraClient?, generation: Int,
                       targetPixelSize: CGFloat) {
+        let resizingPreview: CommittedGridSurface?
+        if let previous = boundSurface, previous.key.pixelBucket != Int(targetPixelSize.rounded(.up)),
+           let client, projectionClient === client,
+           previous.key == MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: CGFloat(previous.key.pixelBucket)),
+           previous.isCurrent() {
+            resizingPreview = previous
+        } else { resizingPreview = nil }
         self.asset = asset
         self.targetPixelSize = targetPixelSize
         if let client {
@@ -556,7 +599,7 @@ final class TimelineTileView: UIView {
             ? AssetThumbnailSource(assetID: asset.id, localIdentifier: nil, pairedLocalIdentifier: nil,
                 pairedRemoteIdentifier: nil, unavailableLocalIdentifier: nil) : source
         projectionSource = selected
-        updateImage(asset: asset, source: selected, client: client, generation: generation)
+        updateImage(asset: asset, source: selected, client: client, generation: generation, resizingPreview: resizingPreview)
     }
 
     func checkpointSurface(for key: MediaDisplayKeyV1, client: ImoraClient) -> CommittedGridSurface? {
@@ -619,7 +662,8 @@ final class TimelineTileView: UIView {
         asset: Asset,
         source: AssetThumbnailSource,
         client: ImoraClient?,
-        generation: Int
+        generation: Int,
+        resizingPreview: CommittedGridSurface?
     ) {
         activeDisplayKey = client.map { MediaPresentationCoordinator.gridKey(asset: asset, client: $0, pixels: targetPixelSize) }
         if let localIdentifier = source.preferredLocalIdentifier {
@@ -643,7 +687,7 @@ final class TimelineTileView: UIView {
                 key: key,
                 generation: generation,
                 allowsNetwork: allowsNetwork,
-                placeholder: serverThumbnail,
+                placeholder: resizingPreview.map { (image: $0.image, localProvenance: $0.localProvenance) } ?? serverThumbnail,
                 cacheScope: scope,
                 remoteURL: source.remoteIdentifier.flatMap { client?.thumbnailURL(assetID: $0, cacheKey: asset.thumbhash) },
                 previewURL: source.remoteIdentifier.flatMap { client?.thumbnailURL(assetID: $0, size: "preview", cacheKey: asset.thumbhash) }
@@ -658,7 +702,7 @@ final class TimelineTileView: UIView {
                 key: key,
                 generation: generation,
                 thumbhash: asset.thumbhash,
-                placeholder: source.localIdentifier.flatMap {
+                placeholder: (resizingPreview?.localProvenance == nil ? resizingPreview?.image : nil) ?? source.localIdentifier.flatMap {
                     LocalImageLoader.shared.cachedPreview(localIdentifier: $0, cacheScope: AssetThumbnailSource.localCacheScope(accountKey: client.offlineAccountKey, version: asset.localImageVersion ?? asset.thumbhash, pixels: targetPixelSize))
                 }
             )
@@ -777,7 +821,7 @@ final class TimelineTileView: UIView {
                       (self.asset?.visibility != .locked || binding.privateLease?.isCurrent == true),
                       binding.access == MediaPresentationCoordinator.access(for: client),
                       let current = self.asset,
-                      binding.key == MediaPresentationCoordinator.gridKey(asset: current, client: client, pixels: self.targetPixelSize)
+                      binding.key == MediaPresentationCoordinator.gridKey(asset: current, client: client, pixels: CGFloat(binding.key.pixelBucket))
                 else { return false }
                 if let localProvenance {
                     guard self.projectionSource?.preferredLocalIdentifier == localProvenance.localIdentifier,
@@ -1017,7 +1061,9 @@ final class TimelineTileView: UIView {
         visibleLocalRevision = placeholder?.localProvenance?.modificationRevision
         showsPicture = shown != nil
         if shown != nil { shownDisplayKey = activeDisplayKey }
-        if let placeholder { show(placeholder.image, key: key, fading: false, binding: binding, localProvenance: placeholder.localProvenance) }
+        if let placeholder, min(placeholder.image.size.width, placeholder.image.size.height) * placeholder.image.scale >= size {
+            show(placeholder.image, key: key, fading: false, binding: binding, localProvenance: placeholder.localProvenance)
+        }
         deadlineTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, binding?.isCurrent == true, let self, self.loadKey == key else { return }
@@ -1150,41 +1196,9 @@ final class TimelineTileView: UIView {
     }
 
     private func updateBackupState(asset: Asset, backup: BackupManager?) {
-        guard let backup else {
-            setBackupBadge(nil)
-            setUploadOverlay(nil)
-            return
-        }
-        if let id = asset.localIdentifier, backup.remoteRemovedLocalIDs.contains(id) {
-            setBackupBadge("cloud-deleted")
-            setUploadOverlay(nil)
-            return
-        }
-        let uploadState = asset.localIdentifier.flatMap { backup.uploadStates[$0] }
-        let hasVerifiedLocalBackup = asset.localIdentifier.map {
-            asset.isLocalBackedUp || backup.hasVerifiedBackup(localIdentifier: $0)
-        } ?? false
-
-        if !showsAllBackupStatuses {
-            setBackupBadge(nil)
-            if case .failed = uploadState, !hasVerifiedLocalBackup { setUploadOverlay(uploadState) }
-            else { setUploadOverlay(nil) }
-            return
-        }
-        if hasVerifiedLocalBackup {
-            setBackupBadge("checkmark.icloud")
-        } else if uploadState == nil {
-            if let localIdentifier = asset.localIdentifier {
-                setBackupBadge(
-                    backup.sizeExcludedLocalIdentifiers.contains(localIdentifier) ? "minus.circle" : "icloud.slash"
-                )
-            } else {
-                setBackupBadge(backup.backedUpRemoteIds.contains(asset.id) ? "checkmark.icloud" : "icloud")
-            }
-        } else {
-            setBackupBadge(nil)
-        }
-        setUploadOverlay(hasVerifiedLocalBackup ? nil : uploadState)
+        guard showsBackupBadge else { setBackupBadge(nil); return }
+        let status = PhotoBackupStatus.resolve(asset: asset, backup: backup)
+        setBackupBadge(status == .backedUp && !showsAllBackupStatuses ? nil : status.symbol)
     }
 
     private func setBackupBadge(_ name: String?) {
@@ -1193,26 +1207,11 @@ final class TimelineTileView: UIView {
         backupBadge?.removeFromSuperview()
         backupBadge = nil
         guard let name else { return }
-        let badge = TileGlyphBadge(name == "cloud-deleted" ? .cloudDeleted : .backup(name))
+        let badge = TileGlyphBadge(.backup(name))
         badge.accessibilityIdentifier = "badge-\(name)"
         content.addSubview(badge)
         backupBadge = badge
         setNeedsLayout()
-    }
-
-    private func setUploadOverlay(_ state: LocalUploadState?) {
-        guard let state else {
-            uploadOverlay?.removeFromSuperview()
-            uploadOverlay = nil
-            return
-        }
-        if uploadOverlay == nil {
-            let overlay = TileUploadOverlayView()
-            content.addSubview(overlay)
-            uploadOverlay = overlay
-            setNeedsLayout()
-        }
-        uploadOverlay?.state = state
     }
 
     // MARK: - selection and removal
@@ -1273,7 +1272,6 @@ final class TimelineTileView: UIView {
         super.layoutSubviews()
         content.frame = bounds
         imageView.frame = bounds
-        uploadOverlay?.frame = bounds
         retryButton.frame = CGRect(x: bounds.midX - 18, y: bounds.midY - 18, width: 36, height: 36)
         let rightToLeft = effectiveUserInterfaceLayoutDirection == .rightToLeft
 
@@ -1295,12 +1293,11 @@ final class TimelineTileView: UIView {
         place(durationBadge, leading: false, top: false, inset: 6)
         place(topLeadingBadge, leading: true, top: true, inset: 5)
         place(favoriteBadge, leading: true, top: false, inset: 6)
-        place(backupBadge, leading: false, top: false, inset: 6)
-        if let durationBadge, let backupBadge {
-            backupBadge.frame.origin.y = durationBadge.frame.minY - backupBadge.frame.height - 4
-        }
-        if selectionAppearance?.isSelecting == true, let backupBadge {
-            backupBadge.frame.origin.x += rightToLeft ? 30 : -30
+        place(backupBadge, leading: true, top: true, inset: 7)
+        if let backupBadge, let topLeadingBadge {
+            topLeadingBadge.frame.origin.x = rightToLeft
+                ? backupBadge.frame.minX - topLeadingBadge.frame.width - 4
+                : backupBadge.frame.maxX + 4
         }
         if let selectionIndicator {
             let x = rightToLeft ? 6 : bounds.width - 6 - 24
@@ -1331,26 +1328,13 @@ final class TimelineTileView: UIView {
     }
 
     private func backupAccessibilitySummary(for asset: Asset) -> String {
-        let backup = session?.backup
-        let localIdentifier = asset.localIdentifier
-        if let localIdentifier, backup?.remoteRemovedLocalIDs.contains(localIdentifier) == true {
-            return String(localized: "Deleted in Cloud")
-        }
-        if let localIdentifier,
-           asset.isLocalBackedUp || backup?.hasVerifiedBackup(localIdentifier: localIdentifier) == true {
-            return String(localized: "Backed up")
-        }
-        switch localIdentifier.flatMap({ backup?.uploadStates[$0] }) {
-        case .uploading(let fraction):
-            return String(localized: "Backing up, \(Int(fraction * 100)) percent")
-        case .failed:
-            return String(localized: "Backup failed")
-        case nil:
-            if let localIdentifier {
-                return backup?.sizeExcludedLocalIdentifiers.contains(localIdentifier) == true
-                    ? String(localized: "Excluded from backup by the upload size limit") : String(localized: "Not backed up")
-            }
-            return backup?.backedUpRemoteIds.contains(asset.id) == true ? String(localized: "Backed up") : String(localized: "Stored in cloud")
+        switch PhotoBackupStatus.resolve(asset: asset, backup: session?.backup) {
+        case .backedUp: String(localized: "Backed up")
+        case .notBackedUp: String(localized: "Not backed up")
+        case .cloudDeleted: String(localized: "Deleted in Cloud")
+        case .failed: String(localized: "Backup failed")
+        case .sizeExcluded: String(localized: "Excluded from backup by the upload size limit")
+        case .uploading(let fraction): String(localized: "Backing up, \(Int(fraction * 100)) percent")
         }
     }
 }
@@ -1363,7 +1347,6 @@ private final class TileGlyphBadge: UIImageView {
     enum Kind: Hashable {
         case livePhoto
         case favorite
-        case cloudDeleted
         /// backup status, by symbol name.
         case backup(String)
     }
@@ -1420,11 +1403,6 @@ private final class TileGlyphBadge: UIImageView {
                 .font(.caption)
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 3)
-        case .cloudDeleted:
-            Image(systemName: "icloud.slash")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.gray)
-                .shadow(color: .black.opacity(0.6), radius: 2.5)
         case .backup(let name):
             Image(systemName: name)
                 .font(.system(size: 12, weight: .semibold))
@@ -1497,106 +1475,6 @@ private final class TileCapsuleBadge: UIView {
             x: labelX,
             y: (bounds.height - labelSize.height) / 2,
             width: labelSize.width,
-            height: labelSize.height
-        )
-    }
-}
-
-/// the dimmed upload progress ring, or the failure mark, over a device tile.
-private final class TileUploadOverlayView: UIView {
-    var state: LocalUploadState = .failed {
-        didSet {
-            guard state != oldValue || !hasApplied else { return }
-            apply()
-        }
-    }
-
-    private var hasApplied = false
-    private let track = CAShapeLayer()
-    private let progress = CAShapeLayer()
-    private let label = UILabel()
-    private let failure = UIImageView()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        for ring in [track, progress] {
-            ring.fillColor = UIColor.clear.cgColor
-            ring.lineWidth = 3
-            ring.lineCap = .round
-            layer.addSublayer(ring)
-        }
-        track.strokeColor = UIColor.white.withAlphaComponent(0.24).cgColor
-        progress.strokeColor = UIColor.white.cgColor
-        label.textColor = .white
-        label.textAlignment = .center
-        addSubview(label)
-        failure.image = UIImage(
-            systemName: "exclamationmark.circle.fill",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 30)
-                .applying(UIImage.SymbolConfiguration(paletteColors: [.white, .red]))
-        )
-        addSubview(failure)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    private func apply() {
-        hasApplied = true
-        let bold = UIFontMetrics(forTextStyle: .caption2).scaledFont(for: .systemFont(ofSize: 11, weight: .bold))
-        switch state {
-        case .uploading(let fraction):
-            backgroundColor = UIColor.black.withAlphaComponent(0.54)
-            track.isHidden = false
-            progress.isHidden = false
-            failure.isHidden = true
-            progress.strokeEnd = max(0.03, fraction)
-            label.font = UIFont.monospacedDigitSystemFont(ofSize: bold.pointSize, weight: .bold)
-            label.text = "\(Int(fraction * 100))%"
-        case .failed:
-            backgroundColor = UIColor.black.withAlphaComponent(0.58)
-            track.isHidden = true
-            progress.isHidden = true
-            failure.isHidden = false
-            label.font = bold
-            label.text = String(localized: "Error")
-        }
-        setNeedsLayout()
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let labelSize = label.intrinsicContentSize
-        let markSize: CGSize = failure.isHidden ? CGSize(width: 36, height: 36) : failure.intrinsicContentSize
-        let total = markSize.height + 4 + labelSize.height
-        let top = (bounds.height - total) / 2
-        let markFrame = CGRect(
-            x: (bounds.width - markSize.width) / 2,
-            y: top,
-            width: markSize.width,
-            height: markSize.height
-        )
-        failure.frame = markFrame
-        // starts at twelve o'clock, like the rotated swiftui circle.
-        let path = UIBezierPath(
-            arcCenter: CGPoint(x: markFrame.midX, y: markFrame.midY),
-            radius: 18,
-            startAngle: -.pi / 2,
-            endAngle: .pi * 1.5,
-            clockwise: true
-        ).cgPath
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        track.path = path
-        progress.path = path
-        CATransaction.commit()
-        label.frame = CGRect(
-            x: 0,
-            y: markFrame.maxY + 4,
-            width: bounds.width,
             height: labelSize.height
         )
     }

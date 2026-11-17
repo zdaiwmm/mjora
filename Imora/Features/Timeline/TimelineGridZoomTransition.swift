@@ -26,6 +26,14 @@ nonisolated enum TimelineGridZoomGeometry {
                y: midpoint.y + (frame.minY - origin.y) * scale,
                width: frame.width * scale, height: frame.height * scale)
     }
+
+    static func interpolate(_ from: CGRect, _ to: CGRect, progress: CGFloat) -> CGRect {
+        let t = min(1, max(0, progress))
+        return CGRect(x: from.minX + (to.minX - from.minX) * t,
+                      y: from.minY + (to.minY - from.minY) * t,
+                      width: from.width + (to.width - from.width) * t,
+                      height: from.height + (to.height - from.height) * t)
+    }
 }
 
 /// Only the mounted thumbnails participate. Replicas share their UIImage
@@ -47,6 +55,7 @@ final class TimelineGridZoomTransition {
 
     private struct Anchor {
         let id: String
+        var unitX: CGFloat
         var unitY: CGFloat
         var viewportPoint: CGPoint
     }
@@ -97,7 +106,9 @@ final class TimelineGridZoomTransition {
             if distance < nearestDistance {
                 nearestDistance = distance
                 let point = TimelineGridZoomGeometry.anchor(frame: visibleFrame, midpoint: viewportPoint)
-                anchor = Anchor(id: tile.id, unitY: point.unitY, viewportPoint: point.point)
+                anchor = Anchor(id: tile.id,
+                    unitX: min(1, max(0, (point.point.x - visibleFrame.minX) / max(visibleFrame.width, 1))),
+                    unitY: point.unitY, viewportPoint: point.point)
             }
             if !reduceMotion {
                 sourceSide = visibleFrame.width
@@ -116,7 +127,9 @@ final class TimelineGridZoomTransition {
         }
     }
 
-    func update(scale: CGFloat, midpoint: CGPoint, in grid: UIScrollView) {
+    func update(scale: CGFloat, midpoint: CGPoint, in grid: UIScrollView,
+                from lowerFrames: [String: CGRect] = [:], to upperFrames: [String: CGRect] = [:],
+                progress: CGFloat = 0) {
         guard isTracking, scale.isFinite, scale > 0, let parent = grid.superview else { return }
         displayScale = scale
         let point = grid.convert(midpoint, to: parent)
@@ -125,9 +138,28 @@ final class TimelineGridZoomTransition {
         // translation lets the photo follow both fingers without drifting.
         anchor?.viewportPoint = CGPoint(x: destination.x + (anchorOrigin.x - origin.x) * scale,
                                        y: destination.y + (anchorOrigin.y - origin.y) * scale)
+        let lowerOffset = anchor.flatMap { anchor in
+            lowerFrames[anchor.id].map {
+                CGPoint(x: $0.minX + $0.width * anchor.unitX - anchor.viewportPoint.x,
+                        y: $0.minY + $0.height * anchor.unitY - anchor.viewportPoint.y)
+            }
+        }
+        let upperOffset = anchor.flatMap { anchor in
+            upperFrames[anchor.id].map {
+                CGPoint(x: $0.minX + $0.width * anchor.unitX - anchor.viewportPoint.x,
+                        y: $0.minY + $0.height * anchor.unitY - anchor.viewportPoint.y)
+            }
+        }
         // Store translation relative to the original anchor, not cumulatively.
         for tile in tiles {
-            tile.view.frame = TimelineGridZoomGeometry.scaled(tile.initialFrame, by: scale, around: origin, to: destination)
+            if let lower = lowerFrames[tile.id], let upper = upperFrames[tile.id],
+               let lowerOffset, let upperOffset {
+                tile.view.frame = TimelineGridZoomGeometry.interpolate(
+                    lower.offsetBy(dx: -lowerOffset.x, dy: -lowerOffset.y),
+                    upper.offsetBy(dx: -upperOffset.x, dy: -upperOffset.y), progress: progress)
+            } else {
+                tile.view.frame = TimelineGridZoomGeometry.scaled(tile.initialFrame, by: scale, around: origin, to: destination)
+            }
         }
     }
 

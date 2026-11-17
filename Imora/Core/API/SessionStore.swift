@@ -492,11 +492,11 @@ final class SessionStore {
         if case .value(let key) = KeychainStore.get(Self.loginSessionKey) { backup.loginSessionKey = key }
         backup.userId = user?.id
         self.backup = backup
-        let source = UserDefaults.standard.string(forKey: "imora.photos.source") ?? "cloud"
+        let source = UserDefaults.standard.string(forKey: PhotosLibrarySource.preferenceKey) ?? "all"
         let startupFilter = source == "local" ? "device|all|date" : TimelineCache.key(for:
             PhotosLaunchSelection.cloudFilter(mergesSharedSpaces: capabilities.mergesSharedSpacesIntoTimeline))
-        if client.mediaDisplayScope.accountID != nil, ["cloud", "local"].contains(source), let filterKey = startupFilter {
-            let packSource = source == "local" ? "device" : "cloud"
+        if client.mediaDisplayScope.accountID != nil, PhotosLibrarySource(rawValue: source) != nil, let filterKey = startupFilter {
+            let packSource = PhotosLibrarySource(rawValue: source)?.launchSource ?? "mixed"
             let validator = backup.launchSurfaceValidator()
             let protection = launchProtection
             if UIApplication.shared.isProtectedDataAvailable { protection.resolve(true) }

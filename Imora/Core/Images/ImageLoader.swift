@@ -77,9 +77,11 @@ nonisolated final class ImageLoader: Sendable {
 
     /// call after login so image requests carry the token.
     func configure(client: ImoraClient?) {
+        guard authorization.client.withLock({ $0 !== client }) else { return }
         if client != nil { try? MediaContentGenerations.shared.ensureInitialized() }
         authorization.client.withLock { $0 = nil }
         visibleViewport.withLock { $0.removeAll() }
+        sweepPaused.withLock { $0 = false }
         sweepNeedsFirstViewport.withLock { $0 = client != nil }
         sweepTask.withLock { current in current?.cancel(); current = nil }
         stopAllPrefetching()

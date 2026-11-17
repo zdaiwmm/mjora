@@ -68,7 +68,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
     func testPhotoEditorHistoryAspectPanelAndSaveReturn() throws {
         let app = try launch()
         app.buttons["photos-source-menu"].tap()
-        app.buttons["云端照片"].tap()
+        app.buttons["云端"].tap()
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
         try XCTUnwrap(tiles.allElementsBoundByIndex.first {
@@ -141,7 +141,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
     func testPinchColumnTransitionKeepsTilesUsableAcrossRepeatedGestures() throws {
         let app = try launch()
         app.buttons["photos-source-menu"].tap()
-        app.buttons["云端照片"].tap()
+        app.buttons["云端"].tap()
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
         func mediaTile() throws -> XCUIElement {
@@ -237,7 +237,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         app.buttons["本机"].tap()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 8))
         snapshot(app, "native-device-photos")
-        app.buttons["photos-source-menu"].tap(); app.buttons["云端照片"].tap()
+        app.buttons["photos-source-menu"].tap(); app.buttons["云端"].tap()
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15))
     }
 
@@ -379,7 +379,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         let app = try launch(tracesLaunch: true)
         defer { app.terminate() }
         app.buttons["photos-source-menu"].tap()
-        chooseSourceItem(app, "云端照片")
+        chooseSourceItem(app, "云端")
         XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 25))
         let tiles = app.buttons.matching(identifier: "asset-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 20))
@@ -481,7 +481,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         // This flow exercises the owned cloud collection; the source preference
         // can persist as On Device after another UI acceptance flow.
         app.buttons["photos-source-menu"].tap()
-        chooseSourceItem(app, "云端照片")
+        chooseSourceItem(app, "云端")
         XCTAssertTrue(app.descendants(matching: .any)["photos-initial-preparation"].firstMatch.waitForNonExistence(timeout: 25))
         XCTAssertTrue(app.buttons["shell-albums"].waitForExistence(timeout: 20))
         app.buttons["shell-albums"].tap()
@@ -537,7 +537,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         let app = try launch()
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 20))
         app.buttons["photos-source-menu"].tap()
-        chooseSourceItem(app, "云端照片")
+        chooseSourceItem(app, "云端")
         let tiles = app.buttons.matching(identifier: "asset-tile")
         func visibleLabels() -> [String] {
             tiles.allElementsBoundByIndex.filter {
@@ -557,7 +557,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 10))
         snapshot(app, "native-device-library")
         app.buttons["photos-source-menu"].tap()
-        chooseSourceItem(app, "云端照片")
+        chooseSourceItem(app, "云端")
         let restored = NSPredicate { _, _ in visibleLabels().contains(anchor) }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: nil)], timeout: 15), .completed)
         let picker = app.segmentedControls["photos-period-picker"]

@@ -390,6 +390,9 @@ private final class AssetViewerDetachedDismissal {
         }
         animator.addCompletion { [weak self] _ in
             guard let self else { return }
+            #if DEBUG || PHASE4_PERFORMANCE
+            GalleryFrameMetrics.shared.end("viewer-close")
+            #endif
             self.source?.restore()
             self.chromeSnapshot?.restore()
             self.openingChromeOverlay?.removeFromSuperview()
@@ -578,7 +581,7 @@ private final class AssetViewerTransitionAnimator: NSObject, UIViewControllerAni
         }
 
         source.hide()
-        controller?.prepareViewerContentForPresentation()
+        controller?.prepareViewerContentForPresentation(defersMounting: true)
         let zoomView = source.makeZoomView()
         container.addSubview(zoomView)
         activePresentationZoomView = zoomView
@@ -1629,13 +1632,19 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         removePresentationZoomView()
     }
 
-    fileprivate func prepareViewerContentForPresentation() {
+    fileprivate func prepareViewerContentForPresentation(defersMounting: Bool = false) {
         guard displayState.mode == .viewer else { return }
         // Mount interactive pages and chrome during the opening transition.
         // Waiting for its completion left only a snapshot accepting touches.
         displayState.viewerContentReady = true
         displayState.viewerChromeRevealed = true
-        installViewerRootIfNeeded()
+        if defersMounting {
+            // Commit the thumbnail's first animation frames before building
+            // the SwiftUI pager, controls and metadata on the main thread.
+            scheduleViewerRootInstallation(after: .milliseconds(32))
+        } else {
+            installViewerRootIfNeeded()
+        }
     }
 
     fileprivate func installDismissalGesture(on container: UIView) {
@@ -1971,6 +1980,9 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
 
     private func dismissWithoutBlockingTimeline() {
         guard dismissalRequested, let presenter = presentingViewController else { return }
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.begin("viewer-close")
+        #endif
         let wasPresenting = phase == .presenting
         phase = .dismissing
         if let transition = makeDetachedDismissal() {
@@ -2068,11 +2080,18 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        #if DEBUG || PHASE4_PERFORMANCE
+        if phase == .presenting { GalleryFrameMetrics.shared.begin("viewer-open") }
+        #endif
         presentationController?.delegate = self
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        #if DEBUG || PHASE4_PERFORMANCE
+        GalleryFrameMetrics.shared.end("viewer-open")
+        GalleryFrameMetrics.shared.end("viewer-close")
+        #endif
         if phase == .presenting {
             presentationFinished()
             return

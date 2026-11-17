@@ -205,7 +205,9 @@ final class PhotosPresentationTests: XCTestCase {
         XCTAssertNotNil(year.preparedSurfaceForMotion()); XCTAssertNotNil(month.preparedSurfaceForMotion())
         motion.begin(assetID: asset.id, from: .years, to: .months, gridSource: nil, session: session, reduceMotion: false)
         let first = try XCTUnwrap(motion.transitionID)
-        for _ in 0..<5 { await Task.yield() }
+        // Both fixture views are already mounted. Supply the same arrival
+        // event that a newly mounted destination sends in the real screen.
+        motion.arrive(at: month, mode: .months)
         XCTAssertEqual(year.alpha, 0)
         XCTAssertEqual(month.alpha, 0)
         XCTAssertEqual(window.subviews.count, originalCount + 1)

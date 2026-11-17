@@ -91,6 +91,7 @@ final class VideoPlayback {
     @ObservationIgnored private var releaseTask: Task<Void, Never>?
     @ObservationIgnored private var resumesOnReclaim = false
     @ObservationIgnored private let liveHold = LiveHoldController()
+    @ObservationIgnored private let liveHoldFeedback = UIImpactFeedbackGenerator(style: .light)
     @ObservationIgnored private var liveContext: LiveHoldContext?
     @ObservationIgnored private var liveAuthorization: (() -> Bool)?
     @ObservationIgnored private var liveToken: LiveHoldToken?
@@ -153,7 +154,13 @@ final class VideoPlayback {
               current.assetID == context.assetID, current.pageGeneration == context.pageGeneration,
               current.sessionID == context.sessionID else { return }
         liveContext = context
-        executeLive(liveHold.handle(event: liveAuthorization?() == true ? event : .sceneInactive, context: context))
+        let commands = liveHold.handle(event: liveAuthorization?() == true ? event : .sceneInactive, context: context)
+        if event == .began, liveHold.phase == .arming {
+            liveHoldFeedback.prepare()
+        } else if event == .recognized, liveHold.phase == .loadingHeld, !commands.isEmpty {
+            liveHoldFeedback.impactOccurred()
+        }
+        executeLive(commands)
     }
 
     func releaseLivePage(assetID: String, pageGeneration: UUID) {
@@ -1019,6 +1026,7 @@ struct VideoControlsBar: View {
             }
             .buttonStyle(.plain)
             .disabled(playback.isFailed)
+            .accessibilityLabel(playback.isPlaying ? String(localized: "Pause") : String(localized: "Play"))
             .accessibilityIdentifier("video-play-pause")
 
             VideoScrubber(playback: playback)
@@ -1035,6 +1043,7 @@ struct VideoControlsBar: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(playback.isMuted ? String(localized: "Unmute") : String(localized: "Mute"))
             .accessibilityIdentifier("video-mute")
         }
         .padding(.horizontal, 9)

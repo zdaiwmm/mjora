@@ -25,12 +25,14 @@ struct PhotosToolbarConfiguration {
     var completePeriodIndex = true
     var supportsDateAdded = true
     var onAccount: () -> Void
-    var onBackup: () -> Void
     var onNotifications: () -> Void
     var onSearch: () -> Void
     var pendingFavoriteCount = 0
     var favoriteSyncFailed = false
     var onRetryFavoriteSync: () -> Void = {}
+    var onBackupNow: () -> Void = {}
+    var onBackupFailures: () -> Void = {}
+    var onReady: () -> Void = {}
 }
 
 struct PhotosSourceMenu: View {
@@ -44,45 +46,7 @@ struct PhotosSourceMenu: View {
     }
 
     var body: some View {
-        Menu {
-            Picker("Photo Source", selection: configuration.source) {
-                Label("Cloud Photos", systemImage: "icloud").tag("cloud")
-                    .accessibilityIdentifier("photos-source-cloud")
-                Label("On Device", systemImage: "iphone").tag("local")
-                    .accessibilityIdentifier("photos-source-local")
-            }
-            if let backup = session.backup, let status = backup.libraryStatus {
-                Section("Backup Status") {
-                    Text(status.countText)
-                    if status.pending > 0 { Text("\(status.pending) items waiting to back up") }
-                    if backup.summary.failed > 0 { Text("\(backup.summary.failed) items failed to back up") }
-                    if status.unsupported > 0 { Text("\(status.unsupported) unsupported items") }
-                }
-            }
-            if configuration.pendingFavoriteCount > 0 {
-                Section("Favorite Sync") {
-                    Text("\(configuration.pendingFavoriteCount) favorites waiting to sync")
-                    if configuration.favoriteSyncFailed {
-                        Button("Retry Favorite Sync", action: configuration.onRetryFavoriteSync)
-                            .accessibilityIdentifier("photos-retry-favorite-sync")
-                    }
-                }
-            }
-            Section {
-                Button(action: configuration.onAccount) {
-                    Label("Account & Settings", systemImage: "person.crop.circle")
-                }
-                .accessibilityIdentifier("profile-avatar")
-                Button(action: configuration.onBackup) { Label("Backup & Sync", systemImage: "icloud.and.arrow.up") }
-                    .accessibilityIdentifier("photos-backup")
-                Button(action: configuration.onNotifications) {
-                    if unreadCount > 0 { Label("Notifications (\(unreadCount))", systemImage: "bell.badge") }
-                    else { Label("Notifications", systemImage: "bell") }
-                }
-                    .accessibilityIdentifier("notifications-open")
-            }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(title).font(.largeTitle.bold()).minimumScaleFactor(0.7).lineLimit(1)
                 Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                 if configuration.pendingFavoriteCount > 0 {
@@ -109,16 +73,86 @@ struct PhotosSourceMenu: View {
             .dynamicTypeSize(...DynamicTypeSize.large)
             .foregroundStyle(.primary)
             .contentShape(.rect)
+        .accessibilityHidden(true)
+        .overlay {
+            PhotosNativeSourceMenu(menu: makeMenu(), title: title,
+                value: configuration.completePeriodIndex ? String(localized: "\(count) items") : configuration.controls.mediaFilter.title)
         }
-        .menuIndicator(.hidden)
-        .tint(.primary)
-        .accessibilityLabel(title)
-        .accessibilityValue(configuration.completePeriodIndex ? String(localized: "\(count) items") : configuration.controls.mediaFilter.title)
-        .accessibilityIdentifier("photos-source-menu")
         .task(id: session.client?.offlineAccountKey) {
             configuration.controls.loadVisualPreferences(account: session.client?.offlineAccountKey)
         }
     }
+
+    private func makeMenu() -> UIMenu {
+        let choices = PhotosLibrarySource.allCases.map { source in
+            UIAction(title: source.title, image: UIImage(systemName: source.symbol),
+                     identifier: UIAction.Identifier("photos-source-" + source.rawValue),
+                     state: configuration.source.wrappedValue == source.rawValue ? .on : .off) { _ in
+                configuration.source.wrappedValue = source.rawValue
+            }
+        }
+        let sources = UIMenu(options: [.displayInline, .singleSelection], children: choices)
+        sources.preferredElementSize = .medium
+        var sections: [UIMenuElement] = [sources]
+        if let backup = session.backup {
+            let pending = max(0, (backup.libraryStatus?.pending ?? 0) - backup.backupFailures.count)
+            let summary = backup.isRunning ? String(localized: "Backing up…")
+                : pending > 0 ? String(localized: "\(pending) items waiting to back up")
+                : backup.hasBackupFailure ? String(localized: "Backup Needs Attention")
+                : backup.libraryStatus == nil ? String(localized: "Checking Backup Status…")
+                : String(localized: "All Photos Backed Up")
+            var actions: [UIMenuElement] = []
+            if !backup.isRunning, backup.libraryStatus?.pending ?? 0 > 0 {
+                actions.append(UIAction(title: String(localized: "Back Up Now"), image: UIImage(systemName: "icloud.and.arrow.up"),
+                    identifier: .init("photos-back-up-now")) { _ in configuration.onBackupNow() })
+            }
+            if backup.hasBackupFailure {
+                actions.append(UIAction(title: String(localized: "Review Failed Items"), image: UIImage(systemName: "exclamationmark.icloud"),
+                    identifier: .init("photos-backup-failures")) { _ in configuration.onBackupFailures() })
+            }
+            if actions.isEmpty {
+                actions.append(UIAction(title: summary, attributes: .disabled) { _ in })
+                sections.append(UIMenu(title: String(localized: "Backup Status"), options: .displayInline, children: actions))
+            } else {
+                sections.append(UIMenu(title: summary, options: .displayInline, children: actions))
+            }
+        }
+        if configuration.pendingFavoriteCount > 0 {
+            var actions: [UIMenuElement] = [UIAction(title: String(localized: "\(configuration.pendingFavoriteCount) favorites waiting to sync"),
+                attributes: .disabled) { _ in }]
+            if configuration.favoriteSyncFailed {
+                actions.append(UIAction(title: String(localized: "Retry Favorite Sync")) { _ in configuration.onRetryFavoriteSync() })
+            }
+            sections.append(UIMenu(title: String(localized: "Favorite Sync"), options: .displayInline, children: actions))
+        }
+        sections.append(UIMenu(options: .displayInline, children: [
+            UIAction(title: String(localized: "Account & Settings"), image: UIImage(systemName: "person.crop.circle")) { _ in configuration.onAccount() },
+            UIAction(title: unreadCount > 0 ? String(localized: "Notifications (\(unreadCount))") : String(localized: "Notifications"),
+                     image: UIImage(systemName: unreadCount > 0 ? "bell.badge" : "bell")) { _ in configuration.onNotifications() }
+        ]))
+        return UIMenu(children: sections)
+    }
+}
+
+private struct PhotosNativeSourceMenu: UIViewRepresentable {
+    let menu: UIMenu
+    let title: String
+    let value: String
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.showsMenuAsPrimaryAction = true
+        button.preferredMenuElementOrder = .fixed
+        button.accessibilityIdentifier = "photos-source-menu"
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        button.menu = menu
+        button.accessibilityLabel = title
+        button.accessibilityValue = value
+    }
+
 }
 
 struct PhotosBrowseMenu: UIViewRepresentable {

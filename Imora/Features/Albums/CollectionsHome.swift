@@ -22,7 +22,7 @@ struct CollectionsHome: View {
     @State private var people: [Person] = []
     @State private var memories: [Memory] = []
     @State private var changingPeople = Set<String>()
-    @AppStorage("imora.photos.source") private var source = "cloud"
+    @AppStorage(PhotosLibrarySource.preferenceKey) private var source = "all"
     @State private var mediaFacts = DeviceMediaFactsStore.shared
     @State private var mediaFactsError: String?
     @ScaledMetric(relativeTo: .body) private var previewSide = 112.0
