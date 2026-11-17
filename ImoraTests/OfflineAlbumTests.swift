@@ -232,6 +232,62 @@ final class OfflineAlbumTests: XCTestCase {
         XCTAssertTrue(availableAssets.isEmpty)
     }
 
+    func testMotionRevisionUpdatesAreDurableAcrossRepeatedObservation() async throws {
+        for visibility in [AssetVisibility.timeline, .archive, .hidden] {
+            let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+            let context = AccountRequestContext(apiURL: URL(string: scope.serverIdentity)!, token: "synthetic")
+            let store = OfflineAlbumStore(root: root), parent = asset(motion: "motion")
+            var motion = asset("motion", video: true, revision: "motion-v1"); motion.visibility = visibility
+            let still = try component(parent, scope: scope)
+            var oldMotion = try component(motion, scope: scope, kind: .video)
+            oldMotion.parentAsset = parent; oldMotion.parentGeneration = still.generation
+            try await store.prepare(album: album(), items: [.init(asset: parent, components: [still, oldMotion])], scope: scope)
+            try await install(png(), component: still, store: store, scope: scope, context: context)
+            try await install(Data("old-motion".utf8), component: oldMotion, store: store, scope: scope, context: context, index: 1)
+            motion.thumbhash = "motion-v2"
+            let changed = try await store.observe(motion, scope: scope)
+            XCTAssertTrue(changed)
+            var updated = try component(motion, scope: scope, kind: .video)
+            updated.parentAsset = parent; updated.parentGeneration = still.generation
+            try await store.prepare(album: album(), items: [.init(asset: parent, components: [still, updated])], scope: scope)
+            try await install(png(), component: still, store: store, scope: scope, context: context)
+            try await install(Data("new-motion".utf8), component: updated, store: store, scope: scope, context: context, index: 1)
+            try await store.setState(.ready, scope: scope, id: "album")
+            let savedRecord = try await store.album(scope: scope, id: "album")
+            let saved = try XCTUnwrap(savedRecord)
+            XCTAssertEqual(saved.items[0].components[1].asset.thumbhash, "motion-v2")
+            let changedAgain = try await store.observe(motion, scope: scope)
+            XCTAssertFalse(changedAgain, "The same motion version invalidated completed files")
+            let repeatedRecord = try await store.album(scope: scope, id: "album")
+            let repeated = try XCTUnwrap(repeatedRecord)
+            XCTAssertEqual(repeated.bytes, saved.bytes)
+            XCTAssertEqual(repeated.state, .ready)
+        }
+    }
+
+    func testFavoriteMetadataUpdatesReuseCompleteComponents() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = StableMediaScope.verified(server: "https://offline.invalid/api", accountID: UUID().uuidString)
+        let context = AccountRequestContext(apiURL: URL(string: scope.serverIdentity)!, token: "synthetic")
+        let store = OfflineAlbumStore(root: root), part = try component(asset(), scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: part.asset, components: [part])], scope: scope)
+        try await install(png(), component: part, store: store, scope: scope, context: context)
+        let savedRecord = try await store.album(scope: scope, id: "album")
+        let saved = try XCTUnwrap(savedRecord)
+        var favorite = part.asset; favorite.isFavorite = true
+        let fresh = try component(favorite, scope: scope)
+        try await store.prepare(album: album(), items: [.init(asset: favorite, components: [fresh])], scope: scope)
+        let updatedRecord = try await store.album(scope: scope, id: "album")
+        let updated = try XCTUnwrap(updatedRecord)
+        XCTAssertTrue(updated.items[0].asset.isFavorite)
+        XCTAssertTrue(updated.items[0].components[0].asset.isFavorite)
+        XCTAssertEqual(updated.items[0].components[0].filename, saved.items[0].components[0].filename)
+        XCTAssertEqual(updated.bytes, saved.bytes)
+    }
+
     func testPrivateAndTrashedMediaAndInvalidFilesAreRejected() async throws {
         var value = asset()
         for visibility in [AssetVisibility.hidden, .locked] {
