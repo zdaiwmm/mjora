@@ -28,13 +28,20 @@ struct LocalPhotoSearchView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Binding var source: PhotoSearchSource
     let query: String
-    @State private var records: [LocalPhotoSearchRecord] = []
-    @State private var timeline = TimelineModel(filter: TimelineFilter(order: "asc"), suppliedAssets: [])
-    @State private var loading = false
-    @State private var revision = 0
-    @State private var loadGeneration = 0
+    @State private var model = LocalPhotoSearchModel()
 
-    private struct Request: Hashable { let query: String; let revision: Int }
+    private struct Request: Hashable {
+        let query: String
+        let revision: Int
+        let context: LocalPhotoSearchModel.Context
+    }
+
+    private var context: LocalPhotoSearchModel.Context {
+        .init(sessionID: session.client?.context.id,
+              permissionEpoch: DeviceMediaFactsStore.shared.generation,
+              authorization: PhotoAccess.shared.status.rawValue,
+              isActive: scenePhase == .active && session.client?.context.isActive == true)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,15 +66,15 @@ struct LocalPhotoSearchView: View {
                         Link("Manage Photo Access", destination: url)
                     }
                 }
-            } else if loading && records.isEmpty {
+            } else if model.context != context || model.phase != .ready {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TimelineScreen(title: "", filter: timeline.filter,
+                TimelineScreen(title: "", filter: model.timeline.filter,
                     emptyMessage: String(localized: "No matching photos on this device."),
-                    showsLargeTitle: false, suppliedModel: timeline, mergesLocalPhotos: true,
+                    showsLargeTitle: false, suppliedModel: model.timeline, mergesLocalPhotos: true,
                     header: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(timeline.flatAssets.count) results").font(.subheadline).foregroundStyle(.secondary)
+                            Text("\(model.results.count) results").font(.subheadline).foregroundStyle(.secondary)
                             if PhotoAccess.shared.status == .limited {
                                 Text("Only photos you've allowed are searched.")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -81,33 +88,24 @@ struct LocalPhotoSearchView: View {
         }
         .toolbarVisibility(.visible, for: .navigationBar)
         .navigationTitle("")
-        .task(id: session.client?.offlineAccountKey) { await reload() }
-        .task(id: Request(query: query, revision: revision)) {
+        .task(id: context) {
+            DeviceMediaFactsStore.shared.startObserving()
+            await reload()
+        }
+        .task(id: Request(query: query, revision: model.metadataRevision, context: context)) {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-            let snapshot = records
-            let requested = query
-            let assets = await Task.detached(priority: .userInitiated) {
-                LocalPhotoSearch.results(snapshot, query: requested)
-            }.value
-            guard !Task.isCancelled, requested == query else { return }
-            timeline.replaceSuppliedAssets(assets, groupsByDate: true)
+            await model.search(query, context: context)
         }
         .onChange(of: session.realtime?.localGeneration) { _, _ in Task { await reload() } }
-        .onChange(of: PhotoAccess.shared.status) { _, _ in Task { await reload() } }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await reload() } } }
-        .onDisappear { loadGeneration += 1 }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { PhotoAccess.shared.refresh() }
+            else { model.invalidate() }
+        }
+        .onDisappear { model.invalidate() }
     }
 
     private func reload() async {
-        loadGeneration += 1
-        let generation = loadGeneration
-        let client = session.client
-        loading = true
         let backedUp = Set(session.backup?.remoteIdentifierByLocalId.keys.map { $0 } ?? [])
-        let loaded = await LocalPhotoSearch.records(backedUpLocalIDs: backedUp)
-        guard generation == loadGeneration, session.client === client, !Task.isCancelled else { return }
-        records = loaded
-        revision += 1
-        loading = false
+        await model.reload(context: context, backedUpLocalIDs: backedUp)
     }
 }

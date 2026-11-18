@@ -213,10 +213,10 @@ struct MainTabView: View {
         .onChange(of: timelineRouter.pendingTarget) { _, target in
             if target != nil { selection = .photos }
         }
-        .onChange(of: timelineRouter.searchRequested) { _, requested in
-            if requested {
-                activateSearch()
-                timelineRouter.searchRequested = false
+        .onChange(of: timelineRouter.searchRequest) { _, request in
+            if let request {
+                activateSearch(source: request.source)
+                timelineRouter.searchRequest = nil
             }
         }
     }
@@ -226,9 +226,12 @@ struct MainTabView: View {
     }
 
     private func activateSearch() {
-        if selection != .search {
-            searchSource = .cloud
-        }
+        activateSearch(source: .cloud)
+    }
+
+    private func activateSearch(source: PhotoSearchSource) {
+        if searchSource != source { searchText = "" }
+        searchSource = source
         selection = .search
         setSearchFocus(true)
     }

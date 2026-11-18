@@ -27,6 +27,7 @@ struct PhotosToolbarConfiguration {
     var onAccount: () -> Void
     var onNotifications: () -> Void
     var onSearch: () -> Void
+    var onSearchDevice: () -> Void = {}
     var pendingFavoriteCount = 0
     var favoriteSyncFailed = false
     var onRetryFavoriteSync: () -> Void = {}
@@ -94,6 +95,12 @@ struct PhotosSourceMenu: View {
         let sources = UIMenu(options: [.displayInline, .singleSelection], children: choices)
         sources.preferredElementSize = .medium
         var sections: [UIMenuElement] = [sources]
+        if configuration.source.wrappedValue == "local" {
+            sections.append(UIMenu(options: .displayInline, children: [
+                UIAction(title: String(localized: "Search On Device"), image: UIImage(systemName: "magnifyingglass"),
+                    identifier: .init("photos-search-device")) { _ in configuration.onSearchDevice() }
+            ]))
+        }
         if let backup = session.backup {
             let pending = max(0, (backup.libraryStatus?.pending ?? 0) - backup.backupFailures.count)
             let summary = backup.isRunning ? String(localized: "Backing up…")
