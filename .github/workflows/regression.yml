@@ -56,7 +56,8 @@ jobs:
           derived_data="$RUNNER_TEMP/ImoraDerivedData"
           build_args=(-project Imora.xcodeproj -scheme Imora -destination "$destination"
             -derivedDataPath "$derived_data" -clonedSourcePackagesDirPath "$RUNNER_TEMP/ImoraSourcePackages"
-            -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=NO
+            -disableAutomaticPackageResolution CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=
             -only-testing:ImoraTests -parallel-testing-enabled NO)
           xcodebuild "${build_args[@]}" build-for-testing
           app="$derived_data/Build/Products/Debug-iphonesimulator/Imora.app"
