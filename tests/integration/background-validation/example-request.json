@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "runID": "b2-bg-20261118T000000Z-abcdef12",
+  "scenario": "transport-stable",
+  "sourceRevision": "0000000000000000000000000000000000000000",
+  "backendURL": "https://synthetic-backend.invalid/api",
+  "relayURL": "https://synthetic-relay.invalid/api",
+  "fixtureID": "11111111-1111-4111-8111-111111111111",
+  "accountID": "22222222-2222-4222-8222-222222222222",
+  "accountEmail": "synthetic@background-fixture.invalid",
+  "payloadBytes": 536870912
+}

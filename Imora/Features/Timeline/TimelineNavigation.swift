@@ -18,17 +18,28 @@ nonisolated struct TimelineNavigationTarget: Equatable, Sendable {
     }
 }
 
+nonisolated struct PhotoSearchRequest: Equatable, Sendable {
+    let id = UUID()
+    let source: PhotoSearchSource
+
+    init(source: PhotoSearchSource = .cloud) { self.source = source }
+}
+
 @MainActor
 @Observable
 final class TimelineNavigationRouter {
     static let shared = TimelineNavigationRouter()
 
     var pendingTarget: TimelineNavigationTarget?
-    var searchRequested = false
+    var searchRequest: PhotoSearchRequest?
 
     private init() {}
 
     func open(_ target: TimelineNavigationTarget) {
         pendingTarget = target
+    }
+
+    func requestSearch(source: PhotoSearchSource = .cloud) {
+        searchRequest = PhotoSearchRequest(source: source)
     }
 }

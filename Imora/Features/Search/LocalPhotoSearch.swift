@@ -40,19 +40,48 @@ nonisolated enum LocalPhotoSearch {
     /// Metadata only: no image export, iCloud download or server request.
     @concurrent
     static func records(backedUpLocalIDs: Set<String> = []) async -> [LocalPhotoSearchRecord] {
-        let snapshots = await PhotoLibraryService.browsableAssets()
-        guard !Task.isCancelled else { return [] }
-        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: snapshots.map(\.localIdentifier), options: nil)
-        var resources: [String: [PHAssetResource]] = [:]
-        fetched.enumerateObjects { asset, _, _ in resources[asset.localIdentifier] = PHAssetResource.assetResources(for: asset) }
-        return snapshots.map { snapshot in
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return [] }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let fetched = PHAsset.fetchAssets(with: options)
+        var records: [LocalPhotoSearchRecord] = []
+        for index in 0..<fetched.count {
+            guard !Task.isCancelled else { return [] }
+            let photo = fetched.object(at: index)
+            guard !photo.isHidden, photo.mediaType == .image || photo.mediaType == .video else { continue }
+            let snapshot = PhotoLibraryService.snapshot(of: photo)
             var asset = snapshot.asAsset(backedUp: backedUpLocalIDs.contains(snapshot.localIdentifier))
-            let items = resources[snapshot.localIdentifier] ?? []
+            let items = PHAssetResource.assetResources(for: photo)
             let primary = items.first { $0.type == .photo || $0.type == .video } ?? items.first
             let name = primary?.originalFilename ?? ""
             asset.originalFileName = name
             asset.isEdited = items.contains { $0.type == .adjustmentData }
-            return LocalPhotoSearchRecord(asset: asset, filename: name)
+            records.append(LocalPhotoSearchRecord(asset: asset, filename: name))
         }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == status else { return [] }
+        return records
+    }
+
+    /// Re-check PhotoKit immediately before publishing. Cached backup snapshots
+    /// are not authority for the current Limited Photos selection.
+    @concurrent
+    static func visibleIdentifiers(in identifiers: Set<String>) async -> Set<String> {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited, !Task.isCancelled else { return [] }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: Array(identifiers), options: options)
+        var visible: Set<String> = []
+        for index in 0..<fetched.count {
+            guard !Task.isCancelled else { return [] }
+            let photo = fetched.object(at: index)
+            if !photo.isHidden, photo.mediaType == .image || photo.mediaType == .video {
+                visible.insert(photo.localIdentifier)
+            }
+        }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == status else { return [] }
+        return visible
     }
 }

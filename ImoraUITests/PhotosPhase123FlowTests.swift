@@ -130,10 +130,12 @@ final class PhotosPhase123FlowTests: XCTestCase {
 
     private func searchDevice(_ app: XCUIApplication, filename: String) {
         source(app, device: true)
-        tapID(app, "photos-search")
+        tapID(app, "photos-source-menu")
+        let localSearch = button(app, labels: ["搜索本机照片", "Search On Device"])
+        XCTAssertTrue(localSearch.waitForExistence(timeout: 5)); localSearch.tap()
         let scope = app.buttons["search-source"]
         XCTAssertTrue(scope.waitForExistence(timeout: 10))
-        XCTAssertTrue((scope.value as? String ?? scope.label).contains("本机"), "Search must inherit the device source")
+        XCTAssertTrue((scope.value as? String ?? scope.label).contains("本机"), "The explicit action must search the device")
         let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
