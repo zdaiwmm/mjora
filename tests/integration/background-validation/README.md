@@ -1,6 +1,6 @@
 # Synthetic background validation tools
 
-These tools prepare isolated candidates and check acceptance evidence. They do not install an app, read Photos, obtain an account credential, or contact a server during preparation. Lock-screen and whole-library product acceptance remain separate B2/B3 tasks.
+These tools prepare isolated candidates and check acceptance evidence. `prepare` is offline. `fixture.py serve` explicitly creates disposable local credentials and contacts only its own real API. No command installs an app or reads Photos. Lock-screen and whole-library product acceptance remain separate B2/B3 tasks.
 
 ## Files and boundaries
 
@@ -11,11 +11,47 @@ These tools prepare isolated candidates and check acceptance evidence. They do n
 - `relay.py` receives only encrypted parts and the upload capability. A registration pins one run, upload ID and capability digest. Account authentication headers, arbitrary upload IDs and redirects are rejected. The body is bounded to one 8 MiB part plus 28 AES-GCM bytes. Raw headers, capability, key and bodies are never written to evidence.
 - `validation.py` checks versioned manifests and separate stable, interrupted and PhotoKit scenarios. A complete result is always `EVIDENCE_COMPLETE_REVIEW_REQUIRED`, never product PASS.
 
-The relay binds only to `127.0.0.1`. A later physical run needs a separately approved fixed HTTPS entry to that relay. No network listener or proxy is installed by this toolkit. The `relay` command has an explicit maximum duration and exits after that bound.
+Both listeners default to `127.0.0.1`. The relay can also use TLS on one explicitly selected private IPv4 interface. Its bind address, port and scheme must match the candidate request; the relay verifies the backend with the supplied fixture CA, and neither listener follows redirects. Both commands are bounded foreground processes.
+
+## Start the isolated real API
+
+Use a local Docker daemon with sufficient memory for the server and PostgreSQL, Python 3.12+ and OpenSSL 3. Choose the **immutable local image IDs** of a tested MJora API, its compatible PostgreSQL image (including its vector extensions), and Redis. The known-good image roles and the origin of this setup are documented in `execution/batch1-rollout-20261118/server-integration/REPORT.md` in the workspace. IDs in that historical report are from another host; confirm the images exist locally and that the server image corresponds to the revision under test. Do not supply a prior database, production Compose `.env`, or existing library volume. The launcher uses only a local Unix socket, fresh labelled resources and an internal Docker network, and does not pull images or publish Docker ports.
+
+From this tools directory, run one fixture per scenario. Use a fresh private output directory and unused ports. For a no-device smoke use the default loopback; use the full 512 MiB default for physical acceptance. Choose either `transport-stable` or `transport-interrupted`.
+
+```sh
+NATIVE_HEAD=$(git rev-parse HEAD)
+python3 -B fixture.py serve \
+  --output /private/task/stable-fixture --source-revision "$NATIVE_HEAD" \
+  --scenario transport-stable --duration-seconds 5400 \
+  --backend-port 9443 --relay-port 9444 \
+  --server-image "${MJORA_SERVER_IMAGE_ID:?Set the local MJora image ID}" \
+  --database-image "${MJORA_DATABASE_IMAGE_ID:?Set the local PostgreSQL image ID}" \
+  --redis-image "${MJORA_REDIS_IMAGE_ID:?Set the local Redis image ID}"
+```
+
+Read `FIXTURE_READY` before continuing. `request.json` contains the real account and fixture IDs. The listener opens only after the image declares `backgroundUploadsV1` and the new synthetic user can log in and retrieve an authenticated `/users/me` with its exact ID and email and `isAdmin: false`. The private login lives temporarily in `private-login.json`; keep that file and `leaf-key.pem` on the test host and out of evidence. The TLS gateway only forwards transport routes to the owned container and refuses setup/admin routes and other account emails. From another terminal run `python3 -B fixture.py probe --output /private/task/stable-fixture` to verify the private CA, identity document, background feature and synthetic user again over HTTPS, then use that request for `tool.py prepare`. `FIXTURE_TLS_IDENTITY_VERIFIED` is a readiness result, not upload or device acceptance.
+
+On normal exit or Ctrl-C, the launcher stops its listener, removes its private login and leaf key, and removes only the resources carrying its fixture label. If the launcher died without cleanup, verify that it has exited before running `python3 -B fixture.py cleanup --output /private/task/stable-fixture`. Keep the request, public CA and receipt for review. If Docker or the API is not ready, no `FIXTURE_READY` receipt or physical acceptance can be recorded.
+
+## Later private device connection
+
+When B2 physical execution is authorized, choose a dedicated private test LAN with no port forwarding and verify that phone and test computer can reach each other. Use `--bind <test-computer-LAN-IPv4>` when creating the fixture so both request URLs and the leaf certificate use that exact IP. Its CA lasts one day. Transfer only the public `ca.cer` to the dedicated test phone; verify the SHA-256 fingerprint on the host (`openssl x509 -in ca.pem -noout -fingerprint -sha256`), install it and enable full trust for this test root. The app uses its normal TLS policy. Grant the candidate local network access if prompted, use the exact `backendURL`, and sign in only with `private-login.json`. Remove the temporary CA trust after exporting evidence. Keep the same address and trust throughout each run; if the certificate expires or the address changes, create a fresh fixture and candidate request.
+
+After the device exports `relay-registration.json`, run the bounded relay in a separate foreground terminal using the same address and certificate:
+
+```sh
+python3 -B tool.py relay \
+  --request /private/task/stable-fixture/request.json \
+  --registration /private/task/relay-registration.json --evidence /private/task/relay.json \
+  --bind "${MJORA_TEST_LAN_IP:?Set the exact fixture bind IP}" --port 9444 --duration-seconds 3600 \
+  --tls-cert /private/task/stable-fixture/leaf.pem --tls-key /private/task/stable-fixture/leaf-key.pem \
+  --backend-ca /private/task/stable-fixture/ca.pem
+```
 
 ## Prepare an unsigned candidate
 
-Copy `example-request.json` to a private task directory. Replace the zero source revision with the current commit, choose a unique `b2-bg-<UTC>-<8 hex>` runID, and supply only a dedicated synthetic fixture and non-admin account. `.invalid` endpoints in the example are placeholders. A candidate cannot use that example without an explicit matching source revision.
+Use the active fixture's `request.json` for device preparation. For offline build checks only, you can copy `example-request.json` to a private task directory, replace the zero source revision with the current commit, and choose a unique `b2-bg-<UTC>-<8 hex>` runID. The example's endpoints and IDs are placeholders.
 
 ```sh
 python3 -B tool.py prepare \
@@ -94,15 +130,17 @@ All documents bind schema 2, runID, source revision and target fingerprint. Each
 - No request may start between that drop and its authenticated status, including a retransmission of the dropped piece or an early send of the next offset.
 - `photokit-pipeline` requires the explicit pipeline stages and a verified synthetic-only library in addition to media evidence. The panel does not generate these stages. A dedicated test library and product-entry trace collector remain B3 execution prerequisites.
 
+For B3, first verify a dedicated device library contains only the intended generated photo, video and Live Photo pair, with no personal iCloud Photos sync. Retain an inventory and hashes for both Live Photo resources. Use the product's normal backup entry and collect its actual `product-backup-start`, `photokit-scan`, `photokit-hash`, `photokit-resource`, `system-handoff`, `next-asset-scheduled` and `index-persisted` events. Match each relevant event to that inventory and verify authenticated originals and index state. The B2 fixture's route allowlist serves the transport panel; B3 needs a separately validated isolated endpoint for the real product pipeline (including bulk-check, asset creation and Live Photo linkage) and its trace collector. Do not synthesize pipeline events or give the transport panel Photos access to make up for missing evidence.
+
 The checker verifies consistency of supplied material. It cannot authenticate a JSON claim, observe a screen lock, verify a signed artifact, or turn simulated evidence into physical proof. Keep candidate source review and authenticated-readback review as separate acceptance checks.
 
 ## Local tests
 
 ```sh
-python3 -B -m unittest discover -s . -p test_validation.py -v
+python3 -B -m unittest discover -s . -p 'test_*.py' -v
 ```
 
-Tests use temporary directories and bounded loopback servers that stop before the process exits. The interruption test actually commits a synthetic part upstream, drops the response, reads the synthetic authoritative offset and continues without retransmitting that part. Other tests reject missing pieces, invalid timelines, false lock progress, credentials, stale source, run mixing, redirects and overbroad cleanup.
+Tests use temporary directories and bounded loopback servers that stop before the process exits. The interruption test actually commits a synthetic part upstream, drops the response, reads the synthetic authoritative offset and continues without retransmitting that part. The HTTPS test checks CA trust, exact fixture identity, fixed forwarding, redirect and credential refusal. Both use an opaque-byte upstream; launch the real isolated fixture separately to verify Docker startup and real API behavior. Other tests reject missing pieces, invalid timelines, false lock progress, credentials, stale source, run mixing and overbroad cleanup.
 
 Run the separate executable Foundation ledger checks without an app, device or network:
 

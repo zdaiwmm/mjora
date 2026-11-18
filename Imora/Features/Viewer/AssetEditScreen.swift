@@ -1138,7 +1138,8 @@ struct AssetEditScreen: View {
             // the editor always starts from the unedited picture and replays
             // stored edits as ui state, like the official clients.
             async let detailTask = client.assetDetail(id: asset.id)
-            async let editsTask = client.assetEdits(id: asset.id)
+            let requiresEditRevision = session.capabilities.supportsPhotoEditsCASV1
+            async let editsTask = client.assetEditState(id: asset.id, requiresRevision: requiresEditRevision)
             let unified = session.capabilities.supportsPhotoEditsV1 && asset.livePhotoVideoId == nil
             let offersAdjust = session.capabilities.supportsAdjust && asset.livePhotoVideoId == nil
             async let adjustTask = offersAdjust ? (try? await client.imageAdjust(id: asset.id)) : nil
@@ -1153,16 +1154,17 @@ struct AssetEditScreen: View {
             // saving replaces the whole edit list, so an unreadable one must
             // not be mistaken for an empty one: that would silently drop a
             // crop the asset already carries.
-            let edits: [AssetEdit]
+            let editState: ImoraClient.AssetEditState
             do {
-                edits = try await editsTask
+                editState = try await editsTask
             } catch {
-                guard detail.isEdited != true else {
+                guard !requiresEditRevision, detail.isEdited != true else {
                     loadState = .failed(String(localized: "This photo's existing edits could not be loaded."))
                     return
                 }
-                edits = []
+                editState = .init(edits: [], revision: nil)
             }
+            let edits = editState.edits
 
             let (width, height) = Self.resolveOriginalSize(detail: detail, image: image)
             // an existing crop that cannot be placed would be seeded as the
@@ -1205,7 +1207,7 @@ struct AssetEditScreen: View {
                 sourceRevision: revision, width: width, height: height,
                 mode: canUseUnifiedEditor ? "unified" : (canAdjust ? "legacy" : "geometry"))
             try restoreDraft(binding: binding, current: .init(edits: edits,
-                adjust: canUseUnifiedEditor || !canAdjust ? nil : loadedAdjust))
+                adjust: canUseUnifiedEditor || !canAdjust ? nil : loadedAdjust, cloudRevision: editState.revision))
             committed = snapshot
             loadState = .ready
             draftInitialized = true
@@ -1312,9 +1314,10 @@ struct AssetEditScreen: View {
                 throw ImoraError.http(403, String(localized: "access denied."))
             }
             requiresPrivateAccess = requiresPrivateAccess || detail.visibility == .locked
-            let edits = try await client.assetEdits(id: asset.id)
+            let requiresRevision = stored.baseline.cloudRevision != nil || session.capabilities.supportsPhotoEditsCASV1
+            let editState = try await client.assetEditState(id: asset.id, requiresRevision: requiresRevision)
             let currentAdjust = canUseUnifiedEditor || !canAdjust ? nil : try await client.imageAdjust(id: asset.id)
-            current = .init(edits: edits, adjust: currentAdjust)
+            current = .init(edits: editState.edits, adjust: currentAdjust, cloudRevision: editState.revision)
             currentBinding = .init(scope: client.mediaDisplayScope, subject: binding.subject,
                 sourceRevision: detail.checksum ?? "", width: binding.width, height: binding.height, mode: binding.mode)
         }
@@ -1497,7 +1500,7 @@ struct AssetEditScreen: View {
                 }
                 if unified {
                     derivativeReady = observeDerivative()
-                    try await client.savePhotoEdits(id: asset.id, edits: intent)
+                    try await client.savePhotoEdits(id: asset.id, edits: intent, revision: pending.baseline.cloudRevision)
                 } else {
                     try await PhotoEditPersistence.saveLegacy(
                         adjust: legacyIntent.adjust,
@@ -1509,7 +1512,9 @@ struct AssetEditScreen: View {
                             await derivativeReady?.value
                         }, writeEdits: { value in
                             derivativeReady = observeDerivative()
-                            if value.isEmpty { try await client.clearEdits(id: assetID) }
+                            if let revision = pending.baseline.cloudRevision {
+                                try await client.replaceVersionedPhotoEdits(id: assetID, edits: value, revision: revision)
+                            } else if value.isEmpty { try await client.clearEdits(id: assetID) }
                             else { try await client.applyEdits(id: assetID, edits: value) }
                         }, readAdjust: { try await client.imageAdjust(id: assetID) },
                         readEdits: { try await client.assetEdits(id: assetID) })
@@ -1528,6 +1533,22 @@ struct AssetEditScreen: View {
                 legacyRecovery.recordConfirmed()
                 isSaving = false
                 finish(.saved(detail))
+            } catch PhotoEditDraft.RecoveryError.writeConflict {
+                isSaving = false
+                if var rejected = draft {
+                    // An explicit rejection is not an ambiguous submission.
+                    // Keep the draft and its old baseline for the next open.
+                    rejected.submission = nil
+                    draft = rejected
+                    if (try? requireDraftAccess()) != nil { try? PhotoEditDraftStore.shared.write(rejected) }
+                }
+                onRemoteSaveUnconfirmed(asset.id)
+                draftNotice = nil
+                saveError = PhotoEditDraft.RecoveryError.writeConflict.localizedDescription
+            } catch PhotoEditDraft.RecoveryError.changed {
+                isSaving = false
+                draftNotice = nil
+                saveError = PhotoEditDraft.RecoveryError.changed.localizedDescription
             } catch {
                 // No rollback claim: a legacy first write, or a response-lost
                 // write, may already be accepted. Preserve every draft field.

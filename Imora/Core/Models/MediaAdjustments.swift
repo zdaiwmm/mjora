@@ -192,6 +192,8 @@ nonisolated enum PhotoEditPersistence {
         do {
             if let adjust { try await writeAdjust(adjust) }
             if let edits { try await writeEdits(edits) }
+        } catch PhotoEditDraft.RecoveryError.writeConflict {
+            throw PhotoEditDraft.RecoveryError.writeConflict
         } catch {
             let actualAdjust = adjust == nil ? nil : try? await readAdjust()
             let actualEdits = edits == nil ? nil : try? await readEdits()

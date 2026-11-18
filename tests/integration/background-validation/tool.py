@@ -122,11 +122,15 @@ def main(argv=None):
     check = commands.add_parser("review", help="Offline evidence consistency review, never product PASS")
     for name in ("manifest", "record", "relay"):
         check.add_argument("--" + name, required=True, type=Path)
-    serve = commands.add_parser("relay", help="Explicitly start a bounded, loopback-only relay after synthetic fixture attestation")
+    serve = commands.add_parser("relay", help="Start a bounded relay on a private interface after synthetic fixture attestation")
     serve.add_argument("--request", required=True, type=Path)
     serve.add_argument("--registration", required=True, type=Path)
     serve.add_argument("--evidence", required=True, type=Path)
     serve.add_argument("--port", required=True, type=int)
+    serve.add_argument("--bind", default="127.0.0.1")
+    serve.add_argument("--tls-cert", type=Path)
+    serve.add_argument("--tls-key", type=Path)
+    serve.add_argument("--backend-ca", type=Path)
     serve.add_argument("--duration-seconds", type=int, default=3600)
     args = parser.parse_args(argv)
     try:
@@ -145,12 +149,19 @@ def main(argv=None):
         elif args.command == "review":
             result = review(load(args.manifest), load(args.record), load(args.relay))
         else:
+            from local_tls import relay_context
             from relay import Relay
             require(1 <= args.duration_seconds <= 7200 and 1 <= args.port <= 65535, "Invalid bounded relay duration/port")
-            relay = Relay(load(args.request), load(args.registration), args.evidence)
-            server = relay.server(args.port)
+            request = validate_request(load(args.request))
+            tls = relay_context(request["relayURL"], host=args.bind, port=args.port, cert=args.tls_cert, key=args.tls_key)
+            relay = Relay(request, load(args.registration), args.evidence, ca_file=args.backend_ca)
+            try:
+                server = relay.server(args.port, host=args.bind, tls=tls)
+            except BaseException:
+                relay.close()
+                raise
             server.timeout = 1
-            print(json.dumps({"ready": True, "bind": "127.0.0.1", "port": args.port, "runID": relay.request["runID"]}), flush=True)
+            print(json.dumps({"ready": True, "bind": args.bind, "port": args.port, "tls": tls is not None, "runID": request["runID"]}), flush=True)
             deadline = time.monotonic() + args.duration_seconds
             try:
                 while time.monotonic() < deadline:

@@ -15,6 +15,7 @@ nonisolated struct PhotoEditDraft: Codable, Equatable, Sendable {
         let edits: [AssetEdit]
         let adjust: ImageAdjust?
         var localModification: Date? = nil
+        var cloudRevision: String? = nil
     }
 
     struct Submission: Codable, Equatable, Sendable {
@@ -38,10 +39,10 @@ nonisolated struct PhotoEditDraft: Codable, Equatable, Sendable {
 
     enum Recovery { case saved, editing(PhotoEditDraft), retry(PhotoEditDraft) }
     enum RecoveryError: LocalizedError {
-        case changed, invalid
+        case changed, writeConflict, invalid
         var errorDescription: String? {
             switch self {
-            case .changed: String(localized: "This photo or its edits changed. Your saved draft was kept, but can't be applied to this version.")
+            case .changed, .writeConflict: String(localized: "This photo or its edits changed. Your saved draft was kept, but can't be applied to this version.")
             case .invalid: String(localized: "The saved draft couldn't be read. It has been kept. You can try again or discard it.")
             }
         }
@@ -52,9 +53,16 @@ nonisolated struct PhotoEditDraft: Codable, Equatable, Sendable {
     func recover(binding currentBinding: Binding, current: Version) throws -> Recovery {
         guard version == 1, binding == currentBinding, !binding.sourceRevision.isEmpty,
               binding.scope.accountID != nil else { throw RecoveryError.changed }
+        if baseline.cloudRevision != nil, current.cloudRevision == nil { throw RecoveryError.changed }
+        // Older drafts can adopt a revision only if the saved baseline still
+        // matches all the authoritative state they originally captured.
+        var comparableBaseline = baseline
+        if comparableBaseline.cloudRevision == nil { comparableBaseline.cloudRevision = current.cloudRevision }
         guard let submission else {
-            guard baseline == current else { throw RecoveryError.changed }
-            return .editing(self)
+            guard comparableBaseline == current else { throw RecoveryError.changed }
+            var next = self
+            next.baseline = comparableBaseline
+            return .editing(next)
         }
         let expectedEdits = submission.edits ?? baseline.edits
         let expectedAdjust = submission.adjust ?? baseline.adjust
@@ -63,6 +71,12 @@ nonisolated struct PhotoEditDraft: Codable, Equatable, Sendable {
             var next = self
             next.baseline = current; next.submission = nil
             return .editing(next)
+        }
+        if current.cloudRevision != nil {
+            guard comparableBaseline == current else { throw RecoveryError.changed }
+            var next = self
+            next.baseline = comparableBaseline
+            return .retry(next)
         }
         guard current.localModification == baseline.localModification,
               current.edits == baseline.edits || current.edits == expectedEdits,
