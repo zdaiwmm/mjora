@@ -82,6 +82,16 @@ final class LocalPhotoEditor {
         return asset.modificationDate == modificationDate
     }
 
+    /// Explicit cross-target preflight only. Re-reads the held original and
+    /// keeps PhotoKit authorization separate from the resulting byte identity.
+    func originalFingerprintForTargetBinding() async throws -> PhotoEditOriginalFingerprint {
+        guard isCurrent else { throw LocalPhotoEditorError.changed }
+        let original = try await PhotoEditOriginalFingerprint.read(fileURL: sourceURL, role: .photoKitOriginal, orientation: orientation)
+        guard isCurrent, original.sha256 == sourceRevision,
+              original.width == originalWidth, original.height == originalHeight else { throw LocalPhotoEditorError.changed }
+        return original
+    }
+
     private init(id: String, input: PHContentEditingInput, url: URL, preview: UIImage, width: Int, height: Int,
                  recipe: LocalPhotoEditRecipe, modificationDate: Date?, sourceRevision: String) {
         localIdentifier = id; self.input = input; sourceURL = url; orientation = input.fullSizeImageOrientation
