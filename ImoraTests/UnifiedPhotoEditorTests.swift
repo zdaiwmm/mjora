@@ -228,6 +228,92 @@ final class UnifiedPhotoEditorTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.path.hasSuffix("/adjust") })
     }
 
+    func testVersionedSaveAndResetRejectConflictWithoutReadingBackOrWritingLegacy() async throws {
+        let revision = #""edit-synthetic-initial""#
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/assets/synthetic/edits", request.method == "GET" {
+                return .init(headers: ["ETag": revision], body: Data(#"{"edits":[]}"#.utf8))
+            }
+            if request.path == "/api/assets/synthetic/edits/versioned" { return .init(status: 412) }
+            return .init(status: 404)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "synthetic-editor")
+        defer { client.invalidate() }
+        let loaded = try await client.assetEditState(id: "synthetic", requiresRevision: true)
+        XCTAssertEqual(loaded.revision, revision)
+        for intent: [AssetEdit] in [[.rotate(angle: 90)], []] {
+            do {
+                try await client.savePhotoEdits(id: "synthetic", edits: intent, revision: try XCTUnwrap(loaded.revision))
+                XCTFail("An explicit stale-version response must reject the save even if someone else reset the edit list")
+            } catch PhotoEditDraft.RecoveryError.writeConflict { }
+        }
+        let requests = server.received
+        XCTAssertEqual(requests.map(\.method), ["GET", "PUT", "DELETE"])
+        XCTAssertEqual(requests.first?.headers["cache-control"], "no-cache")
+        XCTAssertEqual(requests.dropFirst().map { $0.headers["if-match"] }, [revision, revision])
+        XCTAssertTrue(requests.dropFirst().allSatisfy { $0.path == "/api/assets/synthetic/edits/versioned" })
+    }
+
+    func testVersionedMutationRequiresNewRevisionForUnknownOutcomeAndNeverDowngrades() async throws {
+        let original = #""edit-synthetic-901e1f59-3ac4-4241-9216-9afc94d4620c""#
+        let newer = #""edit-synthetic-29e36324-138f-44c5-baad-0875ef2acd56""#
+        let intent: [AssetEdit] = [.rotate(angle: 90)]
+        let response = Mutex((status: 503, revision: original))
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/assets/synthetic/edits/versioned" {
+                return .init(status: response.withLock { $0.status })
+            }
+            if request.path == "/api/assets/synthetic/edits", request.method == "GET" {
+                return .init(headers: ["ETag": response.withLock { $0.revision }], body: try! JSONEncoder().encode(["edits": intent]))
+            }
+            return .init(status: 404)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "synthetic-editor")
+        defer { client.invalidate() }
+        do {
+            try await client.replaceVersionedPhotoEdits(id: "synthetic", edits: intent, revision: original)
+            XCTFail("The opening revision is not evidence of a committed write")
+        } catch PhotoEditPersistence.SaveError.unconfirmed { }
+        response.withLock { $0.revision = newer }
+        try await client.replaceVersionedPhotoEdits(id: "synthetic", edits: intent, revision: original)
+        response.withLock { $0.status = 404 }
+        do {
+            try await client.replaceVersionedPhotoEdits(id: "synthetic", edits: intent, revision: original)
+            XCTFail("A downgraded server must not accept this draft")
+        } catch ImoraError.http(404, _) { }
+        XCTAssertEqual(server.received.map(\.method), ["PUT", "GET", "PUT", "GET", "PUT"])
+        XCTAssertTrue(server.received.filter { $0.method == "PUT" }.allSatisfy { $0.path.hasSuffix("/edits/versioned") })
+    }
+
+    func testVersionedServerRejectsMissingOrUnrelatedRevisionBeforeWriting() async throws {
+        let server = try LocalHTTPServer { request in
+            if request.path == "/api/server/version" {
+                return .init(body: Data(#"{"major":5,"minor":7,"patch":0,"product":"imora","features":["adjust"]}"#.utf8))
+            }
+            if request.path == "/api/server/features" {
+                return .init(body: Data(#"{"photoEditsV1":true,"photoEditsCASV1":true}"#.utf8))
+            }
+            if request.path == "/api/assets/synthetic/edits", request.method == "GET" {
+                return .init(headers: ["ETag": #""edit-other-asset-initial""#], body: Data(#"{"edits":[]}"#.utf8))
+            }
+            return .init(status: 404)
+        }
+        try await server.start(); defer { server.stop() }
+        let client = ImoraClient(apiURL: server.apiURL, accessToken: "synthetic-editor")
+        defer { client.invalidate() }
+        do {
+            _ = try await client.assetEditState(id: "synthetic", requiresRevision: true)
+            XCTFail("The revision must belong to the asset being edited")
+        } catch PhotoEditDraft.RecoveryError.changed { }
+        do {
+            try await client.savePhotoEdits(id: "synthetic", edits: [.rotate(angle: 90)])
+            XCTFail("The advertised versioned server must not receive an unguarded write")
+        } catch PhotoEditDraft.RecoveryError.changed { }
+        XCTAssertTrue(server.received.allSatisfy { $0.method == "GET" })
+    }
+
     func testVersionAloneNeverEnablesEnhancedHTTPMutation() async throws {
         let server = try LocalHTTPServer { request in
             if request.path == "/api/server/version" {

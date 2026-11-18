@@ -10,12 +10,14 @@ import os
 from pathlib import Path
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
 import urllib.request
 
-from validation import HEX64, atomic_json, endpoint, integer, now, require, target_fingerprint, validate_request
+from local_tls import PrivateHTTPServer, private_bind, wrap_listener
+from validation import HEX64, atomic_json, integer, now, require, target_fingerprint, validate_request
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -23,14 +25,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def opener():
+def opener(ca_file=None):
     # Never use ambient proxy configuration or user cookies.
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    handlers = [urllib.request.ProxyHandler({}), NoRedirect()]
+    if ca_file is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(ca_file))))
+    return urllib.request.build_opener(*handlers)
 
 
-def verify_fixture(request: dict) -> None:
+def verify_fixture(request: dict, ca_file=None) -> None:
     validate_request(request)
-    connection = opener().open(request["backendURL"] + "/__background_validation__/identity", timeout=5)
+    connection = opener(ca_file).open(request["backendURL"] + "/__background_validation__/identity", timeout=5)
     with connection:
         require(connection.status == 200, "Synthetic fixture identity unavailable")
         identity = json.loads(connection.read(4097))
@@ -39,7 +44,7 @@ def verify_fixture(request: dict) -> None:
 
 
 class Relay:
-    def __init__(self, request: dict, registration: dict, evidence: Path, *, rate=256 * 1024):
+    def __init__(self, request: dict, registration: dict, evidence: Path, *, rate=256 * 1024, ca_file=None):
         validate_request(request)
         require(set(registration) == {"runID", "mediaID", "uploadRef", "capabilitySHA256", "dropOffset"}, "Invalid relay registration")
         require(registration["runID"] == request["runID"], "Relay registration belongs to another run")
@@ -49,8 +54,9 @@ class Relay:
         require(drop is None or integer(drop, 1) and drop < request["payloadBytes"], "Invalid drop offset")
         require((request["scenario"] == "transport-interrupted") == (drop is not None), "Drop scenario does not match registration")
         require(integer(rate, 1), "Invalid throttle")
-        verify_fixture(request)
+        verify_fixture(request, ca_file)
         self.request, self.registration, self.evidence, self.rate = request, registration, evidence, rate
+        self.ca_file = ca_file
         self.lock = threading.Lock()
         self.lock_fd = None
         evidence.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -85,14 +91,20 @@ class Relay:
         # Caller holds lock when mutating, or constructor has not published self.
         atomic_json(self.evidence, self.record)
 
-    def server(self, port=0):
+    def server(self, port=0, *, host="127.0.0.1", tls=None):
         owner = self
+        private_bind(host)
+        require(tls is not None or host == "127.0.0.1", "LAN relay requires TLS")
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
             def log_message(self, *args):
                 pass
+
+            def setup(self):
+                self.request.settimeout(10)
+                super().setup()
 
             def reject(self, status):
                 self.close_connection = True
@@ -135,7 +147,7 @@ class Relay:
                     target = owner.request["backendURL"] + self.path.removeprefix("/api")
                     request = urllib.request.Request(target, data=b"".join(pieces), headers={"Content-Type": "application/octet-stream", "X-Upload-Capability": capability}, method="PUT")
                     try:
-                        response = opener().open(request, timeout=15)
+                        response = opener(owner.ca_file).open(request, timeout=15)
                     except urllib.error.HTTPError as error:
                         response = error
                     with response:
@@ -170,13 +182,17 @@ class Relay:
             def do_DELETE(self):
                 self.reject(405)
 
-        class OwnedServer(http.server.ThreadingHTTPServer):
+        class OwnedServer(PrivateHTTPServer):
             def server_close(self):
                 try:
                     super().server_close()
                 finally:
                     owner.close()
 
-        server = OwnedServer(("127.0.0.1", port), Handler)
+        server = OwnedServer((host, port), Handler)
         server.daemon_threads = False
-        return server
+        try:
+            return wrap_listener(server, tls)
+        except BaseException:
+            server.server_close()
+            raise

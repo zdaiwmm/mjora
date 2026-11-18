@@ -120,6 +120,32 @@ final class PhotoEditDraftTests: XCTestCase {
         XCTAssertThrowsError(try draft.recover(binding: binding(revision: "different-original", mode: "local"), current: committed))
     }
 
+    func testCloudDraftSurvivesAndRejectsEditionReturningToSameRecipe() throws {
+        let store = store(), original = PhotoEditDraft.Version(edits: [], adjust: nil, cloudRevision: "opening-revision")
+        var draft = PhotoEditDraft(binding: binding(), baseline: original, snapshot: snapshot())
+        draft.submission = .init(edits: [.rotate(angle: 90)], adjust: nil, snapshot: draft.snapshot)
+        try store.write(draft)
+        let reopened = try XCTUnwrap(store.load(scope: scope, subject: draft.binding.subject))
+        XCTAssertEqual(reopened.baseline.cloudRevision, original.cloudRevision)
+        for alternate in ["after-an-edit-and-reset", nil] as [String?] {
+            XCTAssertThrowsError(try reopened.recover(binding: draft.binding, current: .init(edits: [], adjust: nil, cloudRevision: alternate)))
+        }
+        XCTAssertEqual(try store.load(scope: scope, subject: draft.binding.subject), draft)
+        guard case .retry = try reopened.recover(binding: draft.binding, current: original) else { return XCTFail() }
+    }
+
+    func testOldCloudDraftCanAdoptRevisionOnlyWithMatchingRecipe() throws {
+        let draft = PhotoEditDraft(binding: binding(), baseline: .init(edits: [], adjust: nil), snapshot: snapshot())
+        let oldJSON = try JSONEncoder().encode(draft)
+        let decoded = try JSONDecoder().decode(PhotoEditDraft.self, from: oldJSON)
+        XCTAssertNil(decoded.baseline.cloudRevision)
+        let current = PhotoEditDraft.Version(edits: [], adjust: nil, cloudRevision: "new-server-revision")
+        guard case .editing(let recovered) = try decoded.recover(binding: draft.binding, current: current) else { return XCTFail() }
+        XCTAssertEqual(recovered.baseline, current)
+        XCTAssertThrowsError(try decoded.recover(binding: draft.binding,
+            current: .init(edits: [.rotate(angle: 90)], adjust: nil, cloudRevision: "new-server-revision")))
+    }
+
     func testCorruptDraftIsRetainedUntilExplicitDiscard() throws {
         let store = store(), draft = PhotoEditDraft(binding: binding(), baseline: .init(edits: [], adjust: nil), snapshot: snapshot())
         try store.write(draft)

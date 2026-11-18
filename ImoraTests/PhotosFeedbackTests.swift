@@ -157,7 +157,8 @@ final class PhotosFeedbackTests: XCTestCase {
     }
 
     func testOwnedMotionFixtureGuard() throws {
-        XCTAssertTrue(FileManager.default.fileExists(atPath: try ownedMotionURL().path))
+        let url = try ownedMotionURL()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
 
     func testLiveHoldReleasedBeforeDeferredItemRejectsActualLateMovie() async throws {

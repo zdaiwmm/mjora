@@ -771,10 +771,27 @@ nonisolated final class ImoraClient: Sendable {
         query: [URLQueryItem] = [],
         body: Data? = nil
     ) async throws -> Data {
+        try await sendResponse(path: path, method: method, query: query, body: body).data
+    }
+
+    @concurrent
+    private func sendResponse(
+        path: String,
+        method: String = "GET",
+        query: [URLQueryItem] = [],
+        body: Data? = nil,
+        ifMatch: String? = nil,
+        fresh: Bool = false
+    ) async throws -> (data: Data, http: HTTPURLResponse) {
         var components = URLComponents(url: apiURL.appending(path: path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { components.queryItems = query }
         var request = try authorizedRequest(url: ServerRoute.resolve(components.url!), method: method)
         request.httpMethod = method
+        if let ifMatch { request.setValue(ifMatch, forHTTPHeaderField: "If-Match") }
+        if fresh {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        }
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -802,7 +819,7 @@ nonisolated final class ImoraClient: Sendable {
             }
             throw ImoraError.http(http.statusCode, Self.serverMessage(from: data))
         }
-        return data
+        return (data, http)
     }
 
     @concurrent
@@ -1267,15 +1284,37 @@ nonisolated final class ImoraClient: Sendable {
 
     // MARK: - asset edits, server-side non-destructive since v2.6
 
+    struct AssetEditState: Sendable {
+        let edits: [AssetEdit]
+        let revision: String?
+    }
+
     @concurrent
     func assetEdits(id: String) async throws -> [AssetEdit] {
+        try await assetEditState(id: id).edits
+    }
+
+    @concurrent
+    func assetEditState(id: String, requiresRevision: Bool = false) async throws -> AssetEditState {
         struct Envelope: Decodable { let edits: [AssetEdit] }
-        let data = try await send(path: "assets/\(id)/edits")
+        let (data, http) = try await sendResponse(path: "assets/\(id)/edits", fresh: true)
+        let revision = http.value(forHTTPHeaderField: "ETag").flatMap { Self.photoEditRevision($0, assetID: id) }
+        guard !requiresRevision || revision != nil else { throw PhotoEditDraft.RecoveryError.changed }
+        let edits: [AssetEdit]
         do {
-            return try JSONDecoder().decode(Envelope.self, from: data).edits
+            edits = try JSONDecoder().decode(Envelope.self, from: data).edits
         } catch {
             throw ImoraError.decoding("\(error)")
         }
+        return AssetEditState(edits: edits, revision: revision)
+    }
+
+    private static func photoEditRevision(_ tag: String, assetID: String) -> String? {
+        let prefix = "\"edit-\(assetID.lowercased())-"
+        guard tag.hasPrefix(prefix), tag.hasSuffix("\"") else { return nil }
+        let value = tag.dropFirst(prefix.count).dropLast()
+        guard value == "initial" || UUID(uuidString: String(value)) != nil else { return nil }
+        return tag
     }
 
     /// replaces the asset's whole edit list; the server re-renders derivatives.
@@ -1286,14 +1325,39 @@ nonisolated final class ImoraClient: Sendable {
 
     /// Enhanced save has one complete mutation, followed by authoritative readback
     /// when the response is lost. No second write is guessed after a timeout.
-    func savePhotoEdits(id: String, edits: [AssetEdit]) async throws {
-        guard await capabilities().supportsPhotoEditsV1 else {
+    func savePhotoEdits(id: String, edits: [AssetEdit], revision: String? = nil) async throws {
+        if let revision {
+            try await replaceVersionedPhotoEdits(id: id, edits: edits, revision: revision)
+            return
+        }
+        let features = await capabilities()
+        guard features.supportsPhotoEditsV1 else {
             throw ImoraError.http(400, String(localized: "This server doesn't support unified photo editing."))
         }
+        guard !features.supportsPhotoEditsCASV1 else { throw PhotoEditDraft.RecoveryError.changed }
         try await PhotoEditPersistence.saveAtomic(intent: edits, write: { intent in
             if intent.isEmpty { try await self.clearEdits(id: id) }
             else { try await self.applyEdits(id: id, edits: intent) }
         }, read: { try await self.assetEdits(id: id) })
+        await invalidateMediaCache(assetIDs: [id])
+    }
+
+    /// Older servers cannot handle this route, so downgrades cannot turn a
+    /// conditional mutation into an ordinary replacement.
+    func replaceVersionedPhotoEdits(id: String, edits: [AssetEdit], revision: String) async throws {
+        guard Self.photoEditRevision(revision, assetID: id) != nil else { throw PhotoEditDraft.RecoveryError.changed }
+        let body = edits.isEmpty ? nil : try JSONEncoder().encode(["edits": edits])
+        do {
+            _ = try await sendResponse(path: "assets/\(id)/edits/versioned",
+                method: edits.isEmpty ? "DELETE" : "PUT", body: body, ifMatch: revision)
+        } catch ImoraError.http(412, _) {
+            throw PhotoEditDraft.RecoveryError.writeConflict
+        } catch ImoraError.http(let code, let message) where (400..<500).contains(code) && code != 408 {
+            throw ImoraError.http(code, message)
+        } catch {
+            guard let current = try? await assetEditState(id: id, requiresRevision: true),
+                  current.revision != revision, current.edits == edits else { throw PhotoEditPersistence.SaveError.unconfirmed }
+        }
         await invalidateMediaCache(assetIDs: [id])
     }
 

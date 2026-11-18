@@ -89,6 +89,8 @@ nonisolated struct ServerFeaturesFingerprint: Codable, Hashable, Sendable {
     var peopleStatistics: Bool? = nil
     /// Explicit unified photo action capability; never inferred from a server version.
     var photoEditsV1: Bool? = nil
+    /// The edit list has an authoritative revision and supports conditional writes.
+    var photoEditsCASV1: Bool? = nil
     /// takenAfter and takenBefore compare the local taken time, end exclusive.
     var localTakenRange: Bool? = nil
     /// POST /search/options exists.
@@ -176,6 +178,7 @@ nonisolated struct ServerCapabilities: Hashable, Sendable {
         isImora ? imoraServes("cleanup") : isGallery && identity?.hasCleanup == true
     }
     var supportsPhotoEditsV1: Bool { serverFeatures?.photoEditsV1 == true }
+    var supportsPhotoEditsCASV1: Bool { serverFeatures?.photoEditsCASV1 == true }
     var supportsAdjust: Bool {
         isImora ? imoraServes("adjust") : isGallery && identity?.hasAdjustAndTrim == true
     }
