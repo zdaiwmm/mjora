@@ -1282,19 +1282,14 @@ final class BackupManager {
     private func refreshLocalSnapshots() async {
         let snapshot = await index.localSnapshot()
         remoteRemovedLocalIDs = snapshot.remoteRemovedLocalIDs
-        for id in remoteRemovedLocalIDs {
-            repeatedFailureLedger.clear(account: accountKey, localIdentifier: id)
+        for id in uploadStates.keys.filter(snapshot.remoteRemovedLocalIDs.contains) {
             uploadStates[id] = nil
         }
+        repeatedFailureLedger.clearResolved(account: accountKey, removedLocalIDs: snapshot.remoteRemovedLocalIDs,
+            backedUpRevisions: userId == nil ? [:] : snapshot.backedUpLocalRevisions)
         saveRepeatedFailures()
         sizeExcludedRequestBytesByLocal = snapshot.sizeExcludedRequestBytesByLocal
         updateSizeExclusions()
-        if userId != nil, repeatedFailureLedger.entries.contains(where: { $0.account == accountKey }) {
-            let before = repeatedFailureLedger.entries.count
-            repeatedFailureLedger.clearBackedUp(account: accountKey,
-                revisions: snapshot.backedUpLocalRevisions)
-            if repeatedFailureLedger.entries.count != before { saveRepeatedFailures() }
-        }
         backedUpLocalRevisions = snapshot.backedUpLocalRevisions
         backedUpRemoteIds = snapshot.backedUpRemoteIds
         let replacedRenderings = localIdentifierByRemoteId.compactMap { remote, local in

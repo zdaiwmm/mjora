@@ -4,10 +4,12 @@ import SwiftUI
 
 struct SearchTab: View {
     @Environment(SessionStore.self) private var session
+    @Environment(\.isSearching) private var isSearching
     @Binding var query: String
     @Binding var searchScope: SearchFilter.TextType
     @Binding var source: PhotoSearchSource
     var submitRequest = 0
+    var usesCompactPresentation = false
     /// moves focus in or out of the tab's search field, which the shell owns.
     let setSearchFocus: (Bool) -> Void
 
@@ -43,24 +45,24 @@ struct SearchTab: View {
     }
 
     var body: some View {
-        NavigationStack {
-            if source == .device {
-                LocalPhotoSearchView(source: $source, query: query)
+        Group {
+            if !usesCompactPresentation && !isSearching {
+                Color.clear
+            } else if source == .device {
+                LocalPhotoSearchView(source: $source, query: $query)
             } else {
                 searchContent
                     .onDisappear { model.clear() }
             }
         }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarVisibility(usesCompactPresentation ? .hidden : .visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
     }
 
     private var searchContent: some View {
         searchLayout
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            // Keep the native search host available on the empty discovery
-            // page too; hiding it prevents programmatic search activation.
-            .toolbarVisibility(.visible, for: .navigationBar)
-            .toolbarBackground(.hidden, for: .navigationBar)
             .task(id: query) {
                 if trimmedQuery.isEmpty {
                     submit()
@@ -72,7 +74,6 @@ struct SearchTab: View {
             }
             .onChange(of: searchScope) {
                 submit()
-                if trimmedQuery.isEmpty { setSearchFocus(true) }
             }
             .onChange(of: availableSearchModes, initial: true) {
                 if !availableSearchModes.contains(searchScope), let first = availableSearchModes.first {
@@ -186,7 +187,10 @@ struct SearchTab: View {
 
     private var searchModeMenu: some View {
         Menu {
-            Picker("Search Type", selection: $searchScope) {
+            Picker("Search Type", selection: Binding(get: { searchScope }, set: { mode in
+                searchScope = mode
+                if trimmedQuery.isEmpty { setSearchFocus(true) }
+            })) {
                 ForEach(availableSearchModes) { mode in
                     Label {
                         Text(mode.title)

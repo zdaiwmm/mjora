@@ -51,36 +51,46 @@ final class S0SearchFlowTests: XCTestCase {
         defer { app.terminate() }
         signIn(app, fixture: fixture)
         selectDevice(app)
+        let topControls = [app.buttons["search-mode"].firstMatch, app.buttons["filter-chip-date"].firstMatch]
+        let cloudPrompt = "Search Cloud Photos"
         tap(app, "photos-search")
-        let field = app.searchFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 15))
-        XCTAssertEqual(field.placeholderValue, "Search Cloud Photos")
+        assertSearchEntry(app, prompt: cloudPrompt, controls: topControls)
+        let field = app.photoSearchField
+        let entryFrames = topControls.map(\.frame)
+        for cycle in 2...3 {
+            closeSearchToDeviceGallery(app)
+            tap(app, "photos-search")
+            assertSearchEntry(app, prompt: cloudPrompt, controls: topControls)
+            assertControlPositions(topControls, match: entryFrames, state: "on entry \(cycle)")
+        }
         XCTAssertFalse(app.buttons["search-source"].exists)
         let initialCloudCount = try await cloudProbeRequests()
-        field.tap(); field.typeText("S0_cloud_probe\n")
+        let cloudQuery = "S0_cloud_probe"
+        field.typeText(cloudQuery + "\n")
         var cloudCount = initialCloudCount
         for _ in 0..<50 where cloudCount <= initialCloudCount {
             try await Task.sleep(for: .milliseconds(100))
             cloudCount = try await cloudProbeRequests()
         }
         XCTAssertGreaterThan(cloudCount, initialCloudCount, "The regular search must reach the synthetic cloud API")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "Submitting dismisses the keyboard, not Search")
+        XCTAssertTrue(field.isHittable, "The search field must stay tappable after submitting")
+        XCTAssertEqual(field.value as? String, cloudQuery, "The search field must retain the submitted query")
+        assertSearchField(field, below: topControls)
+        assertControlPositions(topControls, match: entryFrames, state: "with the keyboard hidden")
         capture(app, "s0-regular-search-cloud")
 
-        app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["photos-source-menu"].waitForExistence(timeout: 25))
-        selectDevice(app)
+        closeSearchToDeviceGallery(app)
         tap(app, "photos-source-menu")
         tapMenuItem(app, "Search On Device")
-        let source = app.buttons["search-source"]
-        XCTAssertTrue(source.waitForExistence(timeout: 15))
+        let source = app.buttons["search-source"].firstMatch
+        assertSearchEntry(app, prompt: "Search On Device", controls: [source])
         XCTAssertEqual(source.value as? String, "On Device")
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
-        XCTAssertEqual(field.placeholderValue, "Search On Device")
         // Let already-issued gallery work settle before measuring only the
         // explicit local query. The service records every search request.
         try await Task.sleep(for: .milliseconds(500))
         let beforeLocal = try await searchRequests()
-        field.tap(); field.typeText(fixture.filenames[0] + "\n")
+        field.typeText(fixture.filenames[0] + "\n")
         waitUntil("One synthetic filename result") { self.visibleTiles(app).count == 1 }
         XCTAssertTrue(app.descendants(matching: .any)["local-search-results"].exists)
         let afterLocal = try await searchRequests()
@@ -91,7 +101,59 @@ final class S0SearchFlowTests: XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout: 15)); close.tap()
         waitUntil("Return to the same local result") { self.visibleTiles(app).count == 1 }
         capture(app, "s0-device-viewer-return")
+        closeSearchToDeviceGallery(app)
+        tap(app, "photos-search")
+        assertSearchEntry(app, prompt: cloudPrompt, controls: topControls)
+        assertControlPositions(topControls, match: entryFrames, state: "after reopening Cloud Search")
+        closeSearchToDeviceGallery(app)
         signOutFixture(app)
+    }
+
+    private func assertSearchEntry(_ app: XCUIApplication, prompt: String, controls: [XCUIElement]) {
+        let field = app.photoSearchField
+        waitUntil("\(prompt) opens with the keyboard, without tapping the field", timeout: 5) {
+            app.keyboards.firstMatch.exists && field.isHittable && field.placeholderValue == prompt
+                && controls.allSatisfy(\.isHittable)
+        }
+        assertSearchField(field, below: controls)
+    }
+
+    private func assertSearchField(_ field: XCUIElement, below controls: [XCUIElement]) {
+        let fieldTop = field.frame.minY
+        for control in controls {
+            XCTAssertTrue(control.isHittable, "\(control.identifier) must be tappable while Search is open")
+            XCTAssertGreaterThanOrEqual(fieldTop, control.frame.maxY, "The search field must be below \(control.identifier)")
+        }
+    }
+
+    private func assertControlPositions(_ controls: [XCUIElement], match frames: [CGRect], state: String) {
+        for (control, expected) in zip(controls, frames) {
+            let actual = control.frame
+            let message = "\(control.identifier) shifted \(state)"
+            XCTAssertEqual(actual.minX, expected.minX, accuracy: 1, message)
+            XCTAssertEqual(actual.minY, expected.minY, accuracy: 1, message)
+        }
+    }
+
+    private func closeSearchToDeviceGallery(_ app: XCUIApplication) {
+        let closeButtons = app.buttons.matching(identifier: "Close")
+        let close = closeButtons.firstMatch
+        let searchControls = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ OR identifier IN %@",
+            "filter-", ["search-mode", "search-source", "search-sort"]
+        ))
+        waitUntil("Search close button", timeout: 5) { close.isHittable }
+        close.tap()
+        waitUntil("On Device gallery with no Search controls", timeout: 8) {
+            let sourceRestored = app.buttons.matching(identifier: "photos-source-menu").allElementsBoundByIndex.contains {
+                $0.isHittable && $0.label == "On Device"
+            }
+            return sourceRestored && app.buttons["photos-search"].firstMatch.isHittable
+                && !app.keyboards.firstMatch.exists
+                && !app.photoSearchField.isHittable
+                && !closeButtons.allElementsBoundByIndex.contains(where: \.isHittable)
+                && !searchControls.allElementsBoundByIndex.contains(where: \.isHittable)
+        }
     }
 
     private func control(_ name: String) async throws -> [String: Any] {
@@ -160,13 +222,6 @@ final class S0SearchFlowTests: XCTestCase {
     }
 
     private func signOutFixture(_ app: XCUIApplication) {
-        // Relaunch returns to Library even when Search uses the native tab bar.
-        // Run this only after the successful flow, never from failure teardown.
-        app.terminate(); app.launch()
-        waitUntil("Library before synthetic sign-out") {
-            self.dismissKnownPrompt(app)
-            return app.buttons["photos-source-menu"].isHittable
-        }
         tap(app, "photos-source-menu")
         tapMenuItem(app, "Account & Settings")
         let signOut = app.buttons["settings-sign-out"].firstMatch

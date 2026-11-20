@@ -85,7 +85,7 @@ final class PhotosEditorMotionTests: XCTestCase {
         XCTAssertFalse(transition.isTracking)
     }
 
-    func testPinchReflowsRowsBeforeTheFingersLiftAndCanReverse() throws {
+    func testPinchScalesRowsTogetherAroundTheFingersAndCanReverse() throws {
         let parent = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 400))
         let grid = UIScrollView(frame: parent.bounds)
         parent.addSubview(grid)
@@ -96,20 +96,17 @@ final class PhotosEditorMotionTests: XCTestCase {
             .init(id: "moving", frame: CGRect(x: 0, y: 200, width: 100, height: 100), makeReplica: { moving })
         ], midpoint: CGPoint(x: 50, y: 150), reduceMotion: false)
         defer { transition.cancel() }
-        let lower = ["anchor": CGRect(x: 0, y: 100, width: 100, height: 100),
-                     "moving": CGRect(x: 0, y: 200, width: 100, height: 100)]
-        let upper = ["anchor": CGRect(x: 0, y: 100, width: 75, height: 75),
-                     "moving": CGRect(x: 225, y: 100, width: 75, height: 75)]
-        transition.update(scale: 0.85, midpoint: CGPoint(x: 50, y: 150), in: grid,
-                          from: lower, to: upper, progress: 0.5)
+        transition.update(scale: 0.85, midpoint: CGPoint(x: 50, y: 150), in: grid)
         XCTAssertTrue(transition.isTracking)
-        XCTAssertEqual(moving.frame.minX, 118.75, accuracy: 0.01)
-        XCTAssertEqual(moving.frame.width, 87.5, accuracy: 0.01)
-        XCTAssertEqual(anchor.frame.midX, 50, accuracy: 0.01)
-        XCTAssertEqual(anchor.frame.midY, 150, accuracy: 0.01)
-        transition.update(scale: 1, midpoint: CGPoint(x: 50, y: 150), in: grid,
-                          from: lower, to: upper, progress: 0)
-        XCTAssertEqual(moving.frame, CGRect(x: 0, y: 200, width: 100, height: 100))
+        let visibleAnchor = anchor.convert(anchor.bounds, to: parent)
+        let visibleNeighbor = moving.convert(moving.bounds, to: parent)
+        XCTAssertEqual(visibleNeighbor.minX, 7.5, accuracy: 0.01)
+        XCTAssertEqual(visibleNeighbor.width, 85, accuracy: 0.01)
+        XCTAssertEqual(visibleAnchor.midX, 50, accuracy: 0.01)
+        XCTAssertEqual(visibleAnchor.midY, 150, accuracy: 0.01)
+        XCTAssertEqual(visibleNeighbor.minY, visibleAnchor.maxY, accuracy: 0.01)
+        transition.update(scale: 1, midpoint: CGPoint(x: 50, y: 150), in: grid)
+        XCTAssertEqual(moving.convert(moving.bounds, to: parent), CGRect(x: 0, y: 200, width: 100, height: 100))
         XCTAssertTrue(transition.isTracking)
     }
 
@@ -129,7 +126,7 @@ final class PhotosEditorMotionTests: XCTestCase {
         var restoredOffset: CGFloat?
         var completed = false
         transition.finish(in: grid, frames: ["synthetic": CGRect(x: 0, y: 600, width: 200, height: 200)],
-            scroll: { restoredOffset = $0 }, destinations: { [] }, completion: { completed = true })
+            scroll: { restoredOffset = $0 }, completion: { completed = true })
         XCTAssertEqual(replicaCount, 0)
         XCTAssertEqual(restoredOffset, 550)
         XCTAssertTrue(completed)

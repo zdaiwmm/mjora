@@ -504,13 +504,35 @@ private struct PlacesMapHeader: View {
 }
 
 struct TrashScreen: View {
+    @Environment(SessionStore.self) private var session
     @State private var confirmEmpty = false
     @State private var serverCommand: TimelineServerCommand?
 
+    static func filter(ownerID: String) -> TimelineFilter {
+        TimelineFilter(visibility: nil, isTrashed: true, userId: ownerID)
+    }
+
     var body: some View {
+        if let client = session.client, let ownerID = session.user?.id {
+            timeline(ownerID: ownerID)
+                .id(client.context.id)
+                .id(ownerID)
+        } else {
+            ContentUnavailableView {
+                Label("Couldn't load", systemImage: "wifi.exclamationmark")
+            } actions: {
+                Button("Retry") { Task { await session.refreshUser() } }
+                    .buttonStyle(.glass)
+            }
+            .navigationTitle("Trash")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private func timeline(ownerID: String) -> some View {
         TimelineScreen(
             title: String(localized: "Trash"),
-            filter: TimelineFilter(visibility: nil, isTrashed: true),
+            filter: Self.filter(ownerID: ownerID),
             emptyIcon: "trash",
             emptyMessage: String(localized: "Trash is empty"),
             showsLargeTitle: false,

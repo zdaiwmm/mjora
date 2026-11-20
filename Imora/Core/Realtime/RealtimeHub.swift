@@ -136,12 +136,12 @@ final class RealtimeHub {
     /// called by the backup manager whenever device assets or the backup
     /// index changed. debounced so upload bursts coalesce.
     func notifyLocalChange() {
-        localGeneration &+= 1
         guard localDebounce == nil else { return }
         localDebounce = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard let self, !Task.isCancelled else { return }
             self.localDebounce = nil
+            self.localGeneration &+= 1
             self.broadcast { $0.realtimeLocalChanged() }
         }
     }

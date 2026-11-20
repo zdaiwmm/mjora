@@ -3,13 +3,14 @@ import XCTest
 
 @MainActor
 final class PhotosCollectionsFlowTests: XCTestCase {
-    private func launch(tracesLaunch: Bool = false) throws -> XCUIApplication {
+    private func launch(tracesLaunch: Bool = false, enablesMapForLaunch: Bool = false) throws -> XCUIApplication {
         continueAfterFailure = false
         let fixture = try OwnedUIFixture.load()
         let app = XCUIApplication()
         OwnedUIFixture.configure(app)
         if tracesLaunch { app.launchEnvironment["IMORA_LAUNCH_TRACE"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        if enablesMapForLaunch { app.launchArguments += ["-imora.maps.appleServicesAllowed", "YES"] }
         app.launch()
         if app.textFields["auth-server"].waitForExistence(timeout: 4) {
             let field = app.textFields["auth-server"]
@@ -368,11 +369,25 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         app.buttons["shell-albums"].tap()
         XCTAssertTrue(app.scrollViews["collections-home"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "The native tab bar must not duplicate the compact glass navigation")
-        XCTAssertFalse(app.searchFields.firstMatch.exists, "Global photo search belongs to its dedicated tab")
+        XCTAssertFalse(app.photoSearchField.exists, "Global photo search belongs to its dedicated tab")
         let avatar = app.buttons["profile-avatar"]
         XCTAssertEqual(avatar.frame.width, avatar.frame.height, accuracy: 1,
                        "The avatar's glass background must remain circular")
         snapshot(app, "feedback-collections-single-navigation")
+    }
+
+    func testConsentedCollectionsPlacesPreviewOpensFullMap() throws {
+        let app = try launch(enablesMapForLaunch: true)
+        defer { app.terminate() }
+        app.buttons["shell-albums"].tap()
+        let home = app.scrollViews["collections-home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 5))
+        let map = app.buttons["collections-places-map"]
+        for _ in 0..<8 where !map.isHittable { home.swipeUp() }
+        XCTAssertTrue(map.isHittable)
+        map.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["map-settings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["apple-maps-enable"].exists)
     }
 
     func testPolishedViewerSearchMenuPeriodsAndFullScreenMap() throws {
@@ -528,7 +543,7 @@ final class PhotosCollectionsFlowTests: XCTestCase {
         XCTAssertFalse(picker.exists)
         snapshot(app, "feedback-newest-navigation-restored")
         app.buttons["photos-search"].tap()
-        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.photoSearchField.waitForExistence(timeout: 2))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2), "Entering search must focus the field immediately")
         snapshot(app, "feedback-search-transition")
     }

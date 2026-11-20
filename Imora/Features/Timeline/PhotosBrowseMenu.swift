@@ -21,6 +21,7 @@ extension EnvironmentValues {
 
 struct PhotosToolbarConfiguration {
     var source: Binding<String>
+    let librarySource: PhotosLibrarySource
     let controls: PhotosGridControls
     var completePeriodIndex = true
     var supportsDateAdded = true
@@ -40,10 +41,19 @@ struct PhotosSourceMenu: View {
     @Environment(SessionStore.self) private var session
     let configuration: PhotosToolbarConfiguration
     let count: Int
+    var countIsMinimum = false
     private var unreadCount: Int { session.notifications?.unreadCount ?? 0 }
 
     private var title: String {
-        configuration.source.wrappedValue == "local" ? String(localized: "On Device") : String(localized: "Library")
+        switch configuration.librarySource {
+        case .all: String(localized: "Library")
+        case .cloud: String(localized: "Cloud Library")
+        case .local: String(localized: "On Device")
+        }
+    }
+
+    private var countText: String {
+        countIsMinimum ? String(localized: "At least \(count) items") : String(localized: "\(count) items")
     }
 
     var body: some View {
@@ -62,7 +72,7 @@ struct PhotosSourceMenu: View {
             .fixedSize(horizontal: true, vertical: true)
             .overlay(alignment: .bottomLeading) {
                 if configuration.completePeriodIndex {
-                    Text("\(count) items")
+                    Text(countText)
                         .font(.subheadline.weight(.semibold))
                         .fixedSize(horizontal: true, vertical: true)
                         .offset(y: 20)
@@ -77,7 +87,7 @@ struct PhotosSourceMenu: View {
         .accessibilityHidden(true)
         .overlay {
             PhotosNativeSourceMenu(menu: makeMenu(), title: title,
-                value: configuration.completePeriodIndex ? String(localized: "\(count) items") : configuration.controls.mediaFilter.title)
+                value: configuration.completePeriodIndex ? countText : configuration.controls.mediaFilter.title)
         }
         .task(id: session.client?.offlineAccountKey) {
             configuration.controls.loadVisualPreferences(account: session.client?.offlineAccountKey)
@@ -106,8 +116,9 @@ struct PhotosSourceMenu: View {
             let summary = backup.isRunning ? String(localized: "Backing up…")
                 : pending > 0 ? String(localized: "\(pending) items waiting to back up")
                 : backup.hasBackupFailure ? String(localized: "Backup Needs Attention")
+                : backup.libraryStatus?.unsupported ?? 0 > 0 ? String(localized: "Unsupported Formats")
                 : backup.libraryStatus == nil ? String(localized: "Checking Backup Status…")
-                : String(localized: "All Photos Backed Up")
+                : BackupLibraryStatus.upToDateText
             var actions: [UIMenuElement] = []
             if !backup.isRunning, backup.libraryStatus?.pending ?? 0 > 0 {
                 actions.append(UIAction(title: String(localized: "Back Up Now"), image: UIImage(systemName: "icloud.and.arrow.up"),
@@ -276,6 +287,9 @@ struct PhotoPeriodControls: View {
 /// One persistent glass container owns both compact navigation states, so
 /// changing the timeline position morphs existing controls in place.
 struct PhotosNavigationBar: View {
+    static let height: CGFloat = 62
+    static let bottomScreenClearance: CGFloat = 21
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var controls: PhotosGridControls
     let showsPeriods: Bool
@@ -287,8 +301,8 @@ struct PhotosNavigationBar: View {
     private var motion: Animation? { reduceMotion ? nil : PhotosMotion.layout }
 
     var body: some View {
-        GlassEffectContainer(spacing: showsPeriods ? 14 : 12) {
-            HStack(spacing: showsPeriods ? 14 : 12) {
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 12) {
                 if showsPeriods {
                     Button {
                         withAnimation(motion) {
@@ -307,10 +321,10 @@ struct PhotosNavigationBar: View {
                     .accessibilityLabel("Show Library and Collections Navigation")
                     .accessibilityIdentifier("photos-show-navigation")
 
-                    NativePhotoPeriodPicker(selection: Binding(get: { controls.mode }, set: { mode in
+                    NativePhotoPeriodPicker(selection: controls.mode) { mode in
                         controls.selectedYear = nil
                         controls.mode = mode
-                    }))
+                    }
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
                     .glassEffect(.regular, in: .capsule)
@@ -328,7 +342,7 @@ struct PhotosNavigationBar: View {
                 Button(action: onSearch) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: showsPeriods ? 24 : 21, weight: .medium))
-                        .frame(width: showsPeriods ? 48 : 62, height: showsPeriods ? 48 : 62)
+                        .frame(width: showsPeriods ? 48 : Self.height, height: showsPeriods ? 48 : Self.height)
                         .contentShape(.circle)
                 }
                 .buttonStyle(.plain)
@@ -341,9 +355,9 @@ struct PhotosNavigationBar: View {
             // Native Photos' date controls end 28pt above the screen edge;
             // the expanded Library/Collections navigation ends at 21pt.
             .padding(.bottom, showsPeriods ? 7 : 0)
-            .frame(height: 62, alignment: .bottom)
+            .frame(height: Self.height, alignment: .bottom)
         }
-        .padding(.horizontal, showsPeriods ? 28 : 20)
+        .padding(.horizontal, 20)
         .foregroundStyle(Color.primary)
         .tint(.primary)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -383,9 +397,10 @@ struct PhotosNavigationBar: View {
 /// a taller frame, which leaves the selected region visibly shorter.
 private struct NativePhotoPeriodPicker: UIViewRepresentable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Binding var selection: PhotoBrowseMode
+    let selection: PhotoBrowseMode
+    let onChange: (PhotoBrowseMode) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
 
     func makeUIView(context: Context) -> PhotoPeriodSegmentedControl {
         let control = PhotoPeriodSegmentedControl(items: PhotoBrowseMode.allCases.map(\.title))
@@ -400,12 +415,13 @@ private struct NativePhotoPeriodPicker: UIViewRepresentable {
     }
 
     func updateUIView(_ control: PhotoPeriodSegmentedControl, context: Context) {
-        context.coordinator.selection = $selection
+        context.coordinator.onChange = onChange
         control.reduceMotion = reduceMotion
         let index = PhotoBrowseMode.allCases.firstIndex(of: selection) ?? 2
-        control.selectedSegmentIndex = index
-        control.setNeedsLayout()
-        control.layoutIfNeeded()
+        if control.selectedSegmentIndex != index {
+            control.selectedSegmentIndex = index
+            control.setNeedsLayout()
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PhotoPeriodSegmentedControl, context: Context) -> CGSize? {
@@ -413,11 +429,12 @@ private struct NativePhotoPeriodPicker: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject {
-        var selection: Binding<PhotoBrowseMode>
-        init(selection: Binding<PhotoBrowseMode>) { self.selection = selection }
+        var onChange: (PhotoBrowseMode) -> Void
+        init(onChange: @escaping (PhotoBrowseMode) -> Void) { self.onChange = onChange }
         @objc func changed(_ control: UISegmentedControl) {
             guard PhotoBrowseMode.allCases.indices.contains(control.selectedSegmentIndex) else { return }
-            selection.wrappedValue = PhotoBrowseMode.allCases[control.selectedSegmentIndex]
+            control.setNeedsLayout()
+            onChange(PhotoBrowseMode.allCases[control.selectedSegmentIndex])
         }
     }
 }

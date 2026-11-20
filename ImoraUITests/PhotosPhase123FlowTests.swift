@@ -136,7 +136,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
         let scope = app.buttons["search-source"]
         XCTAssertTrue(scope.waitForExistence(timeout: 10))
         XCTAssertTrue((scope.value as? String ?? scope.label).contains("本机"), "The explicit action must search the device")
-        let field = app.searchFields.firstMatch
+        let field = app.photoSearchField
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
             field.tap(); field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
@@ -364,7 +364,7 @@ final class PhotosPhase123FlowTests: XCTestCase {
     private func searchCloud(_ app: XCUIApplication, filename: String) {
         source(app, device: false)
         tapID(app, "photos-search")
-        let field = app.searchFields.firstMatch
+        let field = app.photoSearchField
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         enter(filename, in: field, app: app); field.typeText("\n")
         waitUntil("One exact owned cloud fixture", timeout: 25) { self.visibleTiles(app).count == 1 }

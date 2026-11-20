@@ -347,6 +347,7 @@ final class TimelineModel {
         let titleBandCount: Int
         let tileRowCount: Int
         let totalItemCount: Int
+        let unresolvedPairItemCount: Int
         let measuredAssetsPerDay: Double?
         let flatAssets: [Asset]?
         let flatAssetIndexByID: [String: Int]?
@@ -369,6 +370,7 @@ final class TimelineModel {
         updateAssets(ids: Set(flatAssets.map(\.id))) { $0 = project($0) }
     }
     private(set) var totalItemCount = 0
+    private(set) var unresolvedPairItemCount = 0
     private var hasProjectedLocalSource = false
     var hasProjectedLocalInventory: Bool { !mergesLocal || backup == nil || hasProjectedLocalSource }
     private(set) var sections: [TimelineSection] = [] {
@@ -1246,6 +1248,21 @@ final class TimelineModel {
             grouped: showsDateHeaders, assetsPerDay: assetsPerDay, rightToLeft: rightToLeft)
     }
 
+    func zoomWindow(anchorID: String, unitY: CGFloat, viewportReach: CGFloat,
+                    columns: Int, width: CGFloat, rightToLeft: Bool)
+        -> (tiles: [String: (asset: Asset, frame: CGRect)], rowsHeight: CGFloat) {
+        let (frames, rowsHeight) = geometryIndex.window(around: flatAssetIndexByID[anchorID], unitY: unitY,
+            viewportReach: viewportReach, columns: columns, width: width,
+            grouped: showsDateHeaders, assetsPerDay: assetsPerDay, rightToLeft: rightToLeft)
+        var tiles: [String: (asset: Asset, frame: CGRect)] = [:]
+        tiles.reserveCapacity(frames.count)
+        for (index, frame) in frames {
+            let asset = flatAssets[index]
+            tiles[asset.id] = (asset, frame)
+        }
+        return (tiles, rowsHeight)
+    }
+
     private func makeProjectionInputs(rebuildAssets: Bool, columns: Int? = nil) -> ProjectionInputs {
         ProjectionInputs(
             sections: sections,
@@ -1264,6 +1281,7 @@ final class TimelineModel {
             self.calendarSections = build.calendarSections
             self.calendarCache.invalidate()
             self.totalItemCount = build.totalItemCount
+            self.unresolvedPairItemCount = build.unresolvedPairItemCount
             self.hasProjectedLocalSource = self.localMergeSource != nil
             self.rows = build.rows
             self.rowsLayoutVersion &+= 1
@@ -1337,7 +1355,8 @@ final class TimelineModel {
         var ratio = inputs.assetsPerDay
 
         var nextSectionProjectionByID: [String: SectionProjection] = [:]
-        let projectedSections = mergedSections(inputs.sections, local: inputs.localSource)
+        let merged = mergedSections(inputs.sections, local: inputs.localSource)
+        let projectedSections = merged.sections
         nextSectionProjectionByID.reserveCapacity(projectedSections.count)
 
         for section in projectedSections {
@@ -1403,6 +1422,7 @@ final class TimelineModel {
             titleBandCount: titleBands,
             tileRowCount: tileRows,
             totalItemCount: projectedSections.reduce(0) { $0 + $1.count },
+            unresolvedPairItemCount: merged.unresolvedPairItemCount,
             measuredAssetsPerDay: dayTally > 0 && assetTally > 0 ? ratio : nil,
             flatAssets: inputs.rebuildAssets ? flattened : nil,
             flatAssetIndexByID: inputs.rebuildAssets ? flattenedIndex : nil,
@@ -1967,55 +1987,54 @@ final class TimelineModel {
     nonisolated static func mergedSections(
         _ sections: [TimelineSection],
         local: LocalMergeSource?
-    ) -> [TimelineSection] {
-        guard let local, !local.isEmpty else { return sections }
+    ) -> (sections: [TimelineSection], unresolvedPairItemCount: Int) {
+        guard let local, !local.isEmpty else { return (sections, 0) }
 
-        // server assets already in the grid hide their device twins, so an
-        // upload swaps tiles without ever showing the photo twice. nothing
-        // paired means nothing can hide, and the whole walk is skipped.
-        var hiddenRemoteIDs = Set<String>()
+        // A backup receipt identifies a possible twin, even across months.
+        // Only a cloud asset present in the projection can hide its device copies.
+        var visiblePairedRemoteIDs = Set<String>()
         if !local.pairedRemoteIDs.isEmpty {
             for section in sections {
                 guard let days = section.days else { continue }
                 for day in days {
                     for asset in day.assets where local.pairedRemoteIDs.contains(asset.id) {
-                        hiddenRemoteIDs.insert(asset.id)
+                        visiblePairedRemoteIDs.insert(asset.id)
                     }
                 }
             }
         }
+        let hasUnloadedPotentialMatches = visiblePairedRemoteIDs.count < local.pairedRemoteIDs.count
+            && sections.contains { $0.hasPartialLaunchRange || ($0.days == nil && $0.count > 0) }
 
+        var unresolvedPairItemCount = 0
         var byMonth = local.unpairedByMonth
         for (key, entries) in local.pairedByMonth {
-            let visible = entries.filter { !hiddenRemoteIDs.contains($0.remoteId) }.map(\.asset)
+            let visible = entries.filter { !visiblePairedRemoteIDs.contains($0.remoteId) }.map(\.asset)
             guard !visible.isEmpty else { continue }
+            if hasUnloadedPotentialMatches { unresolvedPairItemCount += visible.count }
             if let existing = byMonth[key] {
                 byMonth[key] = mergeSortedByLocalDate(existing, visible)
             } else {
                 byMonth[key] = visible
             }
         }
-        guard !byMonth.isEmpty else { return sections }
+        guard !byMonth.isEmpty else { return (sections, 0) }
 
         var merged: [TimelineSection] = []
         var remainingMonths = Set(byMonth.keys)
         for section in sections {
             let key = Self.bucketDate(section.id).map { Self.monthKey(for: $0) } ?? section.id
-            if let locals = byMonth[key], section.days != nil {
-                let extra = section.hasPartialLaunchRange ? locals.filter { !$0.isLocalBackedUp } : locals
-                merged.append(Self.mergeSection(section, locals: extra))
-                remainingMonths.remove(key)
+            guard let locals = byMonth[key] else {
+                merged.append(section)
+                continue
+            }
+            remainingMonths.remove(key)
+            if section.days == nil {
+                merged.append(TimelineSection(id: section.id, monthTitle: section.monthTitle,
+                    count: section.count + locals.count, days: Self.groupByDay(locals),
+                    leadingUnloadedAssetCount: section.count))
             } else {
-                // Device-only originals are available even when the cloud
-                // month is still paged out or offline. Paired copies remain
-                // represented by the cloud slots until that month loads.
-                let extra = local.unpairedByMonth[key] ?? []
-                if section.days == nil, !extra.isEmpty {
-                    merged.append(TimelineSection(id: section.id, monthTitle: section.monthTitle,
-                        count: section.count + extra.count, days: Self.groupByDay(extra),
-                        leadingUnloadedAssetCount: section.count))
-                } else { merged.append(section) }
-                remainingMonths.remove(key)
+                merged.append(Self.mergeSection(section, locals: locals))
             }
         }
 
@@ -2030,7 +2049,7 @@ final class TimelineModel {
             } ?? merged.count
             merged.insert(section, at: index)
         }
-        return merged
+        return (merged, unresolvedPairItemCount)
     }
 
     nonisolated private static func mergeSection(_ section: TimelineSection, locals: [Asset]) -> TimelineSection {

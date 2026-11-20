@@ -38,7 +38,6 @@ private final class ScrollContext {
     var isIdle = true
     var viewportWidth: CGFloat = 0
     var viewportHeight: CGFloat = 0
-    var viewportShowsPhotoOverview = false
     /// the previous offset sample and when it was taken, for the velocity.
     var lastSampledOffsetY: CGFloat = 0
     var lastSampleTime: CFTimeInterval = 0
@@ -815,7 +814,12 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         if let configuration = photosConfiguration {
             ToolbarItem(placement: .topBarLeading) {
                 PhotosSourceMenu(configuration: configuration,
-                                 count: model.totalItemCount)
+                                 count: model.totalItemCount - model.unresolvedPairItemCount,
+                                 countIsMinimum: model.unresolvedPairItemCount > 0)
+                    .opacity(showsAllPhotos ? 1 : 0)
+                    .allowsHitTesting(showsAllPhotos)
+                    .accessibilityHidden(!showsAllPhotos)
+                    .animation(periodFade, value: showsAllPhotos)
             }
             .sharedBackgroundVisibility(.hidden)
         }
@@ -840,13 +844,13 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 .accessibilityIdentifier("selection-cancel")
             }
         } else {
-            if let configuration = photosConfiguration {
+            if let configuration = photosConfiguration, !usesCompactPhotosNavigation || showsAllPhotos {
                 ToolbarItem(placement: .topBarTrailing) {
                     PhotosBrowseMenu(controls: configuration.controls, supportsDateAdded: configuration.supportsDateAdded, source: configuration.source.wrappedValue)
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
             }
-            if !isPicking, !model.isEmpty, (photosConfiguration?.controls.mode ?? .all) == .all {
+            if !isPicking, !model.isEmpty, showsAllPhotos {
                 // leads the host's items as a pill of its own: the fixed
                 // spacer splits the glass so it never merges into their
                 // group.
@@ -1110,11 +1114,7 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                 gridController.scrollToTop()
             }
             .onChange(of: geometry.size.height, initial: true) { _, height in
-                let overview = photosConfiguration != nil && photosConfiguration?.controls.mode != .all
-                // The overview hides Library's navigation bar. That expected
-                // height change belongs to the current photo transition.
-                if overview == scrollContext.viewportShowsPhotoOverview { periodMotion.cancel() }
-                scrollContext.viewportShowsPhotoOverview = overview
+                periodMotion.cancel()
                 scrollContext.viewportHeight = height
                 updateVisibleRows()
             }
@@ -1218,11 +1218,23 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
         // where they are instead of sliding away with it. only the tab bar
         // leaves, for the bottom controls, like the photos app.
         .toolbar { timelineToolbar }
-        .toolbarVisibility(photosConfiguration != nil && photosConfiguration?.controls.mode != .all ? .hidden : .automatic,
-                           for: .navigationBar)
         .toolbarVisibility(isSelecting || usesCompactPhotosNavigation ? .hidden : .automatic, for: .tabBar)
         .toolbarBackground(photosConfiguration == nil ? .automatic : .hidden, for: .navigationBar)
-        .toolbarColorScheme(extendsPhotosBehindBars ? .dark : nil, for: .navigationBar)
+        .toolbarColorScheme(extendsPhotosBehindBars && showsAllPhotos ? .dark : nil, for: .navigationBar)
+        .overlay {
+            if showsEmptyState { overlayState }
+        }
+        .overlay {
+            if let configuration = photosConfiguration {
+                ZStack {
+                    PhotoCalendarOverview(gridModel: model, controls: configuration.controls, motion: periodMotion)
+                        .animation(periodFade, value: configuration.controls.mode)
+                    PhotoPeriodMotionLayer(motion: periodMotion)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
         .overlay(alignment: .top) {
             if extendsPhotosBehindBars {
                 Rectangle().fill(.ultraThinMaterial)
@@ -1231,18 +1243,11 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
                     .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.3),
                                                   .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
                     .frame(height: 165).ignoresSafeArea(edges: .top).allowsHitTesting(false).accessibilityHidden(true)
+                    .opacity(showsAllPhotos ? 1 : 0)
+                    .animation(periodFade, value: showsAllPhotos)
             }
         }
         .navigationBarBackButtonHidden(isSelecting)
-        .overlay {
-            if showsEmptyState { overlayState }
-        }
-        .overlay {
-            if let configuration = photosConfiguration {
-                PhotoCalendarOverview(gridModel: model, controls: configuration.controls, motion: periodMotion)
-                    .transition(.identity)
-            }
-        }
         .overlay(alignment: .bottom) {
             ZStack {
                 if isSelecting, !isPicking {
@@ -1418,8 +1423,14 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
 
     // MARK: - rows
 
+    private var showsAllPhotos: Bool { (photosConfiguration?.controls.mode ?? .all) == .all }
+
+    private var periodFade: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: PhotosMotion.imageFadeDuration)
+    }
+
     private var extendsPhotosBehindBars: Bool {
-        photosConfiguration != nil && (photosConfiguration?.controls.mode ?? .all) == .all
+        photosConfiguration != nil
             && model.contentHeight(tileSide: tileSide(for: max(1, scrollContext.viewportWidth))) > scrollContext.viewportHeight
     }
 
@@ -1477,8 +1488,13 @@ struct TimelineScreen<Header: View, Trailing: ToolbarContent, Footer: View>: Vie
             controls.periodAnchor = visible
         }
         guard let anchor = controls.periodAnchor else { periodMotion.cancel(); return }
-        periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile,
-            gridSources: from == .all ? gridController.periodTiles() : [], session: session, reduceMotion: periodMotion.reducesMotion)
+        if from != .all && to != .all {
+            // The live calendar pages crossfade in place, including their labels.
+            periodMotion.cancel()
+        } else if periodMotion.host?.window != nil {
+            periodMotion.begin(assetID: anchor.asset.id, from: from, to: to, gridSource: tile,
+                gridSources: from == .all ? gridController.periodTiles() : [], session: session, reduceMotion: periodMotion.reducesMotion)
+        }
         if to == .all {
             controls.scrollRequest = PhotoScrollRequest(bucketID: anchor.bucketID, assetID: anchor.asset.id)
         }

@@ -207,8 +207,12 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
 
     // MARK: - interaction
 
+    private var isPinchReflowActive: Bool {
+        (superview as? TimelineGridView)?.zoomTransition.isPrepared == true
+    }
+
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
-        guard let row,
+        guard !isPinchReflowActive, let row,
               let tile = tile(at: recognizer.location(in: self)),
               tile.isUserInteractionEnabled,
               let asset = tile.asset
@@ -233,7 +237,7 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
         _ interaction: UIContextMenuInteraction,
         configurationForMenuAtLocation location: CGPoint
     ) -> UIContextMenuConfiguration? {
-        guard let row,
+        guard !isPinchReflowActive, let row,
               row.actions.pick == nil,
               let tile = tile(at: location),
               tile.isUserInteractionEnabled,
@@ -324,12 +328,17 @@ final class TimelineTileRowView: UIView, UIContextMenuInteractionDelegate {
 final class TimelineTileView: UIView {
     /// A lightweight render surface sharing the decoded image with the tile.
     /// Never re-encode a thumbnail merely to animate it between row parents.
-    func makeZoomReplica() -> UIView {
-        let replica = UIImageView(image: imageView.image)
-        replica.backgroundColor = imageView.backgroundColor
-        replica.contentMode = imageView.contentMode
-        replica.clipsToBounds = true
-        return replica
+    func zoomReplicaFactory() -> (() -> UIView)? {
+        guard let image = imageView.image else { return nil }
+        let color = imageView.backgroundColor
+        let contentMode = imageView.contentMode
+        return {
+            let replica = UIImageView(image: image)
+            replica.backgroundColor = color
+            replica.contentMode = contentMode
+            replica.clipsToBounds = true
+            return replica
+        }
     }
     /// read by the selection slide's hit test.
     var isSelected = false

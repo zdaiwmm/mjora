@@ -2,11 +2,29 @@ import Photos
 import SwiftUI
 import UIKit
 
+struct PhotoPeriodMotionLayer: UIViewRepresentable {
+    let motion: PhotoPeriodMotion
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        view.accessibilityElementsHidden = true
+        motion.host = view
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        motion.host = view
+    }
+}
+
 /// Visible photos travel between real card/tile frames. It adds no recognizers,
 /// so the grid's continuous pinch and the viewer keep their gesture ownership.
 @MainActor
 final class PhotoPeriodMotion {
     static let replicaTag = 0xF0123
+    private static let companionLimit = 12
     private final class Surface {
         weak var view: PeriodPhotoImageView?
         weak var image: UIImage?
@@ -25,7 +43,6 @@ final class PhotoPeriodMotion {
         let sourceAlpha: CGFloat
         var destinationAlpha: CGFloat = 1
         var targetFrame: CGRect = .zero
-        var targetAlpha: CGFloat = 0
 
         init(id: String, surface: CommittedGridSurface, view: UIView, source: UIView?) {
             self.id = id; self.surface = surface; self.view = view; self.source = source
@@ -39,6 +56,7 @@ final class PhotoPeriodMotion {
         }
     }
     var reducesMotion = false
+    weak var host: UIView?
     private var surfaces: [PhotoBrowseMode: [String: Surface]] = [:]
     private var animator: UIViewPropertyAnimator?
     private var replica: UIView?
@@ -52,7 +70,6 @@ final class PhotoPeriodMotion {
     private(set) var assetID: String?
     private var targetMode: PhotoBrowseMode?
     private var companions: [String: Companion] = [:]
-    private weak var session: SessionStore?
 
     func visibleAnchor(in mode: PhotoBrowseMode, preferredAssetID: String? = nil) -> PhotoPeriodAnchor? {
         let visible = (surfaces[mode] ?? [:]).compactMap { id, entry -> (PhotoPeriodAnchor, CGFloat)? in
@@ -60,8 +77,9 @@ final class PhotoPeriodMotion {
                   let anchor = view.photoAnchor, let prepared = view.preparedSurfaceForMotion(),
                   prepared.key == entry.key, prepared.access == entry.access, prepared.image === entry.image,
                   prepared.isCurrent() else { return nil }
-            let frame = view.convert(view.bounds, to: window)
-            let viewport = window.bounds.inset(by: window.safeAreaInsets)
+            let container = host ?? window
+            let frame = view.convert(view.bounds, to: container)
+            let viewport = container === window ? window.bounds.inset(by: window.safeAreaInsets) : container.bounds
             guard frame.intersection(viewport).height > 1, frame.intersection(viewport).width > 1 else { return nil }
             if id == preferredAssetID { return (anchor, -1) }
             return (anchor, hypot(frame.midX - viewport.midX, frame.midY - viewport.midY))
@@ -96,6 +114,8 @@ final class PhotoPeriodMotion {
         let carriedSurface = self.assetID == assetID && activeSurface?.isCurrent() == true ? activeSurface : nil
         let carried = carriedSurface == nil ? nil : replica
         let carriedFrame = carried?.layer.presentation()?.frame ?? carried?.frame
+        let carriedAlpha = carried?.layer.presentation().map { CGFloat($0.opacity) } ?? carried?.alpha
+        let carriedContainer = carried?.superview
         let carriedWindow = carried?.window
         if let carriedFrame { carried?.frame = carriedFrame }
         if let carried { carried.removeFromSuperview() }
@@ -110,17 +130,22 @@ final class PhotoPeriodMotion {
         }
         let prepared = carriedSurface ?? (from == .all ? gridSource?.preparedSurfaceForMotion() : periodSurface)
         guard let prepared, prepared.isCurrent(), let window = carriedWindow ?? sourceView?.window else { return }
+        let container = host ?? window
+        guard container === window || container.window === window else { return }
         let imageView = carried ?? AssetViewerBoundImageView(surface: prepared, session: session,
             isPrivate: prepared.key.visibilityPolicy == "locked")
-        let start = carriedFrame ?? sourceView.map { $0.convert($0.bounds, to: window) } ?? .zero
-        guard start.width > 0, start.height > 0 else { return }
+        let start = if let carriedFrame, let carriedContainer {
+            carriedContainer.convert(carriedFrame, to: container)
+        } else {
+            sourceView.map { $0.convert($0.bounds, to: container) } ?? .zero
+        }
+        guard !start.isEmpty, start.intersects(container.bounds) else { return }
         let ticket = UUID()
         transitionID = ticket
         self.assetID = assetID
         targetMode = to
         replica = imageView
         activeSurface = prepared
-        self.session = session
         (imageView as? AssetViewerBoundImageView)?.onRetired = { [weak self, weak imageView] in
             guard let self, self.replica === imageView else { return }
             self.cancel()
@@ -129,13 +154,14 @@ final class PhotoPeriodMotion {
         sourceAlpha = sourceView?.alpha ?? 1
         sourceView?.alpha = 0
         imageView.frame = start
+        imageView.alpha = carriedAlpha ?? 1
         imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true
         imageView.layer.cornerRadius = from == .all ? 2 : 10
         imageView.isUserInteractionEnabled = false
         imageView.accessibilityElementsHidden = true
         imageView.tag = Self.replicaTag
-        window.addSubview(imageView)
+        container.addSubview(imageView)
         let otherSources: [(String, UIView, CommittedGridSurface)]
         if from == .all {
             otherSources = gridSources.compactMap { tile in
@@ -149,18 +175,20 @@ final class PhotoPeriodMotion {
                 return (id, view, prepared)
             } ?? []
         }
-        for (id, source, surface) in otherSources where id != assetID {
-            guard surface.isCurrent(), source.window === window else { continue }
-            let frame = source.convert(source.bounds, to: window)
-            guard frame.intersects(window.bounds), companions.count < 64 else { continue }
+        let nearbySources = otherSources.compactMap { id, source, surface -> (String, UIView, CommittedGridSurface, CGRect)? in
+            guard id != assetID, source.window === window, surface.isCurrent() else { return nil }
+            let frame = source.convert(source.bounds, to: container)
+            return frame.intersects(container.bounds) ? (id, source, surface, frame) : nil
+        }.sorted { distance($0.3, from: start) < distance($1.3, from: start) }
+        for (id, source, surface, frame) in nearbySources.prefix(Self.companionLimit) {
             let companion = makeCompanion(id: id, surface: surface, source: source, session: session,
-                frame: frame, corner: from == .all ? 2 : 10, window: window, below: imageView)
+                frame: frame, corner: from == .all ? 2 : 10, container: container, below: imageView)
             companions[id] = companion
         }
         timeout = Task { [self] in
             // Keep cleanup alive even if SwiftUI replaces the period owner.
             // cancel() breaks this bounded lifetime and removes the window view.
-            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
             guard !Task.isCancelled, transitionID == ticket else { return }
             cancel()
         }
@@ -169,16 +197,17 @@ final class PhotoPeriodMotion {
 
     func arrive(at view: UIView, mode: PhotoBrowseMode) {
         guard targetMode == mode, animator == nil, let ticket = transitionID,
-              let replica, let window = replica.window, view.window === window,
+              let replica, let container = replica.superview, let window = replica.window, view.window === window,
               view.bounds.width > 0, view.bounds.height > 0 else { return }
         let destinationSurface = (view as? TimelineTileView)?.preparedSurfaceForMotion()
             ?? (view as? PeriodPhotoImageView)?.preparedSurfaceForMotion(requiringCoverage: false)
         guard let sourceSurface = activeSurface, sourceSurface.isCurrent(),
               let destinationSurface, destinationSurface.isCurrent(),
               Self.matches(sourceSurface, destinationSurface) else { cancel(); return }
-        view.superview?.layoutIfNeeded()
-        let target = view.convert(view.bounds, to: window)
-        guard target.intersects(window.bounds) else { return }
+        let target = view.convert(view.bounds, to: container)
+        guard target.intersects(container.bounds) else { return }
+        timeout?.cancel()
+        timeout = nil
         destination = view
         destinationAlpha = view.alpha
         view.alpha = 0
@@ -186,13 +215,16 @@ final class PhotoPeriodMotion {
         // scaleToFill stretched the travelling photo until the final handoff.
         replica.contentMode = .scaleAspectFill
         prepareCompanionDestinations(around: replica.frame, target: target, anchorView: view, mode: mode,
-            window: window, replica: replica)
+            container: container, window: window)
         let animator = PhotosMotion.springAnimator(duration: PhotosMotion.layoutDuration) {
             replica.frame = target
+            replica.alpha = 0
+            view.alpha = self.destinationAlpha
             replica.layer.cornerRadius = mode == .all ? 2 : 10
             for companion in self.companions.values {
                 companion.view.frame = companion.targetFrame
-                companion.view.alpha = companion.targetAlpha
+                companion.view.alpha = 0
+                companion.destination?.alpha = companion.destinationAlpha
                 companion.view.layer.cornerRadius = mode == .all ? 2 : 10
             }
         }
@@ -205,7 +237,7 @@ final class PhotoPeriodMotion {
     }
 
     private func makeCompanion(id: String, surface: CommittedGridSurface, source: UIView?, session: SessionStore,
-                               frame: CGRect, corner: CGFloat, window: UIWindow, below replica: UIView) -> Companion {
+                               frame: CGRect, corner: CGFloat, container: UIView, below replica: UIView) -> Companion {
         let view = AssetViewerBoundImageView(surface: surface, session: session, isPrivate: surface.key.visibilityPolicy == "locked")
         view.frame = frame
         view.contentMode = .scaleAspectFill
@@ -215,12 +247,12 @@ final class PhotoPeriodMotion {
         view.accessibilityElementsHidden = true
         view.onRetired = { [weak self] in self?.cancel() }
         let companion = Companion(id: id, surface: surface, view: view, source: source)
-        window.insertSubview(view, belowSubview: replica)
+        container.insertSubview(view, belowSubview: replica)
         return companion
     }
 
     private func prepareCompanionDestinations(around start: CGRect, target: CGRect, anchorView: UIView,
-                                               mode: PhotoBrowseMode, window: UIWindow, replica: UIView) {
+                                               mode: PhotoBrowseMode, container: UIView, window: UIWindow) {
         var targets: [String: (UIView, CommittedGridSurface)] = [:]
         if mode == .all {
             var parent = anchorView.superview
@@ -248,32 +280,17 @@ final class PhotoPeriodMotion {
                 around: origin, to: destination)
             guard let (view, surface) = targets[companion.id], view.window === window,
                   surface.isCurrent(), Self.matches(companion.surface, surface) else { continue }
-            let frame = view.convert(view.bounds, to: window)
-            guard frame.intersects(window.bounds) else { continue }
+            let frame = view.convert(view.bounds, to: container)
+            guard frame.intersects(container.bounds) else { continue }
             companion.destination = view
             companion.destinationAlpha = view.alpha
             view.alpha = 0
             companion.targetFrame = frame
-            companion.targetAlpha = 1
         }
-        guard let session else { return }
-        for (id, value) in targets where id != assetID && companions[id] == nil {
-            let (view, surface) = value
-            guard companions.count < 64, view.window === window, surface.isCurrent() else { continue }
-            let frame = view.convert(view.bounds, to: window)
-            guard frame.intersects(window.bounds) else { continue }
-            let initial = TimelineGridZoomGeometry.scaled(frame, by: 1 / max(0.001, scale),
-                around: destination, to: origin)
-            let companion = makeCompanion(id: id, surface: surface, source: nil, session: session,
-                frame: initial, corner: replica.layer.cornerRadius, window: window, below: replica)
-            companion.view.alpha = 0
-            companion.destination = view
-            companion.destinationAlpha = view.alpha
-            view.alpha = 0
-            companion.targetFrame = frame
-            companion.targetAlpha = 1
-            companions[id] = companion
-        }
+    }
+
+    private func distance(_ frame: CGRect, from anchor: CGRect) -> CGFloat {
+        hypot(frame.midX - anchor.midX, frame.midY - anchor.midY)
     }
 
     private static func matches(_ source: CommittedGridSurface, _ destination: CommittedGridSurface) -> Bool {
@@ -300,7 +317,6 @@ final class PhotoPeriodMotion {
         activeSurface = nil
         companions.values.forEach { $0.cleanUp() }
         companions.removeAll()
-        session = nil
         assetID = nil
         targetMode = nil
     }

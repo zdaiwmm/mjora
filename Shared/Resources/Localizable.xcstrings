@@ -235,24 +235,6 @@
       },
       "comment": "Imora/Core/Models/MediaCounts.swift:19\nImora/Core/Models/MediaCounts.swift:33"
     },
-    "%@ backed up": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ backed up"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@已备份"
-          }
-        }
-      },
-      "comment": "Imora/Core/Backup/BackupLibraryStatus.swift:60"
-    },
     "%@ backed up from recent captures": {
       "extractionState": "manual",
       "localizations": {
@@ -12402,6 +12384,24 @@
       },
       "comment": "Imora/Features/Admin/AdminModels.swift:336"
     },
+    "Device items backed up: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device items backed up: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机已备份：%@"
+          }
+        }
+      },
+      "comment": "Imora/Core/Backup/BackupLibraryStatus.swift:62"
+    },
     "Devices": {
       "extractionState": "manual",
       "localizations": {
@@ -19578,23 +19578,23 @@
       },
       "comment": "Imora/Features/People/PersonScreen.swift:38"
     },
-    "No photos or videos in your library.": {
+    "No photos or videos on this device.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No photos or videos in your library."
+            "value": "No photos or videos on this device."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "图库中没有照片或视频。"
+            "value": "本机没有照片或视频。"
           }
         }
       },
-      "comment": "Imora/Core/Backup/BackupLibraryStatus.swift:59"
+      "comment": "Imora/Core/Backup/BackupLibraryStatus.swift:64"
     },
     "No photos or videos selected for backup.": {
       "extractionState": "manual",
@@ -30558,6 +30558,24 @@
       },
       "comment": "Imora/Features/Viewer/AssetStackSection.swift:43"
     },
+    "Unsupported Formats": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsupported Formats"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "格式不受支持"
+          }
+        }
+      },
+      "comment": "Imora/Features/Backup/BackupScreen.swift:284"
+    },
     "Untagged": {
       "extractionState": "manual",
       "localizations": {
@@ -34643,6 +34661,91 @@
           "stringUnit": {
             "state": "translated",
             "value": "云端"
+          }
+        }
+      }
+    },
+    "Cloud Library": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud Library"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "云端图库"
+          }
+        }
+      }
+    },
+    "Device items with cloud copies confirmed at last check: %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device items with cloud copies confirmed at last check: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机项目中，上次检查确认有云端副本：%@"
+          }
+        }
+      }
+    },
+    "At least %lld items": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "At least %lld items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "至少 %lld 个项目"
+          }
+        }
+      }
+    },
+    "Previously Backed Up (Unconfirmed)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previously Backed Up (Unconfirmed)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "曾备份，当前待核实"
+          }
+        }
+      }
+    },
+    "No cloud copies confirmed.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No cloud copies confirmed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目前没有已核实的云端备份。"
           }
         }
       }

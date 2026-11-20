@@ -8,6 +8,12 @@ import Synchronization
 import ObjectiveC
 @testable import Imora
 
+private extension TimelineTileView {
+    func makeZoomReplica() -> UIView? {
+        zoomReplicaFactory()?()
+    }
+}
+
 @MainActor
 final class Phase4ImagePresentationFlowTests: XCTestCase {
     private func client(_ token: String = "fixture-token") -> ImoraClient {
