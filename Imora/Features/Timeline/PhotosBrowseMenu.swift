@@ -117,6 +117,8 @@ struct PhotosSourceMenu: View {
                 : pending > 0 ? String(localized: "\(pending) items waiting to back up")
                 : backup.hasBackupFailure ? String(localized: "Backup Needs Attention")
                 : backup.libraryStatus?.unsupported ?? 0 > 0 ? String(localized: "Unsupported Formats")
+                : (backup.libraryStatus?.cloudDeleted ?? 0) > 0
+                    ? String(localized: "Backup incomplete")
                 : backup.libraryStatus == nil ? String(localized: "Checking Backup Status…")
                 : BackupLibraryStatus.upToDateText
             var actions: [UIMenuElement] = []

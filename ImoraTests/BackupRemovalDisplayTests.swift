@@ -19,9 +19,12 @@ final class BackupRemovalDisplayTests: XCTestCase {
         XCTAssertEqual(status.deviceLibraryMedia, MediaCounts(photos: 2, videos: 1))
         XCTAssertEqual(status.cloudConfirmedMedia, confirmed)
         XCTAssertEqual(status.historicalOnlyMedia, MediaCounts(videos: 1))
-        XCTAssertEqual(status.backedUp, 2)
-        XCTAssertEqual(status.countText, String(localized: "Device items with cloud copies confirmed at last check: \(confirmed.text)"))
+        XCTAssertEqual(status.verified, 2)
+        XCTAssertEqual(status.backedUp, 3)
+        XCTAssertEqual(status.awaitingVerification, 1)
+        XCTAssertEqual(status.countText, String(localized: "Device items with cloud copies confirmed at last check: \(MediaCounts(photos: 2, videos: 1).text)"))
         XCTAssertEqual(status.pending, 0)
+        XCTAssertTrue(status.isUpToDate)
     }
 
     func testInvalidatedOrMismatchedProofFallsBackToHistoryEvenAfterSuccessfulSync() {
@@ -37,9 +40,12 @@ final class BackupRemovalDisplayTests: XCTestCase {
             status.lastSuccessfulCloudSync = Date(timeIntervalSince1970: 200)
             XCTAssertEqual(status.cloudConfirmedMedia.total, 0)
             XCTAssertEqual(status.historicalOnlyMedia, MediaCounts(photos: 1))
-            XCTAssertEqual(status.countText, String(localized: "No cloud copies confirmed."))
+            XCTAssertEqual(status.awaitingVerification, 1)
+            XCTAssertEqual(status.verified, 0)
+            XCTAssertEqual(status.backedUp, 1)
+            XCTAssertEqual(status.countText, String(localized: "Device items with cloud copies confirmed at last check: \(MediaCounts(photos: 1).text)"))
             XCTAssertEqual(status.pending, 0)
-            XCTAssertTrue(status.isUpToDate)
+            XCTAssertTrue(status.isUpToDate, "A known server copy completes backup even when cleanup proof is stale")
         }
     }
 
@@ -81,7 +87,38 @@ final class BackupRemovalDisplayTests: XCTestCase {
             XCTAssertEqual(status.cloudConfirmedMedia.total, 0)
             XCTAssertEqual(status.historicalOnlyMedia.total, 0)
             XCTAssertEqual(status.unindexed, 0)
+            XCTAssertFalse(status.isUpToDate, "A deleted cloud copy leaves the local item incomplete")
         }
+    }
+
+    func testFullyVerifiedCurrentLibraryIsUpToDate() {
+        let asset = fixtureDevice()
+        let status = BackupLibraryStatus(assets: [asset], entries: [
+            asset.localIdentifier: confirmedPhotoEntry(asset)
+        ])
+
+        XCTAssertEqual(status.backedUp, 1)
+        XCTAssertEqual(status.verified, 1)
+        XCTAssertEqual(status.awaitingVerification, 0)
+        XCTAssertEqual(status.pending, 0)
+        XCTAssertTrue(status.isUpToDate)
+    }
+
+    func testProofProgressMovesOnlyThatItemOutOfPendingImmediately() {
+        let first = fixtureDevice(id: "first")
+        let second = fixtureDevice(id: "second")
+        var status = BackupLibraryStatus(assets: [first, second], entries: [:])
+
+        XCTAssertEqual(status.pending, 2)
+        XCTAssertEqual(status.unindexed, 2)
+        status.recordVerified(first)
+        status.recordVerified(first)
+
+        XCTAssertEqual(status.verified, 1)
+        XCTAssertEqual(status.backedUp, 1)
+        XCTAssertEqual(status.pending, 1)
+        XCTAssertEqual(status.unindexed, 1)
+        XCTAssertFalse(status.isUpToDate)
     }
 
     func testEditedDeviceItemDoesNotCountThePreviousRevisionAsBackedUp() {

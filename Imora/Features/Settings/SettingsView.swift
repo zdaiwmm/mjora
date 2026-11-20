@@ -138,6 +138,9 @@ struct SettingsView: View {
         if let status = backup.libraryStatus {
             if status.pending > 0 { return String(localized: "\(status.pending) items waiting to back up") }
             if status.isUpToDate { return String(localized: "Backup Complete") }
+            if status.cloudDeleted > 0 {
+                return String(localized: "Backup incomplete")
+            }
         }
         return backup.autoBackup ? String(localized: "On") : String(localized: "Off")
     }

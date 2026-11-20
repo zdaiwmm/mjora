@@ -4,6 +4,8 @@ import UIKit
 nonisolated enum BackupRuntimePolicy {
     static let preparationWorkerOptions = [1, 2, 3]
     static let defaultPreparationWorkers = 2
+    static let seriousThermalCooldown: TimeInterval = 3 * 60
+    static let fairThermalCooldown: TimeInterval = 60
 
     static func preparationRequest(stored: Int?) -> Int {
         guard let stored, stored > 0 else { return defaultPreparationWorkers }
@@ -42,6 +44,31 @@ nonisolated enum BackupRuntimePolicy {
 
     static func requireThermalBudget(_ thermal: ProcessInfo.ThermalState) throws {
         if pausesWork(thermal: thermal) { throw BackupThermalHold() }
+    }
+
+    /// A serious heat event must not restart the instant iOS reports fair.
+    /// Extend an existing cooldown deterministically so recovery is testable.
+    static func thermalCooldownDeadline(
+        current: TimeInterval,
+        observedAt: TimeInterval,
+        thermal: ProcessInfo.ThermalState
+    ) -> TimeInterval {
+        switch thermal {
+        case .serious, .critical:
+            max(current, observedAt + seriousThermalCooldown)
+        case .fair:
+            current > observedAt ? max(current, observedAt + fairThermalCooldown) : current
+        default:
+            current
+        }
+    }
+
+    static func isCoolingDown(
+        now: TimeInterval,
+        deadline: TimeInterval,
+        thermal: ProcessInfo.ThermalState
+    ) -> Bool {
+        pausesWork(thermal: thermal) || now < deadline
     }
 
     @MainActor

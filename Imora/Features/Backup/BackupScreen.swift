@@ -279,6 +279,10 @@ struct BackupScreen: View {
                     LabeledContent("On This Device", value: status.deviceLibraryMedia.text)
                         .accessibilityIdentifier("backup-device-library-count")
                 }
+                LabeledContent("Backed Up", value: status.cloudKnownMedia.text)
+                    .accessibilityIdentifier("backup-confirmed-count")
+                LabeledContent("Not Verified", value: status.historicalOnlyMedia.text)
+                    .accessibilityIdentifier("backup-unverified-count")
                 LabeledContent("Pending Backup", value: status.pendingMedia.text)
                 if status.unsupported > 0 {
                     LabeledContent("Unsupported Formats", value: status.unsupportedMedia.text)
@@ -375,7 +379,9 @@ struct BackupScreen: View {
         case .idle:
             if let status = backup.libraryStatus {
                 status.isUpToDate ? BackupLibraryStatus.upToDateText
-                    : status.pending == 0 ? String(localized: "Some photos or videos use an unsupported format.") : String(localized: "Ready to Back Up")
+                    : status.cloudDeleted > 0
+                        ? String(localized: "Backup incomplete")
+                        : status.pending == 0 ? String(localized: "Some photos or videos use an unsupported format.") : String(localized: "Ready to Back Up")
             } else {
                 String(localized: "Checking backup status...")
             }

@@ -35,4 +35,23 @@ final class BackgroundUploadPolicyTests: XCTestCase {
             }
         }
     }
+
+    func testThermalCooldownPreventsImmediateRestartWhenTheDeviceOnlyDropsToFair() {
+        let heated = BackupRuntimePolicy.thermalCooldownDeadline(
+            current: 0, observedAt: 1_000, thermal: .serious)
+        XCTAssertEqual(heated, 1_180)
+        XCTAssertTrue(BackupRuntimePolicy.isCoolingDown(now: 1_150, deadline: heated, thermal: .fair))
+
+        let cooledFair = BackupRuntimePolicy.thermalCooldownDeadline(
+            current: heated, observedAt: 1_100, thermal: .fair)
+        XCTAssertEqual(cooledFair, 1_180)
+        XCTAssertTrue(BackupRuntimePolicy.isCoolingDown(now: 1_179, deadline: cooledFair, thermal: .nominal))
+        XCTAssertFalse(BackupRuntimePolicy.isCoolingDown(now: 1_180, deadline: cooledFair, thermal: .nominal))
+    }
+
+    func testStartingInFairWithoutAHeatEventDoesNotSilentlyAddCooldown() {
+        XCTAssertEqual(BackupRuntimePolicy.thermalCooldownDeadline(
+            current: 0, observedAt: 1_000, thermal: .fair), 0)
+        XCTAssertFalse(BackupRuntimePolicy.isCoolingDown(now: 1_000, deadline: 0, thermal: .fair))
+    }
 }

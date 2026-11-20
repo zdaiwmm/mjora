@@ -105,7 +105,9 @@ final class BackupManager {
     static let hashWorkerOptions = BackupRuntimePolicy.preparationWorkerOptions
     static let defaultHashWorkers = BackupRuntimePolicy.defaultPreparationWorkers
     private static let uploadWorkers = 3
-    private nonisolated static let verificationWorkers = 8
+    /// Metadata verification is fast enough to finish a large backlog without
+    /// eight simultaneous requests, which produced avoidable heat on phones.
+    private nonisolated static let verificationWorkers = 4
     private nonisolated static let checkBatchSize = 100
 
     private(set) var phase: BackupPhase = .idle {
@@ -585,7 +587,12 @@ final class BackupManager {
         conditions.heldForBattery(pauseOnLowBattery: pauseOnLowBattery, threshold: batteryThreshold)
     }
 
-    var isHeldForThermal: Bool { BackupRuntimePolicy.pausesWork(thermal: thermalState) }
+    var isHeldForThermal: Bool {
+        BackupRuntimePolicy.isCoolingDown(
+            now: ProcessInfo.processInfo.systemUptime,
+            deadline: thermalCooldownUntil,
+            thermal: thermalState)
+    }
 
     var syncHoldMessage: String? {
         // a hold is actionable only with Photos access and work remaining.
@@ -636,7 +643,7 @@ final class BackupManager {
     }
 
     var canStartBackup: Bool {
-        PhotoLibraryService.hasFullAccess && !isRunning
+        PhotoLibraryService.hasFullAccess && !isRunning && !isHeldForThermal
             && (requiresExplicitResume || (libraryStatus.map { $0.pending > 0 } ?? true))
     }
 
@@ -678,6 +685,9 @@ final class BackupManager {
     private var batteryWatcher: BatteryLevelWatcher?
     @ObservationIgnored private var thermalObserver: (any NSObjectProtocol)?
     private var thermalState = ProcessInfo.processInfo.thermalState
+    private var thermalPolicyRevision = 0
+    @ObservationIgnored private var thermalCooldownUntil: TimeInterval = 0
+    @ObservationIgnored private var thermalCooldownTask: Task<Void, Never>?
     private var isStopping = false
     private var isShutDown = false
     private var remoteReconciliationTask: Task<Void, Never>?
@@ -769,19 +779,49 @@ final class BackupManager {
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, !self.isShutDown else { return }
-                    let wasAllowed = self.conditionsAllowWork
-                    self.thermalState = ProcessInfo.processInfo.thermalState
-                    if wasAllowed != self.conditionsAllowWork {
-                        self.conditionsChanged(recovered: !wasAllowed && self.conditionsAllowWork)
-                    }
+                    self.updateThermalState(ProcessInfo.processInfo.thermalState)
                 }
             }
+    }
+
+    private func updateThermalState(_ next: ProcessInfo.ThermalState) {
+        let wasAllowed = conditionsAllowWork
+        let now = ProcessInfo.processInfo.systemUptime
+        thermalState = next
+        thermalPolicyRevision &+= 1
+        thermalCooldownUntil = BackupRuntimePolicy.thermalCooldownDeadline(
+            current: thermalCooldownUntil, observedAt: now, thermal: next)
+        scheduleThermalCooldownWake()
+        if wasAllowed != conditionsAllowWork {
+            conditionsChanged(recovered: !wasAllowed && conditionsAllowWork)
+        }
+    }
+
+    private func scheduleThermalCooldownWake() {
+        thermalCooldownTask?.cancel()
+        thermalCooldownTask = nil
+        let now = ProcessInfo.processInfo.systemUptime
+        guard thermalCooldownUntil > now,
+              !BackupRuntimePolicy.pausesWork(thermal: thermalState) else { return }
+        let milliseconds = max(1, Int(((thermalCooldownUntil - now) * 1_000).rounded(.up)))
+        thermalCooldownTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(milliseconds))
+            guard !Task.isCancelled, let self else { return }
+            self.thermalCooldownTask = nil
+            self.thermalPolicyRevision &+= 1
+            let wasAllowed = self.conditionsAllowWork
+            if wasAllowed != self.conditionsAllowWork {
+                self.conditionsChanged(recovered: !wasAllowed && self.conditionsAllowWork)
+            }
+        }
     }
 
     /// called by sessionstore on logout. the manager must not outlive its client.
     func shutdown() {
         if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
         thermalObserver = nil
+        thermalCooldownTask?.cancel()
+        thermalCooldownTask = nil
         isShutDown = true
         reconcileCoordinator.shutdown()
         cloudSyncReady = false
@@ -825,7 +865,7 @@ final class BackupManager {
 
     /// the settings screen confirms the current cellular/low-battery holds first.
     func start() {
-        guard !isShutDown else { return }
+        guard !isShutDown, !isHeldForThermal else { return }
         manualBackupRequested = true
         if !saveUnfinishedBackup() {
             manualBackupRequested = false
@@ -1754,7 +1794,7 @@ final class BackupManager {
             }
         } catch {
             activeBacklogCheckpoint = nil
-            if !(error is CancellationError), !Task.isCancelled {
+            if !(error is CancellationError), !(error is BackupThermalHold), !Task.isCancelled {
                 let failure = error as NSError
                 let category: BackgroundTaskDiagnostics.FailureCategory = switch failure.domain {
                 case NSURLErrorDomain: .urlSession
@@ -1780,6 +1820,10 @@ final class BackupManager {
             } else if let pause = error as? BackupUploadAuthorityPause {
                 syncStatusMessage = Self.safeSyncFailureMessage(pause.underlying)
                 phase = .error(Self.safeSyncFailureMessage(pause.underlying))
+                reportsOutcome = false
+            } else if error is BackupThermalHold {
+                phase = .idle
+                policyInterruptedRun = true
                 reportsOutcome = false
             } else if runAllowsUploads {
                 phase = .error(error.localizedDescription)
@@ -2104,7 +2148,10 @@ final class BackupManager {
                             diagnostic: .init(error: error, stage: .verifying))
                         if lastFailure == nil { lastFailure = error.localizedDescription }
                     }
-                } else { summary.duplicateMedia.add(asset) }
+                } else {
+                    summary.duplicateMedia.add(asset)
+                    libraryStatus?.recordVerified(asset)
+                }
             }
         }
         if let barrierFailure { cloudSyncReady = false; throw barrierFailure }
@@ -2188,9 +2235,16 @@ final class BackupManager {
 
         var authorityPause: BackupUploadAuthorityPause?
         var done = 0
+        var thermalSchedulingWasHeld = false
         await BackupUploadScheduler.run(queue, workers: Self.uploadWorkers,
             workerLimit: { BackupRuntimePolicy.currentWorkers(Self.uploadWorkers) },
-            canSchedule: { self.conditionsAllowWork && self.uploadAuthorityPause == nil },
+            canSchedule: {
+                if self.isHeldForThermal || BackupRuntimePolicy.pausesWork(thermal: ProcessInfo.processInfo.thermalState) {
+                    thermalSchedulingWasHeld = true
+                    return false
+                }
+                return self.conditionsAllowWork && self.uploadAuthorityPause == nil
+            },
             operation: { asset in
                 uploadStates[asset.localIdentifier] = .uploading(0)
                 measuredUploadFractions[asset.localIdentifier] = 0
@@ -2218,9 +2272,11 @@ final class BackupManager {
                 switch outcome {
                 case .uploaded:
                     summary.uploadedMedia.add(asset)
+                    libraryStatus?.recordVerified(asset)
                     uploadStates[localId] = nil
                 case .duplicate:
                     summary.duplicateMedia.add(asset)
+                    libraryStatus?.recordVerified(asset)
                     uploadStates[localId] = nil
                 case .sizeExcluded:
                     summary.skippedMedia.add(asset)
@@ -2254,6 +2310,7 @@ final class BackupManager {
         if let quotaMessage {
             throw ImoraError.http(400, quotaMessage)
         }
+        if thermalSchedulingWasHeld { throw BackupThermalHold() }
     }
 
     private func updateRepeatedFailureSummary() {
@@ -2833,9 +2890,11 @@ final class BackupManager {
                 switch result {
                 case .uploaded:
                     outcome.uploaded += 1
+                    libraryStatus?.recordVerified(asset)
                     uploadStates[localId] = nil
                 case .duplicate:
                     outcome.alreadyBackedUp += 1
+                    libraryStatus?.recordVerified(asset)
                     uploadStates[localId] = nil
                 case .sizeExcluded:
                     outcome.skipped += 1
@@ -3100,7 +3159,9 @@ extension BackupManager: ContinuedWorkload {
         case .scanning, .hashing, .checking: String(localized: "Indexing library")
         case .done where libraryStatus?.isUpToDate == true && summary.uploaded == 0 && summary.failed == 0:
             String(localized: "Up to date")
-        case .done where (libraryStatus?.pending ?? 0) > 0 || (libraryStatus?.unsupported ?? 0) > 0 || summary.failed > 0:
+        case .done where (libraryStatus?.pending ?? 0) > 0 || (libraryStatus?.unsupported ?? 0) > 0
+            || (libraryStatus?.cloudDeleted ?? 0) > 0
+            || summary.failed > 0:
             String(localized: "Backup incomplete")
         case .done: String(localized: "Backup complete")
         case .error: String(localized: "Backup stopped")
