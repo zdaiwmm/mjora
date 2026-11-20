@@ -1024,7 +1024,8 @@ final class TimelineGridView: UIScrollView {
             onScroll?(scroll)
         }
 
-        mount(rows: rows, layout: layout, removals: removals, width: width, viewportHeight: scroll.containerHeight)
+        mount(rows: rows, layout: layout, removals: removals, width: width,
+              viewportHeight: scroll.containerHeight, columns: model.columns)
         if initialPresentationCovered, !initialReadinessDelivered, window != nil {
             let viewport = bounds.inset(by: adjustedContentInset)
             let visibleTiles = zoomTiles.filter {
@@ -1077,7 +1078,8 @@ final class TimelineGridView: UIScrollView {
         layout: TimelineRowLayout,
         removals: Set<String>,
         width: CGFloat,
-        viewportHeight: CGFloat
+        viewportHeight: CGFloat,
+        columns: Int
     ) {
         let count = min(rows.count, layout.starts.count)
         guard count > 0, width > 0, let context else {
@@ -1091,8 +1093,16 @@ final class TimelineGridView: UIScrollView {
         case -1: (before, after) = (Self.bufferAhead, Self.bufferBehind)
         default: (before, after) = (Self.buffer, Self.buffer)
         }
-        let low = min(layout.index(at: top - before), count - 1)
-        let high = min(layout.index(at: top + viewportHeight + after), count - 1) + 1
+        // Denser grids fit more rows per point and more tiles per row.
+        let defaultColumns = AssetGridLayout.defaultColumnCount(viewportWidth: width)
+        let columnRatio = min(1, CGFloat(defaultColumns) / CGFloat(columns))
+        let bufferScale = columnRatio * columnRatio
+        // Pinch capture uses the full bounds, including tiles under the bars.
+        let insets = adjustedContentInset
+        let topBuffer = max(before * bufferScale, min(before, insets.top))
+        let bottomBuffer = max(after * bufferScale, min(after, insets.bottom))
+        let low = min(layout.index(at: top - topBuffer), count - 1)
+        let high = min(layout.index(at: top + viewportHeight + bottomBuffer), count - 1) + 1
         let range = low..<high
 
         let sameRows = mountedVersion == layout.version

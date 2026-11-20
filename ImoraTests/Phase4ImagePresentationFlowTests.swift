@@ -3802,6 +3802,8 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
         let changedAsset = try XCTUnwrap(PHAsset.fetchAssets(withLocalIdentifiers: [changedID], options: nil).firstObject)
         let loader = LocalImageLoader.fixture(manager: PHCachingImageManager())
         let permission = loader.permissionGeneration
+        let before = await loader.readScrollTileRevision(changedID)
+        let beforeRevision = try XCTUnwrap(before.revision)
         for id in [changedID, unchangedID] {
             loader.installPrepared(image, localIdentifier: id, targetPixelSize: 416, cacheScope: "change-fixture",
                 permission: permission, sourceRevision: try XCTUnwrap(LocalImageLoader.currentModificationRevision(id)))
@@ -3819,6 +3821,10 @@ final class Phase4ImagePresentationFlowTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         loader.noteLibraryChange(try XCTUnwrap(notification))
+        let currentRevision = try XCTUnwrap(LocalImageLoader.currentModificationRevision(changedID))
+        XCTAssertNotEqual(currentRevision, beforeRevision)
+        XCTAssertEqual(loader.currentTileRevision(changedID, using: before), currentRevision,
+                       "The tile must not accept a proof from before the PhotoKit change")
         XCTAssertEqual(loader.permissionGeneration, permission, "An unrelated photo change must not retire every mounted image")
         XCTAssertTrue(unchanged.isCurrent)
         XCTAssertTrue(loader.cachedImage(localIdentifier: unchangedID, targetPixelSize: 416,

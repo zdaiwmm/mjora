@@ -68,8 +68,9 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     private final class CachedImage {
         let image: UIImage
         let modificationRevision: String?
-        init(_ image: UIImage, modificationRevision: String?) {
-            self.image = image; self.modificationRevision = modificationRevision
+        let isPrepared: Bool
+        init(_ image: UIImage, modificationRevision: String?, isPrepared: Bool) {
+            self.image = image; self.modificationRevision = modificationRevision; self.isPrepared = isPrepared
         }
     }
     private let cache: NSCache<NSString, CachedImage>
@@ -83,6 +84,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     private let assets: NSCache<NSString, PHAsset>
     private let assetSnapshots = OSAllocatedUnfairLock(initialState: (assets: [String: PHAsset](), overflow: false))
     private let libraryGeneration = OSAllocatedUnfairLock(initialState: 0)
+    private let tileMutationGeneration = OSAllocatedUnfairLock(initialState: UInt64(0))
     var permissionGeneration: Int {
         libraryGeneration.withLock { $0 } * 10 + PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue
     }
@@ -93,6 +95,43 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
               let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
               !asset.isHidden, let modified = asset.modificationDate else { return nil }
         return String(modified.timeIntervalSinceReferenceDate.bitPattern)
+    }
+
+    struct TileRevisionProof: Sendable {
+        let localIdentifier: String
+        let revision: String?
+        fileprivate let permission: Int
+        fileprivate let mutation: UInt64
+    }
+
+    func readTileRevision(_ localIdentifier: String) -> TileRevisionProof {
+        let mutation = tileMutationGeneration.withLock { $0 }
+        let permission = permissionGeneration
+        return .init(localIdentifier: localIdentifier, revision: Self.currentModificationRevision(localIdentifier),
+                     permission: permission, mutation: mutation)
+    }
+
+    @concurrent
+    func readScrollTileRevision(_ localIdentifier: String) async -> TileRevisionProof {
+        readTileRevision(localIdentifier)
+    }
+
+    private func tileRevisionProofIsCurrent(_ proof: TileRevisionProof) -> Bool {
+        proof.permission == permissionGeneration && tileMutationGeneration.withLock { $0 == proof.mutation }
+    }
+
+    func currentTileRevision(_ localIdentifier: String, using proof: TileRevisionProof?) -> String? {
+        if let proof, proof.localIdentifier == localIdentifier, tileRevisionProofIsCurrent(proof) {
+            return proof.revision
+        }
+        return Self.currentModificationRevision(localIdentifier)
+    }
+
+    func refreshScrollTileRevision(_ proof: TileRevisionProof) -> TileRevisionProof {
+        // Limited library membership can change without a change in authorization status.
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              tileRevisionProofIsCurrent(proof) else { return readTileRevision(proof.localIdentifier) }
+        return proof
     }
 
     @concurrent
@@ -125,7 +164,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         }
         store(image, localIdentifier: localIdentifier, targetPixelSize: targetPixelSize,
               contentMode: DeviceTileRender.contentMode, coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope,
-              modificationRevision: revision)
+              modificationRevision: revision, isPrepared: true)
         storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
     }
     /// exported live photo motion files in least-recently-used order.
@@ -134,6 +173,8 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     /// library query, so the bookkeeping stays off the caller's thread. serial
     /// keeps a stop from overtaking the start it cancels.
     private let cachingQueue = DispatchQueue(label: "app.imora.local-image-caching", qos: .userInitiated)
+    // PhotoKit can deliver on main despite the background request start. Keep callbacks ordered.
+    private let deliveryQueue = DispatchQueue(label: "app.imora.local-image-delivery", qos: .userInitiated)
 
     fileprivate static func releaseLocalPermit(_ permit: UUID) async {
         await localSlots.release(permit)
@@ -156,6 +197,7 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
     /// PhotoKit changes retire only affected assets. An access change or an
     /// incomplete snapshot still retires the entire local namespace.
     func noteLibraryChange(_ change: PHChange? = nil) {
+        tileMutationGeneration.withLock { $0 &+= 1 }
         if let change, PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
             let snapshot = assetSnapshots.withLock { $0 }
             if !snapshot.overflow {
@@ -311,14 +353,15 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         contentMode: PHImageContentMode,
         coversTarget: Bool,
         cacheScope: String = "",
-        modificationRevision: String? = nil
+        modificationRevision: String? = nil,
+        isPrepared: Bool = false
     ) {
         _ = fetchAsset(localIdentifier)
         let cacheKey = key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope)
         let cacheKeyString = cacheKey as String
         recordCachedKey(cacheKeyString, localIdentifier: localIdentifier, pixels: targetPixelSize)
         cache.setObject(
-            CachedImage(image, modificationRevision: modificationRevision),
+            CachedImage(image, modificationRevision: modificationRevision, isPrepared: isPrepared),
             forKey: cacheKey,
             cost: Self.cost(of: image)
         )
@@ -371,6 +414,13 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized || status == .limited else { return nil }
         return cache.object(forKey: key(localIdentifier, targetPixelSize, contentMode, coversTarget: coversTarget, cacheScope: cacheScope))?.image
+    }
+
+    func cachedPreparedTileImage(localIdentifier: String, targetPixelSize: CGFloat, cacheScope: String) -> UIImage? {
+        let cacheKey = key(localIdentifier, targetPixelSize, DeviceTileRender.contentMode,
+                           coversTarget: DeviceTileRender.coversTile, cacheScope: cacheScope)
+        guard let entry = cache.object(forKey: cacheKey), entry.isPrepared else { return nil }
+        return entry.image
     }
 
     func cachedBoundImage(localIdentifier: String, targetPixelSize: CGFloat, contentMode: PHImageContentMode,
@@ -572,74 +622,77 @@ nonisolated final class LocalImageLoader: @unchecked Sendable {
                             contentMode: contentMode,
                             coversTarget: coversTarget
                         )
+                        let original = CGFloat(coversTarget
+                            ? min(asset.pixelWidth, asset.pixelHeight)
+                            : max(asset.pixelWidth, asset.pixelHeight))
                         let requestID = manager.requestImage(
                             for: asset,
                             targetSize: size,
                             contentMode: contentMode,
                             options: Self.requestOptions(allowsNetwork: allowsNetwork)
                         ) { image, info in
-                            guard !request.isCancelled else { return }
-                            guard self.libraryGeneration.withLock({ $0 }) == generation else {
-                                continuation.yield(.terminal(.missing))
-                                continuation.finish()
-                                return
-                            }
-                            guard sourceRevision != nil, Self.currentModificationRevision(localIdentifier) == sourceRevision else {
-                                continuation.yield(.terminal(.missing))
-                                continuation.finish()
-                                return
-                            }
-                            switch LocalImageResult.classify(
+                            let outcome = LocalImageResult.classify(
                                 hasImage: image != nil,
                                 isDegraded: Self.isDegraded(info),
                                 isCancelled: Self.isCancelled(info),
                                 hasError: info?[PHImageErrorKey] != nil,
                                 isInCloud: (info?[PHImageResultIsInCloudKey] as? Bool) ?? false,
                                 allowsNetwork: allowsNetwork
-                            ) {
-                            case .waiting:
-                                return
-                            case .preview:
-                                if let image {
+                            )
+                            self.deliveryQueue.async {
+                                guard !request.isCancelled else { return }
+                                guard self.libraryGeneration.withLock({ $0 }) == generation else {
+                                    continuation.yield(.terminal(.missing))
+                                    continuation.finish()
+                                    return
+                                }
+                                guard sourceRevision != nil, Self.currentModificationRevision(localIdentifier) == sourceRevision else {
+                                    continuation.yield(.terminal(.missing))
+                                    continuation.finish()
+                                    return
+                                }
+                                switch outcome {
+                                case .waiting:
+                                    return
+                                case .preview:
+                                    if let image {
+                                        self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
+                                        continuation.yield(.preview(image))
+                                    }
+                                    return
+                                case .final:
+                                    break
+                                case let outcome:
+                                    continuation.yield(.terminal(outcome))
+                                    continuation.finish()
+                                    return
+                                }
+                                guard let image else { return }
+                                let actual = coversTarget
+                                    ? min(image.size.width, image.size.height) * image.scale
+                                    : max(image.size.width, image.size.height) * image.scale
+                                if actual < min(targetPixelSize, original) * 0.95 {
                                     self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
                                     continuation.yield(.preview(image))
+                                    continuation.yield(.terminal(.insufficient))
+                                    continuation.finish()
+                                    return
                                 }
-                                return
-                            case .final:
-                                break
-                            case let outcome:
-                                continuation.yield(.terminal(outcome))
+                                let revision = sourceRevision.flatMap {
+                                    self.permissionGeneration == permission && Self.currentModificationRevision(localIdentifier) == $0 ? $0 : nil
+                                }
+                                self.store(
+                                    image,
+                                    localIdentifier: localIdentifier,
+                                    targetPixelSize: targetPixelSize,
+                                    contentMode: contentMode,
+                                    coversTarget: coversTarget,
+                                    cacheScope: cacheScope,
+                                    modificationRevision: revision
+                                )
+                                continuation.yield(.final(image))
                                 continuation.finish()
-                                return
                             }
-                            guard let image else { return }
-                            let actual = coversTarget
-                                ? min(image.size.width, image.size.height) * image.scale
-                                : max(image.size.width, image.size.height) * image.scale
-                            let original = CGFloat(coversTarget
-                                ? min(asset.pixelWidth, asset.pixelHeight)
-                                : max(asset.pixelWidth, asset.pixelHeight))
-                            if actual < min(targetPixelSize, original) * 0.95 {
-                                self.storePreview(image, localIdentifier: localIdentifier, cacheScope: cacheScope)
-                                continuation.yield(.preview(image))
-                                continuation.yield(.terminal(.insufficient))
-                                continuation.finish()
-                                return
-                            }
-                            let revision = sourceRevision.flatMap {
-                                self.permissionGeneration == permission && Self.currentModificationRevision(localIdentifier) == $0 ? $0 : nil
-                            }
-                            self.store(
-                                image,
-                                localIdentifier: localIdentifier,
-                                targetPixelSize: targetPixelSize,
-                                contentMode: contentMode,
-                                coversTarget: coversTarget,
-                                cacheScope: cacheScope,
-                                modificationRevision: revision
-                            )
-                            continuation.yield(.final(image))
-                            continuation.finish()
                         }
                         request.register(requestID, manager: manager)
                     }, armDeadline: {
