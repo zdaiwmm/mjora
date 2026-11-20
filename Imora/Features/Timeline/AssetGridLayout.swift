@@ -35,3 +35,31 @@ nonisolated enum AssetGridLayout {
         return max(0, (viewportWidth - totalGutterWidth) / CGFloat(columns))
     }
 }
+
+nonisolated struct TimelinePinchSettle {
+    private static let disarmingRetreatRatio: CGFloat = 1.10
+    private static let neutralCrossingRatio: CGFloat = 1.05
+
+    private var farthestScale: CGFloat = 1
+    private var armedScale: CGFloat?
+
+    var releaseScale: CGFloat { armedScale ?? 1 }
+
+    mutating func update(_ scale: CGFloat) {
+        guard scale.isFinite, scale > 0 else { return }
+
+        let expandingReach = farthestScale > 1
+        let reachesFarther = expandingReach ? scale > farthestScale : scale < farthestScale
+        let crossesNeutral = expandingReach
+            ? scale <= 1 / Self.neutralCrossingRatio
+            : scale >= Self.neutralCrossingRatio
+
+        if farthestScale == 1 || reachesFarther || crossesNeutral {
+            farthestScale = scale
+            armedScale = scale
+        } else if armedScale != nil {
+            let retreatRatio = expandingReach ? farthestScale / scale : scale / farthestScale
+            armedScale = retreatRatio >= Self.disarmingRetreatRatio ? nil : scale
+        }
+    }
+}

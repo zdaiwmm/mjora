@@ -41,6 +41,9 @@ struct CollectionsHome: View {
     }
 
     var body: some View {
+        // The scroll view extends to the screen edge, so reserve the bar's
+        // height and its full clearance from that edge.
+        let compactNavigationMargin = PhotosNavigationBar.height + PhotosNavigationBar.bottomScreenClearance
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 24) {
                 ForEach(availableSections) { section in
@@ -55,7 +58,7 @@ struct CollectionsHome: View {
             .padding(.bottom, 8)
         }
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .contentMargins(.bottom, usesCompactPhotosNavigation ? 70 : 0, for: .scrollContent)
+        .contentMargins(.bottom, usesCompactPhotosNavigation ? compactNavigationMargin : 0, for: .scrollContent)
         .ignoresSafeArea(edges: .bottom)
         .background(Color(.systemBackground))
         .environment(covers)
@@ -214,14 +217,28 @@ struct CollectionsHome: View {
             if layout.previewSize == .none {
                 destination(.places, title: String(localized: "Explore Your Places"), symbol: "map.fill")
             } else {
-                NavigationLink(value: CollectionsRoute.map) {
-                    MapPreviewGate { CollectionsMapPreview() }
-                        .frame(height: layout.previewSize == .large ? 220 : 160)
-                        .clipShape(.rect(cornerRadius: 22))
+                ZStack {
+                    MapPreviewGate {
+                        CollectionsMapPreview().id(session.client?.context.id)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
+                    NavigationLink(value: CollectionsRoute.map) {
+                        Label("Open Map", systemImage: "arrow.up.right")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.regularMaterial, in: .capsule)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("collections-places-map")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Explore Your Places")
-                .accessibilityIdentifier("collections-places-map")
+                .frame(height: layout.previewSize == .large ? 220 : 160)
+                .clipShape(.rect(cornerRadius: 22))
             }
         case .media:
           if source == "local" {
@@ -495,6 +512,7 @@ private struct CollectionsMapPreview: View {
     @Environment(SessionStore.self) private var session
     @State private var camera: MapCameraPosition = .automatic
     @State private var clusters: [MapCluster] = []
+    @State private var size: CGSize = .zero
 
     var body: some View {
         Map(position: $camera, interactionModes: []) {
@@ -507,22 +525,21 @@ private struct CollectionsMapPreview: View {
             }
             .annotationTitles(.hidden)
         }
-        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
         .mapControlVisibility(.hidden)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        .task(id: session.client?.context.id) {
-            guard let client = session.client,
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+        .task(id: size) {
+            let viewportSize = size
+            guard viewportSize.width > 0, viewportSize.height > 0,
+                  let client = session.client,
                   let markers = try? await MapMarkerCache.shared.markers(client: client, options: MapMarkerOptions()),
                   !Task.isCancelled, session.client === client else { return }
             let prepared = await Task.detached(priority: .userInitiated) {
-                let grouped = MapClustering.clusters(markers: markers, zoom: 3)
-                let bounds = MapClustering.focusBounds(of: grouped) ?? MapClustering.bounds(of: markers)
-                return (Array(grouped.sorted { $0.count > $1.count }.prefix(12)), bounds)
+                MapClustering.preview(markers: markers, size: viewportSize)
             }.value
             guard !Task.isCancelled, session.client === client else { return }
-            clusters = prepared.0
-            if let bounds = prepared.1 { camera = .rect(bounds.scaled(by: 1.3).mapRect) }
+            clusters = prepared?.clusters ?? []
+            camera = prepared.map { .rect($0.bounds.mapRect) } ?? .automatic
         }
     }
 }

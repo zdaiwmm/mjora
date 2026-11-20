@@ -21,7 +21,8 @@ struct TimelineTab: View {
     }
     private func configuration(for value: String) -> PhotosToolbarConfiguration {
         let controls = value == "local" ? deviceControls : cloudControls
-        return PhotosToolbarConfiguration(source: $source, controls: controls,
+        return PhotosToolbarConfiguration(source: $source, librarySource: PhotosLibrarySource(rawValue: value) ?? .all,
+            controls: controls,
             completePeriodIndex: value == "local" || [.all, .favorites].contains(controls.mediaFilter),
             supportsDateAdded: value != "local" && [.all, .favorites].contains(controls.mediaFilter),
             onAccount: { showSettings = true },

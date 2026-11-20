@@ -27,7 +27,7 @@ struct LocalPhotoSearchView: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
     @Binding var source: PhotoSearchSource
-    let query: String
+    @Binding var query: String
     @State private var model = LocalPhotoSearchModel()
 
     private struct Request: Hashable {
@@ -86,8 +86,6 @@ struct LocalPhotoSearchView: View {
                     .accessibilityIdentifier("local-search-results")
             }
         }
-        .toolbarVisibility(.visible, for: .navigationBar)
-        .navigationTitle("")
         .task(id: context) {
             DeviceMediaFactsStore.shared.startObserving()
             await reload()
@@ -106,6 +104,9 @@ struct LocalPhotoSearchView: View {
 
     private func reload() async {
         let backedUp = Set(session.backup?.remoteIdentifierByLocalId.keys.map { $0 } ?? [])
-        await model.reload(context: context, backedUpLocalIDs: backedUp)
+        let requested = context
+        await model.reload(context: requested, backedUpLocalIDs: backedUp)
+        guard !Task.isCancelled, context == requested else { return }
+        await model.search(query, context: requested)
     }
 }

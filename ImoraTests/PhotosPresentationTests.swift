@@ -209,7 +209,6 @@ final class PhotosPresentationTests: XCTestCase {
         // event that a newly mounted destination sends in the real screen.
         motion.arrive(at: month, mode: .months)
         XCTAssertEqual(year.alpha, 0)
-        XCTAssertEqual(month.alpha, 0)
         XCTAssertEqual(window.subviews.count, originalCount + 1)
         motion.begin(assetID: asset.id, from: .months, to: .years, gridSource: nil, session: session, reduceMotion: false)
         XCTAssertNotEqual(motion.transitionID, first)

@@ -64,9 +64,9 @@ final class GalleryResponsivenessTests: XCTestCase {
             targetPixelSize: 128, client: client)
         let tile = TimelineTileView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         tile.projectImage(asset: value, source: source, client: client, generation: 0, targetPixelSize: 128)
-        XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image)
+        XCTAssertNotNil((tile.zoomReplicaFactory()?() as? UIImageView)?.image)
         tile.projectImage(asset: value, source: source, client: client, generation: 0, targetPixelSize: 512)
-        XCTAssertNotNil((tile.makeZoomReplica() as? UIImageView)?.image, "Changing thumbnail resolution must not flash a blank tile")
+        XCTAssertNotNil((tile.zoomReplicaFactory()?() as? UIImageView)?.image, "Changing thumbnail resolution must not flash a blank tile")
         XCTAssertFalse(tile.hasPreparedInitialImage, "A smaller preview must not impersonate the requested final image")
         tile.recycle()
     }

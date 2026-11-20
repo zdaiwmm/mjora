@@ -212,6 +212,18 @@ nonisolated enum MapClustering {
         return result
     }
 
+    static func preview(markers: [MapMarker], size: CGSize) -> (clusters: [MapCluster], bounds: MapBoundingBox)? {
+        guard size.width > 0, size.height > 0,
+              let bounds = focusBounds(of: clusters(markers: markers, zoom: 3))?.scaled(by: 1.4) else { return nil }
+        let rect = bounds.mapRect
+        let fittedWidth = max(rect.width, rect.height * Double(size.width / size.height))
+        let longitudeDelta = fittedWidth / MKMapRect.world.width * 360
+        let zoom = zoomLevel(longitudeDelta: longitudeDelta, widthPoints: Double(size.width))
+        let visible = markers.filter { bounds.contains(latitude: $0.lat, longitude: $0.lon) }
+        let detail = clusters(markers: visible, zoom: zoom).sorted { $0.count > $1.count }
+        return (Array(detail.prefix(12)), bounds)
+    }
+
     /// box around the busiest groups, dropping the tail of far flung outliers.
     /// framing the outer extent of a library with one holiday photo on another
     /// continent zooms the camera out to an ocean.

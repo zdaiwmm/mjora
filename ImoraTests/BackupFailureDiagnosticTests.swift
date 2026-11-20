@@ -144,8 +144,24 @@ final class BackupFailureDiagnosticTests: XCTestCase {
         XCTAssertEqual(failure.count, 2)
         XCTAssertEqual(failure.diagnostic?.verificationState, .mismatch)
         XCTAssertNil(failure.diagnostic?.code)
-        restored.clearBackedUp(account: "owner", revisions: ["photo": nil])
+        restored.clearResolved(account: "owner", removedLocalIDs: [], backedUpRevisions: ["photo": nil])
         XCTAssertTrue(restored.failures(account: "owner").isEmpty)
+    }
+
+    func testCloudRemovalAndVerifiedRevisionClearOnlyMatchingFailures() {
+        var ledger = RepeatedBackupFailures()
+        for localID in ["removed", "verified", "edited", "pending"] {
+            ledger.recordFailure(account: "owner", localIdentifier: localID, modificationDate: nil,
+                isVideo: false, kind: .other)
+        }
+        ledger.recordFailure(account: "another-owner", localIdentifier: "removed", modificationDate: nil,
+            isVideo: false, kind: .other)
+
+        ledger.clearResolved(account: "owner", removedLocalIDs: ["removed", "untracked"],
+            backedUpRevisions: ["verified": nil, "edited": Date(timeIntervalSince1970: 100)])
+
+        XCTAssertEqual(Set(ledger.failures(account: "owner").map(\.localIdentifier)), ["edited", "pending"])
+        XCTAssertEqual(ledger.failures(account: "another-owner").map(\.localIdentifier), ["removed"])
     }
 
     func testAddingDiagnosticsDoesNotGrowAnUnboundedAttemptHistory() {

@@ -8,7 +8,6 @@ struct MainTabView: View {
     @Bindable private var router = NotificationRouter.shared
     @Bindable private var timelineRouter = TimelineNavigationRouter.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(PhotosLibrarySource.preferenceKey) private var source = "all"
     @State private var cloudControls = PhotosGridControls()
@@ -16,30 +15,29 @@ struct MainTabView: View {
     @State private var collectionCovers = CollectionsCoverStore()
     @State private var hidesCompactNavigation = false
     @State private var keyboardVisible = false
-    @State private var selection: TabKey = .photos
+    @State private var browseSelection: TabKey = .photos
+    @State private var searchSessionID: UUID?
     @State private var searchText = ""
     @State private var searchScope: SearchFilter.TextType = .context
     @State private var searchSource: PhotoSearchSource = .cloud
     @State private var searchSubmitRequest = 0
-    @State private var isSearchPresented = false
+    @State private var compactFocus = CompactPhotoSearchBar.FocusRequest(focused: false)
     @FocusState private var isSearchFocused: Bool
 
+    private var selection: TabKey { searchSessionID == nil ? browseSelection : .search }
+
     private var tabSelection: Binding<TabKey> {
-        Binding(
-            get: { selection },
-            set: { tab in
-                if tab == .search, selection != .search {
-                    searchSource = .cloud
-                }
-                if tab == .search, selection == .search { focusSearch() }
-                if tab != .search {
-                    isSearchPresented = false
-                    isSearchFocused = false
-                }
-                if tab != .photos { session.cachedLaunchHandle?.cancel() }
-                selection = tab
-            }
-        )
+        Binding(get: { showsLibrarySection ? selection : browseSelection }, set: selectTab)
+    }
+
+    private var searchPresentation: Binding<Bool> {
+        let presentedSessionID = searchSessionID
+        return Binding(get: {
+            presentedSessionID != nil && searchSessionID == presentedSessionID
+        }, set: { presented in
+            guard !presented, let presentedSessionID, searchSessionID == presentedSessionID else { return }
+            closeSearch()
+        })
     }
 
     enum TabKey: Hashable {
@@ -81,6 +79,32 @@ struct MainTabView: View {
     }
 
     private func content(bottomSafeArea: CGFloat) -> some View {
+        let showsCompactSearch = !showsLibrarySection && searchSessionID != nil
+        return ZStack {
+            browseShell(bottomSafeArea: bottomSafeArea)
+                .ignoresSafeArea(showsLibrarySection ? [] : .keyboard, edges: .bottom)
+                .allowsHitTesting(!showsCompactSearch)
+                .accessibilityHidden(showsCompactSearch)
+
+            if showsCompactSearch, let searchSessionID {
+                NavigationStack {
+                    SearchTab(query: $searchText, searchScope: $searchScope, source: $searchSource,
+                              submitRequest: searchSubmitRequest, usesCompactPresentation: true,
+                              setSearchFocus: setSearchFocus)
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            CompactPhotoSearchBar(query: $searchText, prompt: searchSource.prompt,
+                                                  focus: compactFocus, onSubmit: submitSearch,
+                                                  onClose: closeSearch)
+                        }
+                }
+                .id(searchSessionID)
+                .background { Color(uiColor: .systemBackground).ignoresSafeArea() }
+                .tint(.primary)
+            }
+        }
+    }
+
+    private func browseShell(bottomSafeArea: CGFloat) -> some View {
         ZStack {
             AssetViewerOpeningChromePrewarmer()
                 .ignoresSafeArea()
@@ -99,30 +123,36 @@ struct MainTabView: View {
                 Tab("Library", systemImage: selection == .photos ? "photo.on.rectangle.fill" : "photo.on.rectangle", value: TabKey.photos) {
                     TimelineTab(cloudControls: cloudControls, deviceControls: deviceControls)
                         .id(session.client?.offlineAccountKey)
+                        .environment(\.usesCompactPhotosNavigation, !showsLibrarySection)
                 }
                 Tab("Collections", systemImage: selection == .albums ? "rectangle.stack.fill" : "rectangle.stack", value: TabKey.albums) {
                     AlbumsTab(account: session.client?.offlineAccountKey, covers: collectionCovers)
                         .id(session.client?.offlineAccountKey)
+                        .environment(\.usesCompactPhotosNavigation, !showsLibrarySection)
                         .toolbarVisibility(showsLibrarySection ? .automatic : .hidden, for: .tabBar)
                 }
-                Tab("Search", systemImage: "magnifyingglass", value: TabKey.search, role: .search) {
-                    SearchTab(query: $searchText, searchScope: $searchScope,
-                              source: $searchSource,
-                              submitRequest: searchSubmitRequest, setSearchFocus: setSearchFocus)
+                if showsLibrarySection {
+                    Tab("Search", systemImage: "magnifyingglass", value: TabKey.search, role: .search) {
+                        NavigationStack {
+                            SearchTab(query: $searchText, searchScope: $searchScope, source: $searchSource,
+                                      submitRequest: searchSubmitRequest, setSearchFocus: setSearchFocus)
+                        }
                         .id(session.client?.offlineAccountKey)
-                        .searchable(text: $searchText, isPresented: $isSearchPresented,
+                        .searchable(text: $searchText, isPresented: searchPresentation,
                                     placement: .toolbar, prompt: searchSource.prompt)
+                        .searchPresentationToolbarBehavior(.avoidHidingContent)
                         .searchFocused($isSearchFocused)
+                        .task(id: searchSessionID) {
+                            guard let request = searchSessionID else { return }
+                            await Task.yield()
+                            guard !Task.isCancelled, searchSessionID == request else { return }
+                            setSearchFocus(true)
+                        }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .writingToolsBehavior(.disabled)
-                        .onSubmit(of: .search) {
-                            guard selection == .search else { return }
-                            searchSubmitRequest += 1
-                            isSearchFocused = false
-                        }
-                }
-                if showsLibrarySection {
+                        .onSubmit(of: .search, submitSearch)
+                    }
                     TabSection("Library") {
                         Tab("Favorites", systemImage: "heart", value: TabKey.favorites) {
                             LibrarySectionTab(destination: .favorites)
@@ -158,21 +188,17 @@ struct MainTabView: View {
             // Preserve native tab/search behavior and the iPad sidebar while
             // the compact browsing controls share one morphing glass surface.
             .tabViewStyle(.sidebarAdaptable)
-            .onChange(of: selection) { _, tab in
-                if tab == .search { setSearchFocus(true) }
-            }
             .tabViewSearchActivation(.searchTabSelection)
             .tint(.primary)
-            .environment(\.usesCompactPhotosNavigation, !showsLibrarySection && selection != .search)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             if !showsLibrarySection, selection != .search, !keyboardVisible,
                !hidesCompactNavigation, !(selection == .photos && photoControls.isSelecting) {
                 PhotosNavigationBar(controls: photoControls, showsPeriods: showsDateNavigation,
                     selection: tabSelection, onSearch: activateSearch)
                     // Match the native floating bar's clearance independently
                     // of the device's home-indicator safe area.
-                    .padding(.bottom, 21 - bottomSafeArea)
+                    .padding(.bottom, PhotosNavigationBar.bottomScreenClearance - bottomSafeArea)
                     .transition(.opacity)
             }
         }
@@ -184,12 +210,12 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
         }
-        .animation(reduceMotion ? nil : PhotosMotion.layout, value: showsDateNavigation)
         .tabBarMinimizeBehavior(.never)
         .onChange(of: showsLibrarySection) { _, shows in
             // a section tab selected at regular width has nowhere to go once
             // the sidebar folds away, so the library list takes over.
-            if !shows, selection.isLibrarySection { selection = .albums }
+            if !shows, browseSelection.isLibrarySection { browseSelection = .albums }
+            if searchSessionID != nil { setSearchFocus(true) }
         }
         // leaving the locked folder for another tab locks it, whether or
         // not the folder's own disappearance fires on this tab style.
@@ -197,10 +223,6 @@ struct MainTabView: View {
         .onChange(of: selection) { _, _ in
             if selection != .photos { session.cachedLaunchHandle?.cancel() }
             session.lockedFolder?.lock()
-            if selection != .search {
-                isSearchPresented = false
-                isSearchFocused = false
-            }
         }
         .sheet(isPresented: $router.showsInbox) {
             NotificationsScreen()
@@ -208,10 +230,10 @@ struct MainTabView: View {
         .onChange(of: router.pendingAlbumID) { _, id in
             // the albums tab picks the id up itself; switching to it is what
             // makes the tab exist in the first place.
-            if id != nil { selection = .albums }
+            if id != nil { selectTab(.albums) }
         }
         .onChange(of: timelineRouter.pendingTarget) { _, target in
-            if target != nil { selection = .photos }
+            if target != nil { selectTab(.photos) }
         }
         .onChange(of: timelineRouter.searchRequest) { _, request in
             if let request {
@@ -221,8 +243,13 @@ struct MainTabView: View {
         }
     }
 
-    private func focusSearch() {
-        setSearchFocus(true)
+    private func selectTab(_ tab: TabKey) {
+        if tab == .search {
+            activateSearch(source: selection == .search ? searchSource : .cloud)
+        } else {
+            browseSelection = tab
+            closeSearch()
+        }
     }
 
     private func activateSearch() {
@@ -230,17 +257,33 @@ struct MainTabView: View {
     }
 
     private func activateSearch(source: PhotoSearchSource) {
-        if searchSource != source { searchText = "" }
+        let alreadyPresented = searchSessionID != nil
+        if !alreadyPresented || searchSource != source { searchText = "" }
         searchSource = source
-        selection = .search
-        setSearchFocus(true)
+        if !alreadyPresented { searchSessionID = UUID() }
+        if !showsLibrarySection || alreadyPresented { setSearchFocus(true) }
+    }
+
+    private func submitSearch() {
+        guard selection == .search else { return }
+        searchSubmitRequest += 1
+        setSearchFocus(false)
+    }
+
+    private func closeSearch() {
+        guard searchSessionID != nil else { return }
+        setSearchFocus(false)
+        searchSessionID = nil
     }
 
     /// dropping focus keeps the field presented, so the typed query and the
     /// results it produced stay on screen with the keyboard gone.
     private func setSearchFocus(_ focused: Bool) {
         guard selection == .search else { return }
-        if focused { isSearchPresented = true }
-        isSearchFocused = focused
+        if showsLibrarySection {
+            isSearchFocused = focused
+        } else {
+            compactFocus = .init(focused: focused)
+        }
     }
 }

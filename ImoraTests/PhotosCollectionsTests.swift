@@ -33,6 +33,20 @@ final class PhotosCollectionsTests: XCTestCase {
         XCTAssertTrue(CollectionsAvailability().allows("cleanup"))
     }
 
+    func testPlacesPreviewSeparatesNearbyPhotoLocationsWithoutShowingDistantOutliers() throws {
+        let markers = [
+            MapMarker(id: "west", lat: 37.78, lon: -122.48, city: nil, state: nil, country: nil),
+            MapMarker(id: "east", lat: 37.78, lon: -122.42, city: nil, state: nil, country: nil),
+            MapMarker(id: "east-again", lat: 37.78, lon: -122.42, city: nil, state: nil, country: nil),
+            MapMarker(id: "outlier", lat: 51.51, lon: -0.13, city: nil, state: nil, country: nil)
+        ]
+        for height in [160.0, 220.0] {
+            let preview = try XCTUnwrap(MapClustering.preview(markers: markers, size: CGSize(width: 350, height: height)))
+            XCTAssertEqual(Set(preview.clusters.map(\.id)), ["east", "west"])
+            XCTAssertEqual(preview.clusters.map(\.count), [2, 1])
+        }
+    }
+
     func testFailedAlbumRemovalReturnsToItsOriginalParentOnly() {
         var state = AlbumRemovalNavigation()
         var allAlbums = NavigationPath()

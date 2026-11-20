@@ -10,21 +10,26 @@ extension MediaCounts {
     }
 }
 
-/// a Live Photo only counts as backed up when both resources are confirmed.
+/// Counts device items using their retained backup evidence.
 nonisolated struct BackupLibraryStatus: Equatable, Sendable {
     var lastSuccessfulCloudSync: Date? = nil
     private(set) var totalMedia = MediaCounts()
-    private(set) var backedUpMedia = MediaCounts()
+    private(set) var cloudConfirmedMedia = MediaCounts()
+    private(set) var historicalOnlyMedia = MediaCounts()
     private(set) var unindexedMedia = MediaCounts()
     private(set) var unsupportedMedia = MediaCounts()
     private(set) var pendingMedia = MediaCounts()
     private(set) var excludedMedia = MediaCounts()
     private(set) var cloudDeletedMedia = MediaCounts()
+    var deviceLibraryMedia: MediaCounts {
+        MediaCounts(photos: totalMedia.photos + excludedMedia.photos, videos: totalMedia.videos + excludedMedia.videos)
+    }
     var cloudDeleted: Int { cloudDeletedMedia.total }
 
     var excluded: Int { excludedMedia.total }
     var total: Int { totalMedia.total }
-    var backedUp: Int { backedUpMedia.total }
+    /// Combined count retained for existing callers.
+    var backedUp: Int { cloudConfirmedMedia.total + historicalOnlyMedia.total }
     var unindexed: Int { unindexedMedia.total }
     var unsupported: Int { unsupportedMedia.total }
     var pending: Int { pendingMedia.total }
@@ -49,15 +54,25 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
                 pendingMedia.add(asset)
                 continue
             }
-            if entry.isBackedUp || entry.hasHistoricalBackup { backedUpMedia.add(asset) }
-            else if entry.unsupported { unsupportedMedia.add(asset) }
-            else { pendingMedia.add(asset) }
+            if entry.isBackedUp {
+                cloudConfirmedMedia.add(asset)
+            } else if entry.hasHistoricalBackup {
+                historicalOnlyMedia.add(asset)
+            } else if entry.unsupported {
+                unsupportedMedia.add(asset)
+            } else {
+                pendingMedia.add(asset)
+            }
         }
     }
 
     var countText: String {
-        total == 0 ? (excluded > 0 ? String(localized: "No photos or videos selected for backup.") : String(localized: "No photos or videos in your library."))
-            : String(localized: "\(backedUpMedia.text) backed up")
+        if total == 0 {
+            return excluded > 0 ? String(localized: "No photos or videos selected for backup.")
+                : String(localized: "No photos or videos on this device.")
+        }
+        if cloudConfirmedMedia.total == 0 { return String(localized: "No cloud copies confirmed.") }
+        return String(localized: "Device items with cloud copies confirmed at last check: \(cloudConfirmedMedia.text)")
     }
 
     static let upToDateText = String(localized: "Done. No new photos or videos to back up.")

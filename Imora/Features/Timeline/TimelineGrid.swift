@@ -317,6 +317,7 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
     private var header: UIViewController?
     private var footer: UIViewController?
     private var isIdle = true
+    private var pinchSettle = TimelinePinchSettle()
     private var refreshAction: RefreshAction?
     private var refreshTask: Task<Void, Never>?
 
@@ -330,7 +331,7 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
         grid.onEffectiveHeaderHeight = { [weak self] height in self?.events.onHeaderHeight(height) }
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
         pinch.delegate = self
-        grid.addGestureRecognizer(pinch)
+        pinch.delaysTouchesEnded = false
         grid.pinch = pinch
     }
 
@@ -368,6 +369,7 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         grid.zoomTransition.cancel()
+        grid.panGestureRecognizer.isEnabled = true
     }
 
     func install(header: UIViewController, footer: UIViewController) {
@@ -443,17 +445,30 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
         switch recognizer.state {
         case .began:
             grid.beginColumnPinch(at: recognizer.location(in: grid))
-            // Mark the gesture active without regrouping the model.
+            guard grid.zoomTransition.isTracking else { return }
+            grid.panGestureRecognizer.isEnabled = false
+            pinchSettle = TimelinePinchSettle()
             events.onPinch(1)
         case .changed:
+            guard grid.zoomTransition.isTracking, recognizer.numberOfTouches == 2 else { return }
+            pinchSettle.update(recognizer.scale)
             grid.updateColumnPinch(scale: recognizer.scale, at: recognizer.location(in: grid))
         case .ended:
-            events.onPinch(recognizer.scale)
-            // A gesture below the column threshold still settles its scale.
+            grid.panGestureRecognizer.isEnabled = true
+            if grid.zoomTransition.isTracking {
+                let scale = pinchSettle.releaseScale
+                events.onPinch(scale)
+                #if DEBUG || PHASE4_PERFORMANCE
+                GalleryFrameMetrics.shared.mark("gallery-pinch-snap", values: [
+                    "releaseScale": Double(scale), "columns": Double(grid.model?.columns ?? 0)
+                ])
+                #endif
+            }
             if grid.zoomTransition.isTracking { grid.finishColumnChange(side: grid.currentTileSide) }
             events.onPinchEnded()
         case .cancelled, .failed:
-            grid.finishColumnChange(side: grid.currentTileSide)
+            grid.panGestureRecognizer.isEnabled = true
+            if grid.zoomTransition.isTracking { grid.finishColumnChange(side: grid.currentTileSide) }
             events.onPinchEnded()
         default:
             break
@@ -465,6 +480,20 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
         true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer.view is UIWindow else { return true }
+        return !grid.initialPresentationCovered && grid.bounds.contains(touch.location(in: grid))
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let window = gestureRecognizer.view as? UIWindow else { return true }
+        let midpoint = gestureRecognizer.location(in: window)
+        // An All Photos pinch can start across the floating bars. The pinch
+        // belongs to the grid under the midpoint, never a hidden source,
+        // the calendar overview, or a presented viewer.
+        return window.hitTest(midpoint, with: nil)?.isDescendant(of: grid) == true
     }
 
     // MARK: - phase
@@ -517,6 +546,20 @@ final class TimelineGridViewController: UIViewController, UIScrollViewDelegate, 
     }
 }
 
+private final class IncomingZoomReplica: UIImageView {
+    var placeholderTask: Task<Void, Never>?
+    var thumbnailTask: Task<Void, Never>?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window == nil else { return }
+        placeholderTask?.cancel()
+        placeholderTask = nil
+        thumbnailTask?.cancel()
+        thumbnailTask = nil
+    }
+}
+
 /// the scroll view itself. rows are mounted around the viewport from the
 /// exact layout, diffed by index while the rows hold and by id when they
 /// are swapped, and handed back to per-kind pools when they leave.
@@ -529,6 +572,7 @@ final class TimelineGridView: UIScrollView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        updatePinchHost()
         if observedWindow !== window {
             observedWindow?.removeGestureRecognizer(chromeTouchObserver)
             observedWindow = window
@@ -548,7 +592,13 @@ final class TimelineGridView: UIScrollView {
     var permitsEmptyInitialViewport = false
     var onInitialViewportPrepared: (() -> Void)?
     private var initialReadinessDelivered = false
-    var usesFullPhotosCanvas = false { didSet { if usesFullPhotosCanvas != oldValue { setNeedsLayout() } } }
+    var usesFullPhotosCanvas = false {
+        didSet {
+            guard usesFullPhotosCanvas != oldValue else { return }
+            updatePinchHost()
+            setNeedsLayout()
+        }
+    }
     var onEffectiveHeaderHeight: ((CGFloat) -> Void)?
     private var shortContentTopPadding: CGFloat = 0
     private var lastEffectiveHeaderHeight: CGFloat?
@@ -605,8 +655,6 @@ final class TimelineGridView: UIScrollView {
     }
     #endif
     let zoomTransition = TimelineGridZoomTransition()
-    private var pinchBaseColumns: Int?
-    private var pinchFrames: [Int: [String: CGRect]] = [:]
     var currentTileSide: CGFloat { side }
 
     private var zoomTiles: [TimelineTileView] {
@@ -630,40 +678,122 @@ final class TimelineGridView: UIScrollView {
     }
 
     func beginColumnPinch(at midpoint: CGPoint) {
-        pinchBaseColumns = context?.columns
-        pinchFrames.removeAll(keepingCapacity: true)
-        setNeedsLayout()
-        layoutIfNeeded()
-        zoomTransition.begin(in: self, tiles: zoomTiles, midpoint: midpoint,
-                             reduceMotion: context?.reduceMotion ?? UIAccessibility.isReduceMotionEnabled)
+        guard let model else { return }
+        let client = context?.session.client
+        zoomTransition.begin(in: self, captured: captureZoomTiles(), midpoint: midpoint,
+            reduceMotion: context?.reduceMotion ?? UIAccessibility.isReduceMotionEnabled,
+            baseColumns: model.columns, width: contentWidth, showsViewportBehind: model.filter.visibility != .locked) { [weak self] anchorID, unitY, columns in
+                guard let self, self.context?.session.client === client else { return nil }
+                return self.zoomLayout(anchorID: anchorID, unitY: unitY, columns: columns)
+            }
+    }
+
+    private func captureZoomTiles() -> [TimelineGridZoomTransition.CapturedTile] {
+        guard let parent = superview else { return [] }
+        return zoomTiles.compactMap { tile in
+            guard let asset = tile.asset, !tile.isProjectedRemoved else { return nil }
+            let frame = tile.convert(tile.bounds, to: parent).offsetBy(dx: -self.frame.minX, dy: -self.frame.minY)
+            let makeReplica = tile.zoomReplicaFactory()
+                ?? incomingZoomReplicaFactory(asset, pixels: context?.targetPixelSize ?? 1)
+            return .init(id: asset.id, frame: frame, makeReplica: makeReplica)
+        }
+    }
+
+    private func zoomLayout(anchorID: String, unitY: CGFloat, columns: Int) -> TimelineGridZoomTransition.Layout? {
+        guard let model else { return nil }
+        let width = contentWidth
+        let tilePixels = AssetGridLayout.tileSide(viewportWidth: width, columns: columns) * traitCollection.displayScale
+        let pixels = min(1_280, (max(1, tilePixels) / 32).rounded(.up) * 32)
+        let window = model.zoomWindow(anchorID: anchorID, unitY: unitY,
+            viewportReach: bounds.height + 128, columns: columns, width: width,
+            rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft)
+        let longHeight = headerHeight + window.rowsHeight + footerHeight + tailPadding
+        let shortPadding = topPadding(rowsHeight: window.rowsHeight)
+        let tiles = window.tiles.compactMapValues { value -> TimelineGridZoomTransition.CapturedTile? in
+            let asset = value.asset
+            guard !model.projectedRemovalIDs.contains(asset.id) else { return nil }
+            return .init(id: asset.id, frame: value.frame.offsetBy(dx: 0, dy: headerHeight + shortPadding),
+                makeReplica: incomingZoomReplicaFactory(asset, pixels: pixels))
+        }
+        let start = -adjustedContentInset.top
+        return .init(tiles: tiles, verticalOffsets:
+            start...max(start, longHeight + shortPadding - bounds.height + adjustedContentInset.bottom))
+    }
+
+    private func incomingZoomReplicaFactory(_ asset: Asset, pixels: CGFloat) -> () -> UIView {
+        let client = context?.session.client
+        return { [weak self] in
+            self?.makeIncomingZoomReplica(asset, pixels: pixels, client: client) ?? UIView()
+        }
+    }
+
+    private func makeIncomingZoomReplica(_ asset: Asset, pixels: CGFloat, client: ImoraClient?) -> UIView {
+        let imageView = IncomingZoomReplica()
+        imageView.backgroundColor = .secondarySystemFill
+        imageView.clipsToBounds = true
+        guard let context, let client, context.session.client === client, client.context.isActive,
+              asset.visibility != .locked else { return imageView }
+        imageView.contentMode = context.usesOriginalAspectRatio ? .scaleAspectFit : .scaleAspectFill
+        let key = MediaPresentationCoordinator.gridKey(asset: asset, client: client, pixels: pixels)
+        guard key.isCurrentContent else { return imageView }
+        if let local = asset.localIdentifier {
+            let scope = MediaPresentationCoordinator.localScope(asset: asset, client: client, pixels: context.targetPixelSize)
+            imageView.image = LocalImageLoader.shared.cachedPreview(localIdentifier: local, cacheScope: scope)
+            return imageView
+        }
+
+        let loader = ImageLoader.shared
+        let url = client.thumbnailURL(assetID: asset.id, cacheKey: asset.thumbhash)
+        let access = MediaPresentationCoordinator.access(for: client)
+        let isCurrent = { [weak self] in
+            self?.context?.session.client === client && client.context.isActive
+                && access == MediaPresentationCoordinator.access(for: client) && key.isCurrentContent
+                && self?.model?.projectedRemovalIDs.contains(asset.id) != true
+                && !loader.requiresPrivateLease(for: url, targetPixelSize: pixels)
+        }
+        func matches(_ surface: BoundRemoteImage) -> Bool {
+            surface.isCurrent && surface.localProvenance == nil && surface.access == access
+                && surface.key.scope == key.scope && surface.key.subject == key.subject
+                && surface.key.sourceRevision == key.sourceRevision
+                && surface.key.contentGeneration == key.contentGeneration
+        }
+        guard isCurrent() else { return imageView }
+        if let cached = loader.cachedBoundImage(for: url, targetPixelSize: context.targetPixelSize), matches(cached) {
+            imageView.image = cached.image
+            return imageView
+        }
+
+        if let thumbhash = asset.thumbhash {
+            imageView.placeholderTask = Task(priority: .utility) { [weak imageView] in
+                guard !Task.isCancelled, imageView?.window != nil, imageView?.image == nil, isCurrent() else { return }
+                let bitmap = await Self.decodeZoomThumbhash(thumbhash)
+                guard !Task.isCancelled, let imageView, imageView.window != nil,
+                      imageView.image == nil, isCurrent() else { return }
+                imageView.image = bitmap
+            }
+        }
+        imageView.thumbnailTask = Task { [weak imageView] in
+            guard !Task.isCancelled, imageView?.window != nil, isCurrent(),
+                  let loaded = try? await loader.boundImage(for: url, targetPixelSize: pixels),
+                  !Task.isCancelled, let imageView, imageView.window != nil, isCurrent(), matches(loaded) else { return }
+            imageView.placeholderTask?.cancel()
+            imageView.image = loaded.image
+        }
+        return imageView
+    }
+
+    @concurrent
+    private nonisolated static func decodeZoomThumbhash(_ thumbhash: String) async -> UIImage? {
+        Thumbhash.image(fromBase64: thumbhash)
     }
 
     func updateColumnPinch(scale: CGFloat, at midpoint: CGPoint) {
-        guard let context, scale.isFinite, scale > 0 else { return }
+        guard zoomTransition.isTracking, scale.isFinite, scale > 0 else { return }
         let range = AssetGridLayout.columnRange(viewportWidth: contentWidth)
         let minimum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.upperBound) / max(side, 1)
         let maximum = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: range.lowerBound) / max(side, 1)
         let clampedScale = min(maximum * 1.05, max(minimum * 0.95, scale))
-        let columns = TimelineGridZoomGeometry.continuousColumns(base: pinchBaseColumns ?? context.columns,
-            magnification: clampedScale, width: contentWidth)
-        let lower = Int(columns.rounded(.down)), upper = Int(columns.rounded(.up))
-        let lowerSide = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: lower)
-        let upperSide = AssetGridLayout.tileSide(viewportWidth: contentWidth, columns: upper)
-        let progress = lower == upper ? 0 : (lowerSide - side * clampedScale) / (lowerSide - upperSide)
-        zoomTransition.update(scale: clampedScale, midpoint: midpoint, in: self,
-            from: framesForPinch(columns: lower), to: framesForPinch(columns: upper),
-            progress: progress)
-    }
-
-    private func framesForPinch(columns: Int) -> [String: CGRect] {
-        if let cached = pinchFrames[columns] { return cached }
-        guard let model else { return [:] }
-        let wanted = Set(zoomTiles.compactMap { $0.asset?.id })
-        let frames = model.framesForZoom(assetIDs: wanted, columns: columns, width: contentWidth,
-            rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft)
-            .mapValues { $0.offsetBy(dx: 0, dy: effectiveHeaderHeight) }
-        pinchFrames[columns] = frames
-        return frames
+        zoomTransition.update(scale: clampedScale, midpoint: midpoint, in: self)
     }
 
     func prepareColumnChange() {
@@ -673,28 +803,30 @@ final class TimelineGridView: UIScrollView {
 
     @discardableResult
     func finishColumnChange(side: CGFloat) -> Bool {
-        defer { pinchBaseColumns = nil; pinchFrames.removeAll(keepingCapacity: true) }
-        guard zoomTransition.isPrepared, let model else { return false }
+        guard let anchor = zoomTransition.anchorAssetID, let model else { return false }
         self.side = side
-        reloadRows(animated: false)
-        func frames() -> [String: CGRect] {
-            model.framesForZoom(assetIDs: zoomTransition.assetIDs.union(zoomTiles.compactMap { $0.asset?.id }),
-                columns: model.columns, width: contentWidth,
-                rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft)
-                .mapValues { $0.offsetBy(dx: 0, dy: effectiveHeaderHeight) }
-        }
-        // Mount the destination window before collecting its additional photos.
-        // This keeps the overlay bounded even in a library with thousands of rows.
-        let initial = frames()
-        if let offset = zoomTransition.targetOffset(in: self, frames: initial) {
-            scroll(toOffsetY: offset)
-            reloadRows(animated: false)
-        }
-        zoomTransition.finish(in: self, frames: frames(), scroll: { [weak self] offset in
-            self?.scroll(toOffsetY: offset)
-            self?.reloadRows(animated: false)
-        }, destinations: { [weak self] in self?.zoomTiles ?? [] }, completion: {})
+        let rowsHeight = layoutBox.layout(for: model, side: side).total
+        let targetHeader = headerHeight + topPadding(rowsHeight: rowsHeight)
+        let targetHeight = targetHeader + rowsHeight + footerHeight + tailPadding
+        let frames = model.framesForZoom(assetIDs: [anchor], columns: model.columns, width: contentWidth,
+            rightToLeft: effectiveUserInterfaceLayoutDirection == .rightToLeft)
+            .mapValues { $0.offsetBy(dx: 0, dy: targetHeader) }
+        if frames[anchor] == nil { reloadRows(animated: false) }
+        zoomTransition.finish(in: self, frames: frames, contentHeight: targetHeight, scroll: { [weak self] offset in
+            guard let self else { return }
+            let targetSize = CGSize(width: self.contentWidth, height: targetHeight)
+            if self.contentSize != targetSize { self.contentSize = targetSize }
+            self.scroll(toOffsetY: offset)
+            self.reloadRows(animated: false)
+        }, finalTiles: { [weak self] in self?.captureZoomTiles() ?? [] }, completion: {})
         return true
+    }
+
+    private func topPadding(rowsHeight: CGFloat) -> CGFloat {
+        let safeHeight = max(1, bounds.height - safeAreaInsets.top - safeAreaInsets.bottom)
+        let fits = headerHeight + rowsHeight + footerHeight + tailPadding <= safeHeight
+        return usesFullPhotosCanvas && rowsHeight > 0 && fits && contentInsetAdjustmentBehavior == .never
+            ? safeAreaInsets.top : 0
     }
     private enum Kind {
         case tiles
@@ -736,7 +868,13 @@ final class TimelineGridView: UIScrollView {
     var onPlaceholder: ((String) -> Void)?
     var onFooterVisible: ((Bool) -> Void)?
     var onWidthChange: (() -> Void)?
-    weak var pinch: UIGestureRecognizer?
+    var pinch: UIPinchGestureRecognizer? { didSet { updatePinchHost() } }
+
+    private func updatePinchHost() {
+        guard let pinch else { return }
+        let host: UIView = usesFullPhotosCanvas ? window ?? self : self
+        if pinch.view !== host { host.addGestureRecognizer(pinch) }
+    }
 
     private var side: CGFloat = 0
     private var tailPadding: CGFloat = 0
@@ -852,10 +990,7 @@ final class TimelineGridView: UIScrollView {
         let layout = layoutBox.layout(for: model, side: side)
         // Keep the canvas fixed before metadata exists. Short content gets
         // an explicit origin below real bars instead of shrinking that canvas.
-        let safeHeight = max(1, bounds.height - safeAreaInsets.top - safeAreaInsets.bottom)
-        let shortContent = usesFullPhotosCanvas && layout.total > 0
-            && headerHeight + layout.total + footerHeight + tailPadding <= safeHeight
-        shortContentTopPadding = shortContent && contentInsetAdjustmentBehavior == .never ? safeAreaInsets.top : 0
+        shortContentTopPadding = topPadding(rowsHeight: layout.total)
         if lastEffectiveHeaderHeight != effectiveHeaderHeight {
             lastEffectiveHeaderHeight = effectiveHeaderHeight
             onEffectiveHeaderHeight?(effectiveHeaderHeight)
@@ -951,8 +1086,7 @@ final class TimelineGridView: UIScrollView {
         }
         let top = offsetY - effectiveHeaderHeight
         let (before, after): (CGFloat, CGFloat)
-        switch pinchBaseColumns == nil ? controller?.direction ?? 0 : 2 {
-        case 2: (before, after) = (bounds.height * 2, bounds.height * 2)
+        switch controller?.direction ?? 0 {
         case 1: (before, after) = (Self.bufferBehind, Self.bufferAhead)
         case -1: (before, after) = (Self.bufferAhead, Self.bufferBehind)
         default: (before, after) = (Self.buffer, Self.buffer)

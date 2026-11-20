@@ -27,6 +27,18 @@ nonisolated struct TimelineGeometryIndex {
         let y: CGFloat
         let column: Int
         let width: Int
+
+        func rowY(_ row: Int, stride: CGFloat) -> CGFloat {
+            y + CGFloat(row) * stride
+        }
+
+        func frame(at index: Int, side: CGFloat, viewportWidth: CGFloat, rightToLeft: Bool) -> CGRect {
+            let stride = side + AssetGridLayout.gutter
+            let offset = index - range.lowerBound
+            let x = CGFloat(column + offset % width) * stride
+            return CGRect(x: rightToLeft ? viewportWidth - x - side : x,
+                y: rowY(offset / width, stride: stride), width: side, height: side)
+        }
     }
     let sections: [Section]
     let sectionByID: [String: Int]
@@ -55,28 +67,69 @@ nonisolated struct TimelineGeometryIndex {
                 grouped: Bool, assetsPerDay: Double, rightToLeft: Bool) -> [String: CGRect] {
         guard columns > 0, width > 0, !indices.isEmpty else { return [:] }
         let side = AssetGridLayout.tileSide(viewportWidth: width, columns: columns)
-        let placements = grouped ? groupedPlacements(columns: columns, side: side, assetsPerDay: assetsPerDay)
-            : compactPlacements(columns: columns, side: side)
+        let (placements, _) = layout(columns: columns, side: side, grouped: grouped, assetsPerDay: assetsPerDay)
         var result: [String: CGRect] = [:]
         result.reserveCapacity(indices.count)
         for (id, index) in indices {
-            var low = 0, high = placements.count
-            while low < high {
-                let mid = (low + high) / 2
-                if placements[mid].range.upperBound <= index { low = mid + 1 } else { high = mid }
-            }
-            guard placements.indices.contains(low), placements[low].range.contains(index) else { continue }
-            let placement = placements[low], offset = index - placement.range.lowerBound
-            let column = placement.column + offset % placement.width
-            let x = CGFloat(column) * (side + AssetGridLayout.gutter)
-            result[id] = CGRect(x: rightToLeft ? width - x - side : x,
-                y: placement.y + CGFloat(offset / placement.width) * (side + AssetGridLayout.gutter),
-                width: side, height: side)
+            guard let placement = placement(containing: index, in: placements) else { continue }
+            result[id] = placement.frame(at: index, side: side, viewportWidth: width, rightToLeft: rightToLeft)
         }
         return result
     }
 
-    private func compactPlacements(columns: Int, side: CGFloat) -> [Placement] {
+    func window(around anchorIndex: Int?, unitY: CGFloat, viewportReach: CGFloat, columns: Int, width: CGFloat,
+                grouped: Bool, assetsPerDay: Double, rightToLeft: Bool)
+        -> (tiles: [(index: Int, frame: CGRect)], rowsHeight: CGFloat) {
+        guard columns > 0, width.isFinite, width > 0 else { return ([], 0) }
+        let side = AssetGridLayout.tileSide(viewportWidth: width, columns: columns)
+        let stride = side + AssetGridLayout.gutter
+        let (placements, rowsHeight) = layout(columns: columns, side: side, grouped: grouped, assetsPerDay: assetsPerDay)
+        guard let anchorIndex, let anchorPlacement = placement(containing: anchorIndex, in: placements),
+              unitY.isFinite, viewportReach >= 0 else { return ([], rowsHeight) }
+        let anchor = anchorPlacement.frame(at: anchorIndex, side: side, viewportWidth: width, rightToLeft: rightToLeft)
+        let anchorY = anchor.minY + min(max(unitY, 0), 1) * anchor.height
+        let minY = anchorY - viewportReach, maxY = anchorY + viewportReach
+
+        var tiles: [(index: Int, frame: CGRect)] = []
+        for placement in placements {
+            if placement.y > maxY { break }
+            let lastRow = (placement.range.count - 1) / placement.width
+            guard placement.rowY(lastRow, stride: stride) + side >= minY else { continue }
+
+            let startRow = firstIndex(upTo: lastRow + 1) { placement.rowY($0, stride: stride) + side >= minY }
+            let endRow = firstIndex(upTo: lastRow + 1) { placement.rowY($0, stride: stride) > maxY }
+            let start = placement.range.lowerBound + startRow * placement.width
+            let end = endRow <= lastRow ? placement.range.lowerBound + endRow * placement.width : placement.range.upperBound
+            for index in start..<end {
+                let frame = placement.frame(at: index, side: side, viewportWidth: width, rightToLeft: rightToLeft)
+                tiles.append((index, frame))
+            }
+        }
+        return (tiles, rowsHeight)
+    }
+
+    private func placement(containing index: Int, in placements: [Placement]) -> Placement? {
+        let position = firstIndex(upTo: placements.count) { placements[$0].range.upperBound > index }
+        guard placements.indices.contains(position), placements[position].range.contains(index) else { return nil }
+        return placements[position]
+    }
+
+    private func firstIndex(upTo count: Int, where matches: (Int) -> Bool) -> Int {
+        var low = 0, high = count
+        while low < high {
+            let mid = low + (high - low) / 2
+            if matches(mid) { high = mid } else { low = mid + 1 }
+        }
+        return low
+    }
+
+    private func layout(columns: Int, side: CGFloat, grouped: Bool, assetsPerDay: Double)
+        -> (placements: [Placement], rowsHeight: CGFloat) {
+        grouped ? groupedPlacements(columns: columns, side: side, assetsPerDay: assetsPerDay)
+            : compactPlacements(columns: columns, side: side)
+    }
+
+    private func compactPlacements(columns: Int, side: CGFloat) -> (placements: [Placement], rowsHeight: CGFloat) {
         var slot = 0
         var known: [(range: Range<Int>, slot: Int)] = []
         var unknownRows: [Range<Int>] = []
@@ -131,10 +184,12 @@ nonisolated struct TimelineGeometryIndex {
                 }
             }
         }
-        return placements
+        let rowCount = slot / columns + (slot % columns == 0 ? 0 : 1)
+        return (placements, CGFloat(rowCount) * (side + AssetGridLayout.gutter))
     }
 
-    private func groupedPlacements(columns: Int, side: CGFloat, assetsPerDay: Double) -> [Placement] {
+    private func groupedPlacements(columns: Int, side: CGFloat, assetsPerDay: Double)
+        -> (placements: [Placement], rowsHeight: CGFloat) {
         var result: [Placement] = []
         var y: CGFloat = 0
         var assetTally = 0, dayTally = 0
@@ -160,6 +215,6 @@ nonisolated struct TimelineGeometryIndex {
                 y += CGFloat(estimate.titleBands) * 36 + CGFloat(estimate.tileRows) * (side + AssetGridLayout.gutter)
             }
         }
-        return result
+        return (result, y)
     }
 }

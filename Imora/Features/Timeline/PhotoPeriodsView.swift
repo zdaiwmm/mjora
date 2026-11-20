@@ -27,29 +27,50 @@ nonisolated struct PhotoPeriodCardLayout {
 }
 
 struct PhotoPeriodsView: View {
+    let model: TimelineModel
+    let controls: PhotosGridControls
+    let motion: PhotoPeriodMotion
+
+    var body: some View {
+        let mode = controls.mode
+        ZStack {
+            if mode != .all {
+                PhotoPeriodPage(model: model, controls: controls, motion: motion, mode: mode,
+                                selectedYear: controls.selectedYear, periodAnchor: controls.periodAnchor)
+                    .id(mode)
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+
+// A departing page keeps its own mode, labels and scroll view during the fade.
+private struct PhotoPeriodPage: View {
     @Environment(SessionStore.self) private var session
     let model: TimelineModel
     @Bindable var controls: PhotosGridControls
     let motion: PhotoPeriodMotion
+    let mode: PhotoBrowseMode
+    let selectedYear: Int?
+    let periodAnchor: PhotoPeriodAnchor?
     @ScaledMetric(relativeTo: .title2) private var yearTitleSize = 24.0
     @State private var anchorRestoration = PhotoPeriodAnchorRestoration()
 
     private var periods: [PhotoPeriod] {
-        model.photoPeriods(mode: controls.mode, year: controls.selectedYear,
-                           preferredAssetID: controls.periodAnchor?.asset.id)
+        model.photoPeriods(mode: mode, year: selectedYear, preferredAssetID: periodAnchor?.asset.id)
     }
 
     var body: some View {
         GeometryReader { geometry in
-            let layout = PhotoPeriodCardLayout(viewportWidth: geometry.size.width, mode: controls.mode)
+            let layout = PhotoPeriodCardLayout(viewportWidth: geometry.size.width, mode: mode)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: layout.sectionSpacing) {
                         ForEach(periods) { period in
                             Group {
-                                if controls.mode == .months {
+                                if mode == .months {
                                     PhotoMonthSection(period: period, model: model, controls: controls,
-                                                      motion: motion, layout: layout,
+                                                      motion: motion, layout: layout, periodAnchor: periodAnchor,
                                                       restorationTicket: anchorRestoration.request?.periodID == period.id
                                                         ? anchorRestoration.request?.ticket : nil,
                                                       onDayReachable: { ticket, target in
@@ -69,7 +90,6 @@ struct PhotoPeriodsView: View {
                             ContentUnavailableView("No photos yet", systemImage: "photo.on.rectangle")
                         }
                     }
-                    .id(controls.mode)
                     .padding(.horizontal, PhotoPeriodCardLayout.horizontalInset)
                     .padding(.top, 12)
                     // The overview overlay can extend through the tab's safe
@@ -80,8 +100,12 @@ struct PhotoPeriodsView: View {
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .background(Color(.systemBackground))
+                .allowsHitTesting(controls.mode == mode)
+                .accessibilityHidden(controls.mode != mode)
                 .accessibilityIdentifier("photos-periods")
                 .onScrollPhaseChange { _, phase in
+                    guard controls.mode == mode else { return }
+                    if phase == .interacting { controls.navigationExpanded = false }
                     if phase == .tracking || phase == .interacting || phase == .decelerating {
                         anchorRestoration.cancel()
                         motion.cancel()
@@ -90,15 +114,12 @@ struct PhotoPeriodsView: View {
                 .onChange(of: controls.mode, initial: true) { _, _ in
                     restoreAnchor(using: proxy)
                 }
-                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { old, new in
-                    if abs(new - old) > 0.5 { controls.navigationExpanded = false }
-                }
-                .onChange(of: controls.selectedYear) { _, _ in
+                .onChange(of: selectedYear) { _, _ in
                     restoreAnchor(using: proxy)
                 }
                 .onChange(of: anchoredPeriod?.id) { _, id in
                     if let request = anchorRestoration.request,
-                       request.assetID == controls.periodAnchor?.asset.id, request.periodID != id {
+                       request.assetID == periodAnchor?.asset.id, request.periodID != id {
                         restoreAnchor(using: proxy)
                     }
                 }
@@ -113,7 +134,7 @@ struct PhotoPeriodsView: View {
     }
 
     private var anchoredPeriod: PhotoPeriod? {
-        guard let anchor = controls.periodAnchor else { return nil }
+        guard let anchor = periodAnchor else { return nil }
         let calendar = Self.captureCalendar
         let year = calendar.component(.year, from: anchor.asset.localDate)
         let month = calendar.component(.month, from: anchor.asset.localDate)
@@ -125,7 +146,7 @@ struct PhotoPeriodsView: View {
     }
 
     private var anchorDayTarget: String? {
-        guard controls.mode == .months, let anchor = controls.periodAnchor,
+        guard mode == .months, let anchor = periodAnchor,
               let period = anchoredPeriod else { return nil }
         let content = model.photoMonthContent(period: period,
                                        preferredAssetID: anchor.asset.id, preferredBucketID: anchor.bucketID)
@@ -134,28 +155,34 @@ struct PhotoPeriodsView: View {
     }
 
     private func restoreAnchor(using proxy: ScrollViewProxy) {
-        if let anchor = controls.periodAnchor, controls.mode == .months {
+        guard controls.mode == mode else { return }
+        if let anchor = periodAnchor, mode == .months {
             // Always materialize the outer lazy section first, even when its
             // data is already cached. A known day is not yet a scroll target.
             anchorRestoration.begin(assetID: anchor.asset.id, periodID: anchoredPeriod?.id)
-            if let period = anchoredPeriod { proxy.scrollTo(period.id, anchor: .center) }
+            if let period = anchoredPeriod {
+                withAnimation(nil) { proxy.scrollTo(period.id, anchor: .center) }
+            }
         } else {
             anchorRestoration.cancel()
-            if let period = anchoredPeriod { proxy.scrollTo(period.id, anchor: .center) }
-            else if let latest = periods.last { proxy.scrollTo(latest.id, anchor: .bottom) }
+            withAnimation(nil) {
+                if let period = anchoredPeriod { proxy.scrollTo(period.id, anchor: .center) }
+                else if let latest = periods.last { proxy.scrollTo(latest.id, anchor: .bottom) }
+            }
         }
     }
 
     private func revealLaidOutDay(_ target: String, in period: PhotoPeriod, ticket: UUID,
                                  using proxy: ScrollViewProxy) {
-        guard controls.mode == .months, target == anchorDayTarget,
-              let assetID = controls.periodAnchor?.asset.id,
+        guard controls.mode == mode, mode == .months, target == anchorDayTarget,
+              let assetID = periodAnchor?.asset.id,
               anchorRestoration.consumeReachableDay(ticket: ticket, assetID: assetID, periodID: period.id) else { return }
-        proxy.scrollTo(target, anchor: .center)
+        withAnimation(nil) { proxy.scrollTo(target, anchor: .center) }
     }
 
     private func periodButton(_ period: PhotoPeriod, layout: PhotoPeriodCardLayout) -> some View {
         Button {
+            guard controls.mode == mode else { return }
             if let asset = period.cover {
                 let restoredOffset = controls.periodAnchor?.asset.id == asset.id ? controls.periodAnchor?.scrollOffset : nil
                 controls.periodAnchor = PhotoPeriodAnchor(asset: asset, bucketID: period.representativeBucketID,
@@ -164,7 +191,7 @@ struct PhotoPeriodsView: View {
                 // A placeholder must not borrow the previous period's photo.
                 controls.periodAnchor = nil
             }
-            if controls.mode == .years {
+            if mode == .years {
                 controls.selectedYear = period.year
                 controls.mode = .months
             } else {
@@ -187,7 +214,7 @@ struct PhotoPeriodsView: View {
             .frame(width: layout.photoSize.width, height: layout.photoSize.height)
             .overlay {
                 if let asset = period.cover {
-                    PhotoPeriodCoverSurface(asset: asset, mode: controls.mode, session: session, motion: motion, size: layout.photoSize,
+                    PhotoPeriodCoverSurface(asset: asset, mode: mode, session: session, motion: motion, size: layout.photoSize,
                                             bucketID: period.representativeBucketID,
                                             gridViewportWidth: controls.viewportWidth, gridColumns: controls.columns)
                 }
@@ -196,7 +223,7 @@ struct PhotoPeriodsView: View {
                 LinearGradient(colors: [.black.opacity(0.28), .clear], startPoint: .top, endPoint: .center)
             }
             .overlay(alignment: .topLeading) {
-                if controls.mode == .years {
+                if mode == .years {
                     Text(period.date.formatted(.dateTime.year().utc()))
                         .font(.system(size: yearTitleSize, weight: .bold))
                         .padding(20)
@@ -233,6 +260,7 @@ private struct PhotoMonthSection: View {
     @Bindable var controls: PhotosGridControls
     let motion: PhotoPeriodMotion
     let layout: PhotoPeriodCardLayout
+    let periodAnchor: PhotoPeriodAnchor?
     let restorationTicket: UUID?
     let onDayReachable: (UUID, String) -> Void
     private final class Reachability {
@@ -257,8 +285,8 @@ private struct PhotoMonthSection: View {
 
     private var content: PhotoMonthContent {
         model.photoMonthContent(period: period,
-                          preferredAssetID: controls.periodAnchor?.asset.id,
-                          preferredBucketID: controls.periodAnchor?.bucketID,
+                          preferredAssetID: periodAnchor?.asset.id,
+                          preferredBucketID: periodAnchor?.bucketID,
                           retainedCoverIDs: retainedCoverIDs)
     }
 
@@ -350,6 +378,7 @@ private struct PhotoMonthSection: View {
 
     private func dayButton(_ day: PhotoMonthDay, isFirst: Bool, size: CGSize) -> some View {
         Button {
+            guard controls.mode == .months else { return }
             let offset = controls.periodAnchor?.asset.id == day.cover.id ? controls.periodAnchor?.scrollOffset : nil
             controls.periodAnchor = PhotoPeriodAnchor(asset: day.cover, bucketID: day.coverBucketID, scrollOffset: offset)
             controls.reveal(bucketID: day.coverBucketID, assetID: day.cover.id)

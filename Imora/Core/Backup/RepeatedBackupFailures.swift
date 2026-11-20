@@ -160,11 +160,12 @@ nonisolated struct RepeatedBackupFailures: Codable, Sendable {
         return entries.count != before
     }
 
-    mutating func clearBackedUp(account: String, revisions: [String: Date?]) {
-        guard !revisions.isEmpty else { return }
+    mutating func clearResolved(account: String, removedLocalIDs: Set<String>, backedUpRevisions: [String: Date?]) {
+        guard !removedLocalIDs.isEmpty || !backedUpRevisions.isEmpty else { return }
         entries.removeAll {
             $0.account == account
-                && revisions[$0.localIdentifier] == .some($0.modificationDate)
+                && (removedLocalIDs.contains($0.localIdentifier)
+                    || backedUpRevisions[$0.localIdentifier] == .some($0.modificationDate))
         }
     }
 

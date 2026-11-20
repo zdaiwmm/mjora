@@ -97,9 +97,29 @@ final class GalleryPerformanceFlowTests: XCTestCase {
         image.name = name; image.lifetime = .keepAlways; add(image)
     }
 
+    func testWidePinchContractsAcrossPhotosChrome() async throws {
+        let app = try await launch()
+        defer { app.terminate() }
+        let tiles = app.buttons.matching(identifier: "asset-tile")
+        func tileWidth() throws -> CGFloat {
+            try XCTUnwrap(tiles.allElementsBoundByIndex.filter {
+                $0.isHittable && (220...580).contains($0.frame.midY)
+            }.map { $0.frame.width }.max())
+        }
+        let originalWidth = try tileWidth()
+        app.pinch(withScale: 1.87, velocity: 0.43)
+        let expandedWidth = try tileWidth()
+        XCTAssertGreaterThan(expandedWidth, originalWidth + 10)
+        app.pinch(withScale: 0.34, velocity: -0.46)
+        XCTAssertLessThan(try tileWidth(), expandedWidth - 10,
+                          "A wide inward pinch must shrink the grid even when a touch starts over its chrome")
+        XCTAssertFalse(app.buttons["viewer-close"].exists)
+    }
+
     func testLongLibraryScrollPinchPeriodsViewerAndCollections() async throws {
         let app = try await launch()
         defer { app.terminate() }
+        XCTAssertEqual(app.buttons["photos-source-menu"].label, "Cloud Library")
         for _ in 0..<3 { dismissSyntheticPasswordPrompt(app); app.swipeUp(velocity: .fast) }
         for _ in 0..<3 { dismissSyntheticPasswordPrompt(app); app.swipeDown(velocity: .fast) }
         let tiles = app.buttons.matching(identifier: "asset-tile")
@@ -118,6 +138,7 @@ final class GalleryPerformanceFlowTests: XCTestCase {
         }
         try visibleTile().pinch(withScale: 0.6, velocity: -1)
         try visibleTile().pinch(withScale: 1.8, velocity: 1)
+        XCTAssertFalse(app.buttons["viewer-close"].exists, "Lifting a pinch must leave the gallery visible")
         capture(app, "performance-pinch")
         let visible = try XCTUnwrap(tiles.allElementsBoundByIndex.first {
             $0.isHittable && $0.frame.midY > 220 && $0.frame.midY < 580
@@ -153,7 +174,21 @@ final class GalleryPerformanceFlowTests: XCTestCase {
         if !picker.exists { app.swipeDown() }
         if picker.waitForExistence(timeout: 5) {
             for title in ["Years", "Months", "All"] {
-                picker.buttons[title].tap()
+                let segment = picker.buttons[title]
+                segment.tap()
+                let selected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in segment.isSelected }, object: nil)
+                XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 3), .completed,
+                               "The native date picker must highlight \(title) after a tap")
+                let chromeReady = NSPredicate { _, _ in
+                    guard picker.isHittable else { return false }
+                    let sort = app.buttons["photos-sort-filter"]
+                    let source = app.buttons["photos-source-menu"]
+                    let periods = app.scrollViews.matching(identifier: "photos-periods")
+                    return title == "All" ? sort.isHittable && source.isHittable && periods.count == 0
+                        : !sort.isHittable && !source.isHittable && periods.count == 1
+                }
+                XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: chromeReady, object: nil)], timeout: 4),
+                               .completed, "The period page and toolbar must hand off while retaining the picker")
                 capture(app, "performance-period-" + title)
             }
         } else { XCTFail("Period controls must be reachable in a long library") }

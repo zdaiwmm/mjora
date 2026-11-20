@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 nonisolated enum MapServiceConsent {
     static let key = "imora.maps.appleServicesAllowed"
@@ -27,9 +28,7 @@ struct AppleMapConsentGate<Content: View>: View {
                 Image(systemName: "map").font(.largeTitle).foregroundStyle(.secondary)
                 Text("Use Apple Maps?").font(.title2.weight(.semibold))
                 Text(MapServiceConsent.notice).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                Button("Enable Apple Maps") { enabled = true }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("apple-maps-enable")
+                AppleMapsConsentButton { enabled = true }
                 Button("Not Now", role: .cancel) { dismiss() }
                     .accessibilityIdentifier("apple-maps-later")
             }
@@ -38,6 +37,23 @@ struct AppleMapConsentGate<Content: View>: View {
             .frame(maxWidth: .infinity)
             .navigationTitle("Map")
         }
+    }
+}
+
+struct AppleMapsConsentButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("Enable Apple Maps")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Color(uiColor: .systemBackground))
+                .padding(.horizontal, 16)
+                .frame(minHeight: 44)
+                .background(Color(uiColor: .label), in: .capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("apple-maps-enable")
     }
 }
 

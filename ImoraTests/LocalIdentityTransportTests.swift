@@ -126,6 +126,41 @@ final class LocalIdentityTransportTests: XCTestCase {
         XCTAssertEqual(server.received.count, before)
     }
 
+    func testLargeOriginalReadbackUsesPinnedTransport() async throws {
+        let saved = UserDefaults.standard.data(forKey: "imora.localServer")
+        defer { ServerRoute.use(local: nil, external: nil); UserDefaults.standard.set(saved, forKey: "imora.localServer") }
+
+        let byteCount = 16_785_644
+        let pattern = Array("Imora simulator original fixture".utf8) + [0, 255]
+        let body = Data((0..<byteCount).map { pattern[$0 % pattern.count] })
+        let expected = ResourceDigest(checksum: "oYbHhGZI4ZxrhCtyV0WIvqbawmA=", byteCount: Int64(byteCount))
+        let token = "synthetic-large-original-token"
+        let externalSink = try LocalHTTPServer { _ in .init(status: 500) }
+        try await externalSink.start()
+        defer { externalSink.stop() }
+        let server = try LocalTLSServer { request in
+            guard request.method == "GET", request.path == "/api/assets/large-original/original?edited=false",
+                  request.body.isEmpty, request.headers["authorization"] == "Bearer \(token)",
+                  request.headers["accept-encoding"] == "identity" else { return .init(status: 403) }
+            return .init(headers: ["Content-Type": "application/octet-stream"], body: body)
+        }
+        try await server.start()
+        defer { server.stop() }
+        try select(.init(apiURL: server.apiURL, rootCertificateDER: LocalTLSFixtures.root), for: externalSink.apiURL)
+        let client = ImoraClient(apiURL: externalSink.apiURL, accessToken: token)
+        let actual = try await client.readbackOriginal(assetID: "large-original", expected: expected)
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(server.received.count, 1)
+
+        try select(.init(apiURL: server.apiURL, rootCertificateDER: LocalTLSFixtures.other), for: externalSink.apiURL)
+        do {
+            _ = try await client.readbackOriginal(assetID: "large-original", expected: expected)
+            XCTFail("The original readback accepted a mismatched pin")
+        } catch {}
+        XCTAssertEqual(server.received.count, 1)
+        XCTAssertTrue(externalSink.received.isEmpty)
+    }
+
     func testProcessUploadAndWebSocketAuthenticateOnlyWithEnrolledCA() async throws {
         let saved = UserDefaults.standard.data(forKey: "imora.localServer")
         defer { ServerRoute.use(local: nil, external: nil); UserDefaults.standard.set(saved, forKey: "imora.localServer") }

@@ -296,8 +296,15 @@ final class PhotosMonthCompositionFlowTests: XCTestCase {
         for labels in [["年", "Years"], ["月", "Months"], ["全部", "All"], ["月", "Months"]] {
             let mode = picker.buttons.matching(NSPredicate(format: "label IN %@", labels)).firstMatch
             XCTAssertTrue(mode.isHittable); mode.tap()
-            if labels[0] == "全部" { wait(app, "All grid") { app.buttons["photos-sort-filter"].isHittable } }
-            else { wait(app, "Period content") { app.scrollViews["photos-periods"].exists } }
+            if labels[0] == "全部" {
+                wait(app, "All grid") { app.buttons["photos-sort-filter"].isHittable }
+            } else {
+                wait(app, "Period content and chrome") {
+                    app.scrollViews.matching(identifier: "photos-periods").count == 1
+                        && !app.buttons["photos-sort-filter"].isHittable
+                        && picker.isHittable
+                }
+            }
         }
         capture(app, "gallery-period-switching")
         app.buttons["photos-show-navigation"].tap()
