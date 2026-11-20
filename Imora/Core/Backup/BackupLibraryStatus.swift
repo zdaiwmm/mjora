@@ -28,8 +28,8 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
 
     var excluded: Int { excludedMedia.total }
     var total: Int { totalMedia.total }
-    /// Combined count retained for existing callers.
-    var backedUp: Int { cloudConfirmedMedia.total + historicalOnlyMedia.total }
+    /// Only backups confirmed against the current account and local revision.
+    var backedUp: Int { cloudConfirmedMedia.total }
     var unindexed: Int { unindexedMedia.total }
     var unsupported: Int { unsupportedMedia.total }
     var pending: Int { pendingMedia.total }

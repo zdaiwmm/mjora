@@ -2,7 +2,7 @@ import XCTest
 @testable import Imora
 
 final class BackupRemovalDisplayTests: XCTestCase {
-    func testCloudConfirmedHeadlineCountsDeviceItemsAndOmitsHistoricalOnlyItems() {
+    func testBackupCountAndHeadlineOmitHistoricalOnlyItems() {
         let photo = fixtureDevice(id: "photo")
         let duplicate = fixtureDevice(id: "duplicate")
         let video = fixtureDevice(id: "video", video: true)
@@ -19,7 +19,7 @@ final class BackupRemovalDisplayTests: XCTestCase {
         XCTAssertEqual(status.deviceLibraryMedia, MediaCounts(photos: 2, videos: 1))
         XCTAssertEqual(status.cloudConfirmedMedia, confirmed)
         XCTAssertEqual(status.historicalOnlyMedia, MediaCounts(videos: 1))
-        XCTAssertEqual(status.backedUp, 3)
+        XCTAssertEqual(status.backedUp, 2)
         XCTAssertEqual(status.countText, String(localized: "Device items with cloud copies confirmed at last check: \(confirmed.text)"))
         XCTAssertEqual(status.pending, 0)
     }

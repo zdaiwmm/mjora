@@ -145,7 +145,6 @@ struct BackupScreen: View {
                 Text(statusText(backup)).accessibilityIdentifier("backup-status")
                 if let status = backup.libraryStatus {
                     Text(status.countText).foregroundStyle(.secondary)
-                    historicalBackupRow(status)
                 }
                 if let fraction = progressFraction(backup.phase) {
                     ProgressView(value: fraction).accessibilityIdentifier("backup-progress")
@@ -280,7 +279,6 @@ struct BackupScreen: View {
                     LabeledContent("On This Device", value: status.deviceLibraryMedia.text)
                         .accessibilityIdentifier("backup-device-library-count")
                 }
-                historicalBackupRow(status)
                 LabeledContent("Pending Backup", value: status.pendingMedia.text)
                 if status.unsupported > 0 {
                     LabeledContent("Unsupported Formats", value: status.unsupportedMedia.text)
@@ -329,14 +327,6 @@ struct BackupScreen: View {
                     }
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func historicalBackupRow(_ status: BackupLibraryStatus) -> some View {
-        if status.historicalOnlyMedia.total > 0 {
-            LabeledContent("Previously Backed Up (Unconfirmed)", value: status.historicalOnlyMedia.text)
-                .accessibilityIdentifier("backup-historical-count")
         }
     }
 
