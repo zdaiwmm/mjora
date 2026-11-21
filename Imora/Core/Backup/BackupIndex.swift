@@ -476,6 +476,7 @@ actor BackupIndex {
             remoteToLocal[stale] = nil
         }
         entry.primaryRemoteId = remoteId
+        entry.historicalBackupConfirmed = true
         entry.proof = nil
         entry.verificationState = .pending
         if entry.isBackedUp { entry.sizeExcludedRequestBytes = nil }
@@ -568,6 +569,7 @@ actor BackupIndex {
     func setMotionRemoteId(localId: String, _ remoteId: String) {
         guard var entry = entries[localId] else { return }
         entry.motionRemoteId = remoteId
+        entry.historicalBackupConfirmed = true
         entry.proof = nil
         entry.verificationState = .pending
         if entry.isBackedUp { entry.sizeExcludedRequestBytes = nil }

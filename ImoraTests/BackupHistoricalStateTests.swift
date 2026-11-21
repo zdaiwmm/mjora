@@ -42,6 +42,27 @@ final class BackupHistoricalStateTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(snapshot.backedUpRemoteIds, ["remote"])
     }
 
+    func testBulkDuplicateRetainsDisplayHistoryBeforeFreshProof() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let index = BackupIndex(fileURL: directory.appending(path: "index.json")), generation = UUID()
+        _ = await index.load(serverHost: "server", userId: "owner", generation: generation)
+        let asset = fixtureDevice()
+        await index.setHashed(localId: asset.localIdentifier, isLivePhoto: false, primaryChecksum: "still-sha1",
+            motionChecksum: nil, modificationDate: asset.modificationDate)
+        let source = await index.entry(for: asset.localIdentifier)
+        let candidate = try XCTUnwrap(source)
+        await index.applyRemoteCheck(localId: asset.localIdentifier, source: candidate,
+            result: .init(id: asset.localIdentifier, action: "reject", reason: "duplicate",
+                assetId: "existing-copy", isTrashed: false),
+            motion: false, generation: generation)
+
+        let entry = await index.entry(for: asset.localIdentifier)
+        XCTAssertEqual(entry?.primaryRemoteId, "existing-copy")
+        XCTAssertEqual(entry?.hasHistoricalBackup, true)
+        XCTAssertEqual(entry?.isBackedUp, false)
+    }
+
     func testRoutineRecheckPolicyRequiresKnownUnchangedRevisionAndNoRemovalOrFailure() {
         let asset = fixtureDevice()
         var entry = BackupEntry(modificationDate: asset.modificationDate, isLivePhoto: false, primaryChecksum: "checksum")

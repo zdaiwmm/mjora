@@ -121,6 +121,29 @@ final class BackupRemovalDisplayTests: XCTestCase {
         XCTAssertFalse(status.isUpToDate)
     }
 
+    func testServerMatchMovesOnlyThatItemToBackedUpBeforeVerification() {
+        let first = fixtureDevice(id: "first")
+        let second = fixtureDevice(id: "second")
+        var status = BackupLibraryStatus(assets: [first, second], entries: [:])
+
+        status.recordKnownCopy(first)
+        status.recordKnownCopy(first)
+
+        XCTAssertEqual(status.backedUp, 1)
+        XCTAssertEqual(status.verified, 0)
+        XCTAssertEqual(status.awaitingVerification, 1)
+        XCTAssertEqual(status.pending, 1)
+        XCTAssertEqual(status.unindexed, 1)
+
+        status.recordVerified(first)
+
+        XCTAssertEqual(status.backedUp, 1)
+        XCTAssertEqual(status.verified, 1)
+        XCTAssertEqual(status.awaitingVerification, 0)
+        XCTAssertEqual(status.pending, 1)
+        XCTAssertEqual(status.unindexed, 1)
+    }
+
     func testEditedDeviceItemDoesNotCountThePreviousRevisionAsBackedUp() {
         let before = fixtureDevice()
         let after = fixtureDevice(modified: Date(timeIntervalSince1970: 999))

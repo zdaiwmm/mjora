@@ -2067,6 +2067,9 @@ final class BackupManager {
             guard let source = sources[localID], let asset = devices[localID],
                   await PhotoLibraryService.assetInfo(localIdentifier: localID) == asset else { continue }
             await index.applyRemoteCheck(localId: localID, source: source, result: result, motion: motion, generation: client.context.id)
+            if let entry = await index.entry(for: localID), entry.hasHistoricalBackup {
+                libraryStatus?.recordKnownCopy(asset)
+            }
         }
         let entries = await index.allEntries()
         var queue: [DeviceAsset] = []

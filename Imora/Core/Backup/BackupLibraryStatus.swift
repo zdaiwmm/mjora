@@ -85,6 +85,21 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
         }
     }
 
+    /// Apply a server match as soon as one item finishes. A known copy counts
+    /// as backed up, while the separate verification counter remains honest
+    /// until a fresh proof is recorded.
+    mutating func recordKnownCopy(_ asset: DeviceAsset) {
+        let id = asset.localIdentifier
+        guard !cloudConfirmedIDs.contains(id), historicalOnlyIDs.insert(id).inserted else { return }
+        historicalOnlyMedia.add(asset)
+        if pendingIDs.remove(id) != nil {
+            pendingMedia.remove(asset)
+        }
+        if unindexedIDs.remove(id) != nil {
+            unindexedMedia.remove(asset)
+        }
+    }
+
     /// Apply a proof as soon as one item finishes instead of waiting for the
     /// whole library check. The set makes repeated progress events idempotent.
     mutating func recordVerified(_ asset: DeviceAsset) {
