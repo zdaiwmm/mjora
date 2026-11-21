@@ -1788,6 +1788,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
             zoomView?.removeFromSuperview()
             self.presentationZoomView = nil
             self.presentationZoomFallbackDeadline = 0
+            self.removeOpeningChromeOverlayWhenMediaHandoffCompletes()
         }
     }
 
@@ -1801,6 +1802,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         presentationZoomView?.removeFromSuperview()
         presentationZoomView = nil
         presentationZoomFallbackDeadline = 0
+        removeOpeningChromeOverlayWhenMediaHandoffCompletes()
     }
 
     private func synchronizeMediaSafeAreaInsets() {
@@ -2346,6 +2348,14 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
         #else
         view.layoutIfNeeded()
         #endif
+        removeOpeningChromeOverlayWhenMediaHandoffCompletes()
+    }
+
+    /// The destination toolbar sits below the transition image while the
+    /// opening image is still standing in for not-yet-ready media. Keep its
+    /// matching snapshot above that image until both hand off together.
+    private func removeOpeningChromeOverlayWhenMediaHandoffCompletes() {
+        guard presentationZoomView == nil else { return }
         openingChromeOverlay?.removeFromSuperview()
         openingChromeOverlay = nil
     }
