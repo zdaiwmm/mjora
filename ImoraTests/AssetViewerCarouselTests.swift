@@ -102,6 +102,33 @@ final class AssetViewerCarouselTests: XCTestCase {
         XCTAssertEqual(VideoPlayback(seedDuration: .nan).duration, 0)
     }
 
+    func testExactScreenshotMetadataDoesNotRequirePhotoKitLookup() async {
+        let identifier = "viewer-screen-capture-\(UUID())"
+        let asset = Asset(
+            id: "viewer-screen-capture-\(UUID())",
+            ownerId: "synthetic",
+            isImage: true,
+            isFavorite: false,
+            isTrashed: false,
+            visibility: .timeline,
+            fileCreatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            localOffsetHours: 0,
+            livePhotoVideoId: nil,
+            ratio: 1.5,
+            city: nil,
+            country: nil,
+            localIdentifier: identifier,
+            isScreenshot: true
+        )
+
+        XCTAssertEqual(
+            AssetScreenCapture.value(for: asset),
+            true
+        )
+        let loaded = await AssetScreenCapture.load(for: asset, localIdentifier: identifier)
+        XCTAssertEqual(loaded, true)
+    }
+
     func testDistantInitialSelectionRealizesOnlyVisibleThumbnails() throws {
         let assets = (0..<12_000).map(photo)
         let view = AssetViewerCarouselCollectionView()

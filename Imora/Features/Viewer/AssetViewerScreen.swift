@@ -944,8 +944,9 @@ struct AssetViewerScreen: View {
     /// photos' best square crop centre per asset: the face area's centre
     /// across a landscape image, `PFCropUtilitiesCore` crop mode 1.
     @State private var bestSquareCenters: [String: CGPoint] = [:]
-    /// screen captures told by the server, which redraw their pages.
-    @State private var serverScreenCaptures: [String: Bool] = [:]
+    /// screen captures resolved from metadata or a concurrent local lookup,
+    /// which redraw their pages without blocking layout.
+    @State private var screenCaptureResolutions: [String: Bool] = [:]
     @State private var editCacheKeys: [String: String] = [:]
     @State private var toast: String?
     @State private var isDismissing = false
@@ -1153,17 +1154,22 @@ struct AssetViewerScreen: View {
         if needsScreenCapture {
             let isScreenCapture = AssetScreenCapture.record(detail)
             withAnimation(reduceMotion ? nil : PhotosMotion.information) {
-                serverScreenCaptures[asset.id] = isScreenCapture
+                screenCaptureResolutions[asset.id] = isScreenCapture
             }
         }
     }
 
     private func screenCaptureValue(_ asset: Asset) -> Bool? {
-        if let value = serverScreenCaptures[asset.id] { return value }
-        return AssetScreenCapture.value(
-            for: asset,
-            localIdentifier: asset.localIdentifier ?? session.backup?.localIdentifierByRemoteId[asset.id]
-        )
+        if let value = screenCaptureResolutions[asset.id] { return value }
+        return AssetScreenCapture.value(for: asset)
+    }
+
+    private func resolveScreenCapture(_ asset: Asset, localIdentifier: String?) async {
+        guard screenCaptureValue(asset) == nil,
+              let value = await AssetScreenCapture.load(for: asset, localIdentifier: localIdentifier),
+              !Task.isCancelled, current?.id == asset.id
+        else { return }
+        screenCaptureResolutions[asset.id] = value
     }
 
     private func isScreenCapture(_ asset: Asset) -> Bool {
@@ -1379,6 +1385,7 @@ struct AssetViewerScreen: View {
                 guard let asset = current, let backup = session.backup else { return }
                 if let localID = asset.localIdentifier {
                     localIdentifier = localID
+                    await resolveScreenCapture(asset, localIdentifier: localID)
                     let remoteID = await backup.remoteIdentifier(forLocal: localID)
                     guard !Task.isCancelled, current?.id == asset.id else { return }
                     backedUpRemoteID = remoteID
@@ -1387,6 +1394,7 @@ struct AssetViewerScreen: View {
                 let identifier = await backup.localIdentifier(forRemote: asset.id)
                 guard !Task.isCancelled, current?.id == asset.id else { return }
                 localIdentifier = identifier
+                await resolveScreenCapture(asset, localIdentifier: identifier)
             }
             .task(id: loadsViewerContent ? current?.id : nil) {
                 guard loadsViewerContent else { return }

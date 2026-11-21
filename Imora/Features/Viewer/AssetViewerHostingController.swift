@@ -1542,11 +1542,7 @@ final class AssetViewerHostingController: UIHostingController<AnyView>, UIAdapti
                     && !displayState.currentPageZoomed,
                 topSafeAreaInset: safeAreaInsets.top,
                 bottomSafeAreaInset: safeAreaInsets.bottom,
-                isScreenCapture: AssetScreenCapture.value(
-                    for: asset,
-                    localIdentifier: asset.localIdentifier
-                        ?? session.backup?.localIdentifierByRemoteId[asset.id]
-                ) ?? false
+                isScreenCapture: AssetScreenCapture.value(for: asset) ?? false
             )
         return mediaFrame.offsetBy(dx: bounds.minX, dy: bounds.minY)
     }

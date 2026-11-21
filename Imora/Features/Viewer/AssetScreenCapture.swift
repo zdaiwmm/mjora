@@ -13,16 +13,28 @@ enum AssetScreenCapture {
         options: [.caseInsensitive]
     )
 
-    /// what is known so far: the device's own record when the asset is on
-    /// it, else what the server detail told.
-    static func value(for asset: Asset, localIdentifier: String?) -> Bool? {
+    /// Synchronous reads are metadata-only. The viewer body calls this
+    /// repeatedly, so no lookup may wait on Photos.sqlite.
+    static func value(for asset: Asset) -> Bool? {
         if let value = known[asset.id] { return value }
-        guard let localIdentifier, canReadLibrary,
-              let library = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
-        else { return nil }
-        let value = !library.mediaSubtypes.isDisjoint(with: [.photoScreenshot, .videoScreenRecording])
+        return asset.isScreenshot == true ? true : nil
+    }
+
+    /// Resolve the remaining subtype off the main actor. Keeping this out of
+    /// `value(for:)` prevents large-library or backup contention from blocking
+    /// SwiftUI layout long enough for the scene-update watchdog.
+    static func load(for asset: Asset, localIdentifier: String?) async -> Bool? {
+        if let value = value(for: asset) { return value }
+        guard let localIdentifier, canReadLibrary else { return asset.isScreenshot }
+        let value = await localValue(localIdentifier)
         known[asset.id] = value
         return value
+    }
+
+    @concurrent
+    private static func localValue(_ localIdentifier: String) async -> Bool {
+        let library = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject
+        return library?.mediaSubtypes.isDisjoint(with: [.photoScreenshot, .videoScreenRecording]) == false
     }
 
     /// a server asset off this device has no subtypes, so its name, or a png
