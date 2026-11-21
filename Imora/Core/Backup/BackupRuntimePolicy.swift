@@ -4,7 +4,7 @@ import UIKit
 nonisolated enum BackupRuntimePolicy {
     static let preparationWorkerOptions = [1, 2, 3]
     static let defaultPreparationWorkers = 2
-    static let seriousThermalCooldown: TimeInterval = 3 * 60
+    static let criticalThermalCooldown: TimeInterval = 3 * 60
     static let fairThermalCooldown: TimeInterval = 60
 
     static func preparationRequest(stored: Int?) -> Int {
@@ -31,22 +31,22 @@ nonisolated enum BackupRuntimePolicy {
 
     static func pausesWork(thermal: ProcessInfo.ThermalState) -> Bool {
         switch thermal {
-        case .nominal, .fair: false
-        case .serious, .critical: true
+        case .nominal, .fair, .serious: false
+        case .critical: true
         @unknown default: true
         }
     }
 
     static func workers(requested: Int, background: Bool, lowPower: Bool, thermal: ProcessInfo.ThermalState) -> Int {
         if pausesWork(thermal: thermal) { return 0 }
-        return background || lowPower || thermal == .fair ? 1 : max(1, requested)
+        return background || lowPower || thermal == .fair || thermal == .serious ? 1 : max(1, requested)
     }
 
     static func requireThermalBudget(_ thermal: ProcessInfo.ThermalState) throws {
         if pausesWork(thermal: thermal) { throw BackupThermalHold() }
     }
 
-    /// A serious heat event must not restart the instant iOS reports fair.
+    /// A critical heat event must not restart the instant iOS reports fair.
     /// Extend an existing cooldown deterministically so recovery is testable.
     static func thermalCooldownDeadline(
         current: TimeInterval,
@@ -54,8 +54,8 @@ nonisolated enum BackupRuntimePolicy {
         thermal: ProcessInfo.ThermalState
     ) -> TimeInterval {
         switch thermal {
-        case .serious, .critical:
-            max(current, observedAt + seriousThermalCooldown)
+        case .critical:
+            max(current, observedAt + criticalThermalCooldown)
         case .fair:
             current > observedAt ? max(current, observedAt + fairThermalCooldown) : current
         default:

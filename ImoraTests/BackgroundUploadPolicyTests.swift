@@ -16,29 +16,27 @@ final class BackgroundUploadPolicyTests: XCTestCase {
             authenticating: Data("upload:0:\(original.count)".utf8)))
     }
 
-    func testRuntimePolicyReducesBackgroundAndWarmPreparationAndPausesBeforeCriticalHeat() {
+    func testRuntimePolicyReducesBackgroundWarmPreparationAndKeepsOneWorkerAtSeriousHeat() {
         XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: false, lowPower: false, thermal: .nominal), 8)
         XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: true, lowPower: false, thermal: .nominal), 1)
         XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: false, lowPower: true, thermal: .nominal), 1)
         XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: false, lowPower: false, thermal: .fair), 1)
-        XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: false, lowPower: false, thermal: .serious), 0)
+        XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: false, lowPower: false, thermal: .serious), 1)
         XCTAssertEqual(BackupRuntimePolicy.workers(requested: 8, background: true, lowPower: false, thermal: .critical), 0)
     }
 
-    func testExplicitBackupCannotBypassAThermalPause() throws {
-        for thermal in [ProcessInfo.ThermalState.nominal, .fair] {
+    func testExplicitBackupCannotBypassACriticalThermalPause() throws {
+        for thermal in [ProcessInfo.ThermalState.nominal, .fair, .serious] {
             XCTAssertNoThrow(try BackupRuntimePolicy.requireThermalBudget(thermal))
         }
-        for thermal in [ProcessInfo.ThermalState.serious, .critical] {
-            XCTAssertThrowsError(try BackupRuntimePolicy.requireThermalBudget(thermal)) { error in
-                XCTAssertTrue(error is BackupThermalHold)
-            }
+        XCTAssertThrowsError(try BackupRuntimePolicy.requireThermalBudget(.critical)) { error in
+            XCTAssertTrue(error is BackupThermalHold)
         }
     }
 
-    func testThermalCooldownPreventsImmediateRestartWhenTheDeviceOnlyDropsToFair() {
+    func testCriticalThermalCooldownPreventsImmediateRestartWhenTheDeviceOnlyDropsToFair() {
         let heated = BackupRuntimePolicy.thermalCooldownDeadline(
-            current: 0, observedAt: 1_000, thermal: .serious)
+            current: 0, observedAt: 1_000, thermal: .critical)
         XCTAssertEqual(heated, 1_180)
         XCTAssertTrue(BackupRuntimePolicy.isCoolingDown(now: 1_150, deadline: heated, thermal: .fair))
 
@@ -47,6 +45,13 @@ final class BackgroundUploadPolicyTests: XCTestCase {
         XCTAssertEqual(cooledFair, 1_180)
         XCTAssertTrue(BackupRuntimePolicy.isCoolingDown(now: 1_179, deadline: cooledFair, thermal: .nominal))
         XCTAssertFalse(BackupRuntimePolicy.isCoolingDown(now: 1_180, deadline: cooledFair, thermal: .nominal))
+    }
+
+    func testSeriousHeatWithoutACriticalEventDoesNotAddAThermalHold() {
+        XCTAssertEqual(BackupRuntimePolicy.thermalCooldownDeadline(
+            current: 0, observedAt: 1_000, thermal: .serious), 0)
+        XCTAssertFalse(BackupRuntimePolicy.isCoolingDown(
+            now: 1_000, deadline: 0, thermal: .serious))
     }
 
     func testStartingInFairWithoutAHeatEventDoesNotSilentlyAddCooldown() {

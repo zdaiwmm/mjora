@@ -8,11 +8,13 @@ work itself, while cleanup still requires the exact-account, exact-revision
 proof. Proofs update live status one item at a time instead of waiting for the
 whole library check.
 
-After a serious or critical thermal event, backup waits for a three-minute
-cooldown. If iOS reports only fair heat when that timeout ends, restart is
-delayed by another minute. Metadata verification concurrency is four instead
-of eight. A thermal hold keeps the index and unstarted queue for the next run
-and is no longer reported as a backup failure.
+At serious thermal pressure, backup continues with one preparation or upload
+worker so ordinary device warmth does not stop the queue. A critical thermal
+event pauses new work and starts a three-minute cooldown. If iOS reports only
+fair heat when that timeout ends, restart is delayed by another minute.
+Metadata verification concurrency is four instead of eight. A critical thermal
+hold keeps the index and unstarted queue for the next run and is not reported
+as a backup failure.
 
 ## Verification
 

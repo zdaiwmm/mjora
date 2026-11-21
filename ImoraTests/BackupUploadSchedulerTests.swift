@@ -37,7 +37,7 @@ final class BackupUploadSchedulerTests: XCTestCase {
         XCTAssertEqual(started, 0)
     }
 
-    func testSeriousHeatDuringTheRunLeavesRemainingOriginalsUnstarted() async {
+    func testSeriousHeatDuringTheRunContinuesTheQueueAtOneWorker() async {
         var thermal = ProcessInfo.ThermalState.nominal
         var started: [Int] = []
         var completed: [Int] = []
@@ -51,8 +51,8 @@ final class BackupUploadSchedulerTests: XCTestCase {
                 thermal = .serious
                 return .proceed
             })
-        XCTAssertEqual(started, [0])
-        XCTAssertEqual(completed, [0])
+        XCTAssertEqual(started, [0, 1, 2])
+        XCTAssertEqual(completed, [0, 1, 2])
     }
 
     func testAuthorityPauseKeepsUnstartedQueueAndDoesNotCancelHealthyWorker() async {

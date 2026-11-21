@@ -34,7 +34,7 @@ final class BackupPreparationPolicyTests: XCTestCase {
         XCTAssertEqual(BackupRuntimePolicy.preparationWorkers(requested: 32, background: true, lowPower: false, thermal: .nominal), 1)
         XCTAssertEqual(BackupRuntimePolicy.preparationWorkers(requested: 32, background: false, lowPower: true, thermal: .nominal), 1)
         XCTAssertEqual(BackupRuntimePolicy.preparationWorkers(requested: 32, background: false, lowPower: false, thermal: .fair), 1)
-        XCTAssertEqual(BackupRuntimePolicy.preparationWorkers(requested: 32, background: false, lowPower: false, thermal: .serious), 0)
+        XCTAssertEqual(BackupRuntimePolicy.preparationWorkers(requested: 32, background: false, lowPower: false, thermal: .serious), 1)
         XCTAssertEqual(BackupRuntimePolicy.preparationWorkers(requested: 32, background: false, lowPower: false, thermal: .critical), 0)
     }
 }
