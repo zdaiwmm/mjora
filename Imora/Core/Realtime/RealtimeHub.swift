@@ -70,6 +70,7 @@ final class RealtimeHub {
     private var active = false
     private var connectionTask: Task<Void, Never>?
     private var resyncDebounce: Task<Void, Never>?
+    @ObservationIgnored private var needsUploadReconciliation = false
     private var lastResyncFlush: Date = .distantPast
     private var localDebounce: Task<Void, Never>?
     private var albumsDebounce: Task<Void, Never>?
@@ -118,6 +119,7 @@ final class RealtimeHub {
             safetyTick = nil
             resyncDebounce?.cancel()
             resyncDebounce = nil
+            needsUploadReconciliation = false
             isConnected = false
             // Deliberate background suspension is not a transport failure.
             // Foreground activation already requests catch-up; uploads keep
@@ -174,8 +176,9 @@ final class RealtimeHub {
         }
     }
 
-    private func scheduleResync() {
-        if Date().timeIntervalSince(lastResyncFlush) > Self.resyncMaxWait {
+    private func scheduleResync(reconcileUploads: Bool = false) {
+        if reconcileUploads { needsUploadReconciliation = true }
+        if !reconcileUploads, Date().timeIntervalSince(lastResyncFlush) > Self.resyncMaxWait {
             broadcastResyncNow()
             return
         }
@@ -190,6 +193,10 @@ final class RealtimeHub {
 
     private func broadcastResyncNow() {
         lastResyncFlush = Date()
+        if needsUploadReconciliation {
+            needsUploadReconciliation = false
+            onBackupReconciliationNeeded?(nil)
+        }
         broadcast { $0.realtimeResync() }
     }
 
@@ -328,7 +335,11 @@ final class RealtimeHub {
             onRemoteBackupChange?(event.assetIDs, .restored)
             scheduleResync()
 
-        case "AssetUploadReadyV1", "AssetUploadReadyV2", "on_upload_success", "on_asset_stack_update":
+        case "AssetUploadReadyV1", "AssetUploadReadyV2", "on_upload_success":
+            // The server can emit both legacy and current notifications for one upload.
+            scheduleResync(reconcileUploads: true)
+
+        case "on_asset_stack_update":
             onBackupReconciliationNeeded?(nil)
             scheduleResync()
 

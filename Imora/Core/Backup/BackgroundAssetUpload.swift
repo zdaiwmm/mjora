@@ -39,7 +39,13 @@ nonisolated enum BackgroundAssetUpload {
         guard let resource = await PhotoLibraryService.resourceSize(localIdentifier: upload.deviceAssetId, motion: motion) else {
             throw ChunkedAssetUpload.Unavailable()
         }
-        var state = try await client.openBackgroundUpload(upload, filename: resource.filename, size: resource.bytes)
+        var state: BackgroundUploadState
+        do {
+            state = try await client.openBackgroundUpload(upload, filename: resource.filename, size: resource.bytes)
+        } catch ImoraError.http(400, "Too many unfinished background uploads") {
+            // The server refused a new staging session before accepting any bytes for it.
+            throw ChunkedAssetUpload.Unavailable()
+        }
         if let result = state.result { return result }
         if let id = state.uploadId, id.count == 64, id.allSatisfy({ "0123456789abcdef".contains($0) }) {
             // A daemon may have finished after the preceding app process ended.
@@ -113,8 +119,9 @@ nonisolated enum BackgroundAssetUpload {
             }
         })
         try await beforeUpload()
-        state = try await client.backgroundUploadStatus(id)
-        guard let result = state.result else { throw ImoraError.decoding("Background upload is incomplete") }
+        guard let result = progress.withLock({ $0.result }) else {
+            throw ImoraError.decoding("Background upload is incomplete")
+        }
         return result
     }
 
