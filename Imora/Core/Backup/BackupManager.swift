@@ -148,6 +148,7 @@ final class BackupManager {
     }
 
     @ObservationIgnored private var repeatedFailureLedger = RepeatedBackupFailures.load()
+    @ObservationIgnored private var hasUnsavedRepeatedFailureChanges = false
     /// assets with more than five consecutive failed backup attempts.
     private(set) var repeatedFailures: [RepeatedBackupFailure] = []
     private(set) var backupFailures: [RepeatedBackupFailure] = []
@@ -1255,9 +1256,7 @@ final class BackupManager {
                 lifetime: runLifetime,
                 progressReporter: transfer.reporter,
                 authorization: uploadAuthorization(localID: current.localIdentifier)
-            ) { [weak self] id, fraction in
-                Task { @MainActor [weak self] in self?.noteUploadProgress(id, fraction) }
-            }
+            )
             switch outcome {
             case .uploaded:
                 summary.uploadedMedia.add(asset)
@@ -1325,9 +1324,12 @@ final class BackupManager {
         for id in uploadStates.keys.filter(snapshot.remoteRemovedLocalIDs.contains) {
             uploadStates[id] = nil
         }
+        let failureCount = repeatedFailureLedger.entries.count
         repeatedFailureLedger.clearResolved(account: accountKey, removedLocalIDs: snapshot.remoteRemovedLocalIDs,
             backedUpRevisions: userId == nil ? [:] : snapshot.backedUpLocalRevisions)
-        saveRepeatedFailures()
+        if hasUnsavedRepeatedFailureChanges || repeatedFailureLedger.entries.count != failureCount {
+            saveRepeatedFailures()
+        }
         sizeExcludedRequestBytesByLocal = snapshot.sizeExcludedRequestBytesByLocal
         updateSizeExclusions()
         backedUpLocalRevisions = snapshot.backedUpLocalRevisions
@@ -1623,6 +1625,10 @@ final class BackupManager {
             Task { @MainActor [weak self] in
                 guard let self, !self.isShutDown, self.client.context.isActive,
                       self.activeTransfers.apply(event, localIdentifier: localIdentifier, attempt: attempt) else { return }
+                // Tile and system progress use the same coalesced transfer events.
+                if event.stage == .uploading, let fraction = event.fraction {
+                    self.noteUploadProgress(localIdentifier, fraction)
+                }
                 self.onContinuedProgress?()
             }
         }
@@ -1635,9 +1641,8 @@ final class BackupManager {
         if backlogUploadIDs.contains(localId) {
             measuredUploadFractions[localId] = min(1, max(0, fraction))
         }
-        onContinuedProgress?()
         // quantized so progress redraws stay coarse.
-        guard fraction >= 1 || fraction - current >= 0.02 else { return }
+        guard fraction > current, fraction >= 1 || fraction - current >= 0.02 else { return }
         uploadStates[localId] = .uploading(min(fraction, 1))
     }
 
@@ -2136,14 +2141,14 @@ final class BackupManager {
                     await index.recordVerificationFailure(localId: asset.localIdentifier, source: source, generation: client.context.id, state: state)
                     if state == .trashed {
                         remoteRemovedLocalIDs.insert(asset.localIdentifier)
-                        repeatedFailureLedger.clear(account: accountKey, localIdentifier: asset.localIdentifier)
+                        clearRepeatedFailure(localIdentifier: asset.localIdentifier)
                         uploadStates[asset.localIdentifier] = nil
                         continue
                     }
                     if case BackupVerificationError.component(let id, .missing) = error {
                         await index.clearMissingComponent(localId: asset.localIdentifier, source: source, remoteID: id, generation: client.context.id)
                         remoteRemovedLocalIDs.insert(asset.localIdentifier)
-                        repeatedFailureLedger.clear(account: accountKey, localIdentifier: asset.localIdentifier)
+                        clearRepeatedFailure(localIdentifier: asset.localIdentifier)
                         uploadStates[asset.localIdentifier] = nil
                     } else {
                         summary.failedMedia.add(asset)
@@ -2229,12 +2234,6 @@ final class BackupManager {
         let deviceId = DeviceID.current
         let account = accountKey
         var quotaMessage: String?
-        let progress: @Sendable (String, Double) -> Void = { [weak self] localId, fraction in
-            // bound once here: the nested task cannot capture the weak slot,
-            // which is mutable and could be zeroed mid-flight.
-            guard let self else { return }
-            Task { @MainActor in self.noteUploadProgress(localId, fraction) }
-        }
 
         var authorityPause: BackupUploadAuthorityPause?
         var done = 0
@@ -2263,7 +2262,7 @@ final class BackupManager {
                         deviceId: deviceId, account: account,
                         maximumRequestBytes: requestLimit, chunking: chunking,
                         lifetime: lifetime, progressReporter: transfer.reporter,
-                        authorization: authorization, onProgress: progress
+                        authorization: authorization
                     )
                 }
             }, didFinish: { asset, outcome in
@@ -2321,8 +2320,15 @@ final class BackupManager {
         repeatedFailures = backupFailures.filter { $0.count > RepeatedBackupFailures.bannerThreshold }
     }
 
+    private func clearRepeatedFailure(localIdentifier: String) {
+        let failureCount = repeatedFailureLedger.entries.count
+        repeatedFailureLedger.clear(account: accountKey, localIdentifier: localIdentifier)
+        if repeatedFailureLedger.entries.count != failureCount { hasUnsavedRepeatedFailureChanges = true }
+    }
+
     private func saveRepeatedFailures() {
         repeatedFailureLedger.save()
+        hasUnsavedRepeatedFailureChanges = false
         updateRepeatedFailureSummary()
     }
 
@@ -2382,9 +2388,8 @@ final class BackupManager {
         maximumRequestBytes: Int64?,
         chunking: ChunkedAssetUpload.Policy?,
         lifetime: BackgroundUploader.RunLifetime? = nil,
-        progressReporter: BackupTransferProgressReporter? = nil,
-        authorization: @escaping @Sendable () async throws -> Void,
-        onProgress: @escaping @Sendable (String, Double) -> Void
+        progressReporter: BackupTransferProgressReporter,
+        authorization: @escaping @Sendable () async throws -> Void
     ) async -> UploadOutcome {
         // everything up to the hand-off, the export and the request body, has
         // to reach the system before the app is suspended. the lease keeps a
@@ -2408,11 +2413,11 @@ final class BackupManager {
         if entry?.isUploadBlockedByRemoteRemoval == true { return .skipped }
         if entry == nil || current.modificationDate == nil || entry?.isLivePhoto != current.isLivePhoto || entry?.matches(modificationDate: current.modificationDate) != true {
             do {
-                let preparation = progressReporter?.component()
+                let preparation = progressReporter.component()
                 let hashes = try await PhotoLibraryService.hash(
                     localIdentifier: current.localIdentifier,
                     includeMotion: current.isLivePhoto,
-                    onResourceProgress: { preparation?.resourceProgress($0) }
+                    onResourceProgress: { preparation.resourceProgress($0) }
                 )
                 await index.setHashed(
                     localId: current.localIdentifier,
@@ -2467,9 +2472,7 @@ final class BackupManager {
                     upload, motion: true, client: client, index: index, chunking: chunking, account: account,
                     source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
                     progressReporter: progressReporter, authorization: authorization
-                ) { fraction in
-                    onProgress(current.localIdentifier, fraction)
-                }
+                )
                 // recorded in memory at once and made durable by its journaled
                 // receipt, so a failed still upload resumes here.
                 _ = await index.applyReceipt(.init(ticket: .init(account: account, localId: current.localIdentifier, isMotion: true, bodyPath: "", source: entry), remoteId: result.id), persist: false)
@@ -2494,17 +2497,13 @@ final class BackupManager {
                     upload, motion: false, client: client, index: index, chunking: chunking, account: account,
                     source: entry, maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
                     progressReporter: progressReporter, authorization: authorization
-                ) { fraction in
-                    onProgress(current.localIdentifier, fraction)
-                }
+                )
                 _ = await index.applyReceipt(.init(ticket: .init(account: account, localId: current.localIdentifier, isMotion: false, bodyPath: "", source: entry), remoteId: result.id), persist: false)
                 if !result.isDuplicate { uploadedSomething = true }
             }
             guard let candidate = await index.entry(for: current.localIdentifier) else { throw BackupVerificationError.stale }
-            if let progressReporter {
-                let resource = await PhotoLibraryService.primaryResourceInfo(localIdentifier: current.localIdentifier)
-                progressReporter.verifying(filename: resource?.filename)
-            }
+            let resource = await PhotoLibraryService.primaryResourceInfo(localIdentifier: current.localIdentifier)
+            progressReporter.verifying(filename: resource?.filename)
             failureStage = .verifying
             try await verifyBackup(asset: current, entry: candidate, client: client, index: index, account: account)
             return uploadedSomething ? .uploaded : .duplicate
@@ -2576,9 +2575,8 @@ final class BackupManager {
         maximumRequestBytes: Int64?,
         lease: ProcessLease,
         lifetime: BackgroundUploader.RunLifetime?,
-        progressReporter: BackupTransferProgressReporter?,
-        authorization: @escaping @Sendable () async throws -> Void,
-        onProgress: @escaping @Sendable (Double) -> Void
+        progressReporter: BackupTransferProgressReporter,
+        authorization: @escaping @Sendable () async throws -> Void
     ) async throws -> AssetUploadResult {
         let validate: @Sendable () async throws -> Void = {
             try Task.checkCancellation()
@@ -2588,20 +2586,17 @@ final class BackupManager {
             else { throw BackupVerificationError.stale }
         }
         try await validate()
-        let transfer = progressReporter?.component()
-        let resourceProgress: @Sendable (BackupResourceProgress) -> Void = { transfer?.resourceProgress($0) }
-        let byteProgress: @Sendable (UploadByteProgress) -> Void = { transfer?.uploadByteProgress($0) }
-        let uploadProgress: @Sendable (Double) -> Void = { fraction in
-            transfer?.uploadProgress(fraction)
-            onProgress(fraction)
-        }
+        let transfer = progressReporter.component()
+        let resourceProgress: @Sendable (BackupResourceProgress) -> Void = { transfer.resourceProgress($0) }
+        let byteProgress: @Sendable (UploadByteProgress) -> Void = { transfer.uploadByteProgress($0) }
+        let uploadProgress: @Sendable (Double) -> Void = { transfer.uploadProgress($0) }
         if await client.acceptsBackgroundUploads() {
             do {
                 return try await BackgroundAssetUpload.send(upload, motion: motion, client: client, account: account,
                     source: source, lifetime: lifetime, onResourceProgress: resourceProgress, onByteProgress: byteProgress,
                     beforeUpload: validate, onProgress: uploadProgress)
             } catch is ChunkedAssetUpload.Unavailable {
-                // An unknown PhotoKit size retains the existing guarded multipart path.
+                // Staging capacity and unknown PhotoKit sizes use the guarded multipart path.
             }
         } else if let chunking {
             do {
@@ -2626,10 +2621,10 @@ final class BackupManager {
                 onResourceProgress: resourceProgress
             )
         }
-        transfer?.uploading()
+        transfer.uploading()
         return try await client.uploadAsset(
             upload, bodyURL: body.fileURL, account: account, source: source,
-            maximumRequestBytes: maximumRequestBytes, lease: lease, lifetime: lifetime,
+            maximumRequestBytes: maximumRequestBytes ?? chunking?.maximumRequestBytes, lease: lease, lifetime: lifetime,
             onByteProgress: byteProgress, beforeUpload: validate, onProgress: uploadProgress
         )
     }
@@ -2696,10 +2691,6 @@ final class BackupManager {
         let transfer = beginActiveTransfer(localIdentifier: localIdentifier)
         defer { activeTransfers.finish(localIdentifier: localIdentifier, attempt: transfer.attempt) }
         uploadStates[localIdentifier] = .uploading(0)
-        let progress: @Sendable (String, Double) -> Void = { [weak self] id, fraction in
-            guard let self else { return }
-            Task { @MainActor in self.noteUploadProgress(id, fraction) }
-        }
         let outcome = await Self.uploadOne(
             asset: asset,
             client: client,
@@ -2709,8 +2700,7 @@ final class BackupManager {
             maximumRequestBytes: maximumRequestBytes,
             chunking: chunking,
             progressReporter: transfer.reporter,
-            authorization: uploadAuthorization(localID: asset.localIdentifier),
-            onProgress: progress
+            authorization: uploadAuthorization(localID: asset.localIdentifier)
         )
 
         switch outcome {
@@ -2850,10 +2840,6 @@ final class BackupManager {
         defer {
             for (localId, attempt) in attempts { activeTransfers.finish(localIdentifier: localId, attempt: attempt) }
         }
-        let progress: @Sendable (String, Double) -> Void = { [weak self] localId, fraction in
-            guard let self else { return }
-            Task { @MainActor in self.noteUploadProgress(localId, fraction) }
-        }
 
         var authorityPause: BackupUploadAuthorityPause?
         var scheduledCount = 0
@@ -2882,7 +2868,7 @@ final class BackupManager {
                         deviceId: deviceId, account: account,
                         maximumRequestBytes: requestLimit, chunking: chunking,
                         progressReporter: transfer.reporter,
-                        authorization: authorization, onProgress: progress
+                        authorization: authorization
                     )
                 }
             }, didFinish: { asset, result in

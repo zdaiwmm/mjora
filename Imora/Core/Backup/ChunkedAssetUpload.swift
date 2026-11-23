@@ -9,16 +9,17 @@ nonisolated enum ChunkedAssetUpload {
 
     struct Policy: Sendable {
         let chunkBytes: Int64
+        let maximumRequestBytes: Int64?
 
         /// the upload size limit from Backup Settings caps each chunk instead
         /// of the whole file.
         init(maximumRequestBytes: Int64?) {
+            self.maximumRequestBytes = maximumRequestBytes
             chunkBytes = min(ChunkedAssetUpload.defaultChunkBytes, maximumRequestBytes ?? .max)
         }
     }
 
-    /// photokit does not know the file's size or its bytes did not add up to
-    /// it. the caller sends the file in one multipart request instead.
+    /// The caller can send one guarded multipart request when a resumable transfer is unavailable.
     struct Unavailable: Error {}
 
     static func send(
