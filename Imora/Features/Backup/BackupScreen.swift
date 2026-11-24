@@ -279,8 +279,12 @@ struct BackupScreen: View {
                     LabeledContent("On This Device", value: status.deviceLibraryMedia.text)
                         .accessibilityIdentifier("backup-device-library-count")
                 }
-                LabeledContent("Backed Up", value: status.cloudKnownMedia.text)
+                LabeledContent("Backed Up", value: status.uniqueCloudKnownMedia.text)
                     .accessibilityIdentifier("backup-confirmed-count")
+                LabeledContent("Duplicate Photos", value: status.duplicateMedia.photos.formatted())
+                    .accessibilityIdentifier("backup-duplicate-photo-count")
+                LabeledContent("Duplicate Videos", value: status.duplicateMedia.videos.formatted())
+                    .accessibilityIdentifier("backup-duplicate-video-count")
                 LabeledContent("Not Verified", value: status.historicalOnlyMedia.text)
                     .accessibilityIdentifier("backup-unverified-count")
                 LabeledContent("Pending Backup", value: status.pendingMedia.text)

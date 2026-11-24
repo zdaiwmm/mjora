@@ -6,12 +6,17 @@ extension MediaCounts {
     }
 
     nonisolated mutating func add(_ asset: DeviceAsset) {
-        if asset.isVideo && !asset.isLivePhoto { videos += 1 } else { photos += 1 }
+        if asset.countsAsBackupVideo { videos += 1 } else { photos += 1 }
     }
 }
 
 /// Counts device items using their retained backup evidence.
 nonisolated struct BackupLibraryStatus: Equatable, Sendable {
+    private struct CloudCopy: Hashable {
+        let remoteID: String
+        let isVideo: Bool
+    }
+
     var lastSuccessfulCloudSync: Date? = nil
     private(set) var totalMedia = MediaCounts()
     private(set) var cloudConfirmedMedia = MediaCounts()
@@ -21,10 +26,13 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
     private(set) var pendingMedia = MediaCounts()
     private(set) var excludedMedia = MediaCounts()
     private(set) var cloudDeletedMedia = MediaCounts()
+    private(set) var uniqueCloudKnownMedia = MediaCounts()
     private var cloudConfirmedIDs: Set<String> = []
     private var historicalOnlyIDs: Set<String> = []
-    private var pendingIDs: Set<String> = []
+    private var pendingVideoByID: [String: Bool] = [:]
     private var unindexedIDs: Set<String> = []
+    private var cloudCopyByLocalID: [String: CloudCopy] = [:]
+    private var localCountByCloudCopy: [CloudCopy: Int] = [:]
     var deviceLibraryMedia: MediaCounts {
         MediaCounts(photos: totalMedia.photos + excludedMedia.photos, videos: totalMedia.videos + excludedMedia.videos)
     }
@@ -32,6 +40,10 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
     var cloudKnownMedia: MediaCounts {
         MediaCounts(photos: cloudConfirmedMedia.photos + historicalOnlyMedia.photos,
                     videos: cloudConfirmedMedia.videos + historicalOnlyMedia.videos)
+    }
+    var duplicateMedia: MediaCounts {
+        MediaCounts(photos: cloudKnownMedia.photos - uniqueCloudKnownMedia.photos,
+                    videos: cloudKnownMedia.videos - uniqueCloudKnownMedia.videos)
     }
 
     var excluded: Int { excludedMedia.total }
@@ -67,20 +79,23 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
                 unindexedMedia.add(asset)
                 unindexedIDs.insert(asset.localIdentifier)
                 pendingMedia.add(asset)
-                pendingIDs.insert(asset.localIdentifier)
+                pendingVideoByID[asset.localIdentifier] = asset.countsAsBackupVideo
                 continue
             }
-            if entry.isBackedUp {
-                cloudConfirmedMedia.add(asset)
-                cloudConfirmedIDs.insert(asset.localIdentifier)
-            } else if entry.hasHistoricalBackup {
-                historicalOnlyMedia.add(asset)
-                historicalOnlyIDs.insert(asset.localIdentifier)
+            if let remoteID = entry.primaryRemoteId, entry.hasHistoricalBackup {
+                if entry.isBackedUp {
+                    cloudConfirmedMedia.add(asset)
+                    cloudConfirmedIDs.insert(asset.localIdentifier)
+                } else {
+                    historicalOnlyMedia.add(asset)
+                    historicalOnlyIDs.insert(asset.localIdentifier)
+                }
+                recordCloudCopy(asset, remoteID: remoteID)
             } else if entry.unsupported {
                 unsupportedMedia.add(asset)
             } else {
                 pendingMedia.add(asset)
-                pendingIDs.insert(asset.localIdentifier)
+                pendingVideoByID[asset.localIdentifier] = asset.countsAsBackupVideo
             }
         }
     }
@@ -88,11 +103,13 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
     /// Apply a server match as soon as one item finishes. A known copy counts
     /// as backed up, while the separate verification counter remains honest
     /// until a fresh proof is recorded.
-    mutating func recordKnownCopy(_ asset: DeviceAsset) {
+    mutating func recordKnownCopy(_ asset: DeviceAsset, remoteID: String) {
         let id = asset.localIdentifier
-        guard !cloudConfirmedIDs.contains(id), historicalOnlyIDs.insert(id).inserted else { return }
+        guard !cloudConfirmedIDs.contains(id), canRecordCloudCopy(asset) else { return }
+        recordCloudCopy(asset, remoteID: remoteID)
+        guard historicalOnlyIDs.insert(id).inserted else { return }
         historicalOnlyMedia.add(asset)
-        if pendingIDs.remove(id) != nil {
+        if pendingVideoByID.removeValue(forKey: id) != nil {
             pendingMedia.remove(asset)
         }
         if unindexedIDs.remove(id) != nil {
@@ -102,18 +119,46 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
 
     /// Apply a proof as soon as one item finishes instead of waiting for the
     /// whole library check. The set makes repeated progress events idempotent.
-    mutating func recordVerified(_ asset: DeviceAsset) {
+    mutating func recordVerified(_ asset: DeviceAsset, remoteID: String) {
         let id = asset.localIdentifier
+        guard canRecordCloudCopy(asset) else { return }
+        recordCloudCopy(asset, remoteID: remoteID)
         guard cloudConfirmedIDs.insert(id).inserted else { return }
         cloudConfirmedMedia.add(asset)
         if historicalOnlyIDs.remove(id) != nil {
             historicalOnlyMedia.remove(asset)
         }
-        if pendingIDs.remove(id) != nil {
+        if pendingVideoByID.removeValue(forKey: id) != nil {
             pendingMedia.remove(asset)
         }
         if unindexedIDs.remove(id) != nil {
             unindexedMedia.remove(asset)
+        }
+    }
+
+    private func canRecordCloudCopy(_ asset: DeviceAsset) -> Bool {
+        let id = asset.localIdentifier
+        let snapshotIsVideo = pendingVideoByID[id] ?? cloudCopyByLocalID[id]?.isVideo
+        return snapshotIsVideo == asset.countsAsBackupVideo
+    }
+
+    private mutating func recordCloudCopy(_ asset: DeviceAsset, remoteID: String) {
+        let id = asset.localIdentifier
+        let copy = CloudCopy(remoteID: remoteID, isVideo: asset.countsAsBackupVideo)
+        let previous = cloudCopyByLocalID[id]
+        guard previous != copy else { return }
+        cloudCopyByLocalID[id] = copy
+        if let previous {
+            if localCountByCloudCopy[previous] == 1 {
+                localCountByCloudCopy[previous] = nil
+                uniqueCloudKnownMedia.remove(asset)
+            } else {
+                localCountByCloudCopy[previous, default: 0] -= 1
+            }
+        }
+        localCountByCloudCopy[copy, default: 0] += 1
+        if localCountByCloudCopy[copy] == 1 {
+            uniqueCloudKnownMedia.add(asset)
         }
     }
 
@@ -148,10 +193,14 @@ nonisolated struct BackupLibraryStatus: Equatable, Sendable {
 
 private extension MediaCounts {
     nonisolated mutating func remove(_ asset: DeviceAsset) {
-        if asset.isVideo && !asset.isLivePhoto {
+        if asset.countsAsBackupVideo {
             videos = max(0, videos - 1)
         } else {
             photos = max(0, photos - 1)
         }
     }
+}
+
+private extension DeviceAsset {
+    nonisolated var countsAsBackupVideo: Bool { isVideo && !isLivePhoto }
 }
