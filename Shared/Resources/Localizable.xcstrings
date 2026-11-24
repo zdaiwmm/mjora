@@ -12864,6 +12864,42 @@
       },
       "comment": "Imora/Features/Admin/AdminModels.swift:304"
     },
+    "Duplicate Photos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duplicate Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重复照片"
+          }
+        }
+      },
+      "comment": "Imora/Features/Backup/BackupScreen.swift:284"
+    },
+    "Duplicate Videos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duplicate Videos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重复视频"
+          }
+        }
+      },
+      "comment": "Imora/Features/Backup/BackupScreen.swift:286"
+    },
     "Duplicates": {
       "extractionState": "manual",
       "localizations": {

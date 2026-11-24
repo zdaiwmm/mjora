@@ -2072,8 +2072,10 @@ final class BackupManager {
             guard let source = sources[localID], let asset = devices[localID],
                   await PhotoLibraryService.assetInfo(localIdentifier: localID) == asset else { continue }
             await index.applyRemoteCheck(localId: localID, source: source, result: result, motion: motion, generation: client.context.id)
-            if let entry = await index.entry(for: localID), entry.hasHistoricalBackup {
-                libraryStatus?.recordKnownCopy(asset)
+            if let entry = await index.entry(for: localID), entry.hasHistoricalBackup,
+               entry.matches(modificationDate: asset.modificationDate), entry.isLivePhoto == asset.isLivePhoto,
+               let remoteID = entry.primaryRemoteId {
+                libraryStatus?.recordKnownCopy(asset, remoteID: remoteID)
             }
         }
         let entries = await index.allEntries()
@@ -2158,7 +2160,9 @@ final class BackupManager {
                     }
                 } else {
                     summary.duplicateMedia.add(asset)
-                    libraryStatus?.recordVerified(asset)
+                    if let remoteID = source.primaryRemoteId {
+                        libraryStatus?.recordVerified(asset, remoteID: remoteID)
+                    }
                 }
             }
         }
@@ -2272,13 +2276,13 @@ final class BackupManager {
                     activeTransfers.finish(localIdentifier: localId, attempt: attempt)
                 }
                 switch outcome {
-                case .uploaded:
+                case .uploaded(let remoteID):
                     summary.uploadedMedia.add(asset)
-                    libraryStatus?.recordVerified(asset)
+                    libraryStatus?.recordVerified(asset, remoteID: remoteID)
                     uploadStates[localId] = nil
-                case .duplicate:
+                case .duplicate(let remoteID):
                     summary.duplicateMedia.add(asset)
-                    libraryStatus?.recordVerified(asset)
+                    libraryStatus?.recordVerified(asset, remoteID: remoteID)
                     uploadStates[localId] = nil
                 case .sizeExcluded:
                     summary.skippedMedia.add(asset)
@@ -2367,8 +2371,8 @@ final class BackupManager {
     private nonisolated static let motionSuffix = "#motion"
 
     private nonisolated enum UploadOutcome: Sendable {
-        case uploaded
-        case duplicate
+        case uploaded(remoteID: String)
+        case duplicate(remoteID: String)
         case sizeExcluded(actualBytes: Int64, maximumBytes: Int64)
         case failed(String, kind: RepeatedBackupFailureKind = .other, diagnostic: BackupFailureDiagnostic)
         case skipped
@@ -2440,7 +2444,7 @@ final class BackupManager {
         if entry.unsupported {
             return .failed(String(localized: "this file format is not supported by the server."), diagnostic: .init(stage: .preparing))
         }
-        if entry.isBackedUp { return .duplicate }
+        if entry.isBackedUp, let remoteID = entry.primaryRemoteId { return .duplicate(remoteID: remoteID) }
         if entry.isSizeExcluded(maximumRequestBytes: maximumRequestBytes),
            let size = entry.sizeExcludedRequestBytes, let maximumRequestBytes {
             return .sizeExcluded(actualBytes: size, maximumBytes: maximumRequestBytes)
@@ -2501,12 +2505,13 @@ final class BackupManager {
                 _ = await index.applyReceipt(.init(ticket: .init(account: account, localId: current.localIdentifier, isMotion: false, bodyPath: "", source: entry), remoteId: result.id), persist: false)
                 if !result.isDuplicate { uploadedSomething = true }
             }
-            guard let candidate = await index.entry(for: current.localIdentifier) else { throw BackupVerificationError.stale }
+            guard let candidate = await index.entry(for: current.localIdentifier), let remoteID = candidate.primaryRemoteId
+            else { throw BackupVerificationError.stale }
             let resource = await PhotoLibraryService.primaryResourceInfo(localIdentifier: current.localIdentifier)
             progressReporter.verifying(filename: resource?.filename)
             failureStage = .verifying
             try await verifyBackup(asset: current, entry: candidate, client: client, index: index, account: account)
-            return uploadedSomething ? .uploaded : .duplicate
+            return uploadedSomething ? .uploaded(remoteID: remoteID) : .duplicate(remoteID: remoteID)
         } catch is CancellationError {
             return .skipped
         } catch let pause as BackupUploadAuthorityPause {
@@ -2877,13 +2882,13 @@ final class BackupManager {
                     activeTransfers.finish(localIdentifier: localId, attempt: attempt)
                 }
                 switch result {
-                case .uploaded:
+                case .uploaded(let remoteID):
                     outcome.uploaded += 1
-                    libraryStatus?.recordVerified(asset)
+                    libraryStatus?.recordVerified(asset, remoteID: remoteID)
                     uploadStates[localId] = nil
-                case .duplicate:
+                case .duplicate(let remoteID):
                     outcome.alreadyBackedUp += 1
-                    libraryStatus?.recordVerified(asset)
+                    libraryStatus?.recordVerified(asset, remoteID: remoteID)
                     uploadStates[localId] = nil
                 case .sizeExcluded:
                     outcome.skipped += 1
